@@ -40,3 +40,28 @@ rigour-fix-packet.json
 
 # Generated config
 rigovo.yml
+
+# Python
+*.pyc
+**/__pycache__/
+*.pyo
+*.egg-info/
+*.egg
+cli/src/*.egg-info/
+cli/.pytest_cache/
+cli/.mypy_cache/
+cli/.ruff_cache/
+cli/htmlcov/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python build
+build/
+sdist/
+wheels/
+
+# Rigovo CLI local data
+.rigovo/
