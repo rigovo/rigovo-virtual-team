@@ -3,12 +3,18 @@ name: CI
 on:
   push:
     branches: [main, develop]
+    paths: [cli/**]
   pull_request:
     branches: [main]
+    paths: [cli/**]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: cli
 
 jobs:
   test:
@@ -31,7 +37,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('cli/pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-pip-${{ matrix.python-version }}-
 
@@ -52,7 +58,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: coverage.xml
+          path: cli/coverage.xml
 
   lint:
     name: Lint & Type Check
@@ -120,4 +126,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dist
-          path: dist/
+          path: cli/dist/
