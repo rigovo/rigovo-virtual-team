@@ -1,0 +1,58 @@
+{
+  "name": "rigovo-teams",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Composable AI engineering team platform",
+  "author": {
+    "name": "Ashutosh Singh",
+    "email": "ashu.singh212@gmail.com",
+    "url": "https://erashu212.vercel.app"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @rigovo/core run build && pnpm --filter @rigovo/eng run build && pnpm --filter @rigovo/cli run build && pnpm --filter @rigovo/web run build",
+    "dev": "pnpm --filter @rigovo/core run build && pnpm --filter @rigovo/eng run build && pnpm --filter @rigovo/web run dev",
+    "dev:web": "pnpm --filter @rigovo/web run dev",
+    "test": "pnpm -r run test",
+    "clean": "pnpm -r run clean",
+    "typecheck": "pnpm -r run typecheck",
+    "check": "npx @rigour-labs/cli check",
+    "check:deep": "npx @rigour-labs/cli check --deep"
+  },
+  "dependencies": {
+    "@prisma/client": "^7.4.1",
+    "@prisma/client-runtime-utils": "^7.4.1",
+    "@rigovo/cli": "workspace:*",
+    "@rigovo/core": "workspace:*",
+    "@rigovo/eng": "workspace:*",
+    "@rigovo/web": "workspace:*",
+    "@supabase/supabase-js": "^2.49.0",
+    "chalk": "^5.3.0",
+    "commander": "^12.0.0",
+    "eventemitter3": "^5.0.1",
+    "framer-motion": "^12.0.0",
+    "lucide-react": "^0.475.0",
+    "next": "^15.2.0",
+    "ora": "^8.0.1",
+    "prisma": "^7.4.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "prisma",
+      "@prisma/engines"
+    ]
+  },
+  "devDependencies": {
+    "@rigour-labs/cli": "^4.0.1",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

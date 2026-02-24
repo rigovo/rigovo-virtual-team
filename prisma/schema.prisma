@@ -1,0 +1,186 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+  output          = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [vector]
+}
+
+enum WorkspacePlan {
+  free
+  pro
+  enterprise
+}
+
+enum TaskType {
+  feature
+  bug
+  refactor
+  incident
+  test
+  infra
+  review
+}
+
+enum TaskStatus {
+  pending
+  classifying
+  assembling
+  running
+  awaiting_approval
+  completed
+  failed
+}
+
+enum MemoryType {
+  lesson
+  pattern
+  preference
+  codebase_context
+}
+
+enum AuditAction {
+  classify
+  assign
+  generate
+  review
+  fix
+  test
+  approve
+  reject
+  retry
+  complete
+  fail
+  memory_store
+  memory_retrieve
+}
+
+model Workspace {
+  id        String         @id @default(uuid()) @db.Uuid
+  name      String
+  slug      String         @unique
+  ownerId   String         @map("owner_id") @db.Uuid
+  plan      WorkspacePlan  @default(free)
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime       @updatedAt @map("updated_at") @db.Timestamptz
+
+  projects      Project[]
+  tasks         Task[]
+  memories      Memory[]
+  auditLogs     AuditLog[]
+  teamTemplates TeamTemplate[]
+
+  @@index([ownerId])
+  @@map("workspaces")
+}
+
+model Project {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @map("workspace_id") @db.Uuid
+  name        String
+  slug        String
+  techStack   Json?     @map("tech_stack")
+  config      Json?
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tasks     Task[]
+  memories  Memory[]  @relation("SourceProject")
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+  @@map("projects")
+}
+
+model Task {
+  id                String     @id @default(uuid()) @db.Uuid
+  workspaceId       String     @map("workspace_id") @db.Uuid
+  projectId         String?    @map("project_id") @db.Uuid
+  description       String
+  type              TaskType?
+  status            TaskStatus @default(pending)
+  teamAssembled     Boolean?   @default(false) @map("team_assembled")
+  outcome           Json?
+  lessonsLearned    String[]   @map("lessons_learned")
+  tokenCostEstimate Int?       @map("token_cost_estimate")
+  durationMs        Int?       @map("duration_ms")
+  startedAt         DateTime?  @map("started_at") @db.Timestamptz
+  completedAt       DateTime?  @map("completed_at") @db.Timestamptz
+  createdAt         DateTime   @default(now()) @map("created_at") @db.Timestamptz
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  auditLogs AuditLog[]
+  memories  Memory[]   @relation("SourceTask")
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([status])
+  @@map("tasks")
+}
+
+model Memory {
+  id                     String     @id @default(uuid()) @db.Uuid
+  workspaceId            String     @map("workspace_id") @db.Uuid
+  sourceProjectId        String?    @map("source_project_id") @db.Uuid
+  sourceTaskId           String?    @map("source_task_id") @db.Uuid
+  content                String
+  type                   MemoryType
+  embedding              Unsupported("vector(384)")?
+  timesUsed              Int        @default(0) @map("times_used")
+  timesUsedOutsideSource Int        @default(0) @map("times_used_outside_source")
+  tags                   String[]
+  createdAt              DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  lastUsedAt             DateTime?  @map("last_used_at") @db.Timestamptz
+
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sourceProject Project?  @relation("SourceProject", fields: [sourceProjectId], references: [id], onDelete: SetNull)
+  sourceTask    Task?     @relation("SourceTask", fields: [sourceTaskId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([type])
+  @@map("memories")
+}
+
+model AuditLog {
+  id            String      @id @default(uuid()) @db.Uuid
+  taskId        String      @map("task_id") @db.Uuid
+  workspaceId   String      @map("workspace_id") @db.Uuid
+  agentRole     String      @map("agent_role")
+  actionType    AuditAction @map("action_type")
+  inputSummary  String?     @map("input_summary")
+  outputSummary String?     @map("output_summary")
+  gateResults   Json?       @map("gate_results")
+  fixPacketId   String?     @map("fix_packet_id") @db.Uuid
+  durationMs    Int?        @map("duration_ms")
+  tokenCount    Int?        @map("token_count")
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  task      Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([workspaceId])
+  @@index([createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+model TeamTemplate {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String?  @map("workspace_id") @db.Uuid
+  name        String
+  description String?
+  agents      String[]
+  config      Json?
+  isSystem    Boolean  @default(false) @map("is_system")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("team_templates")
+}

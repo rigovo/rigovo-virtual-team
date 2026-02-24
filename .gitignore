@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+.next/
+out/
+
+# Prisma generated
+node_modules/.prisma/
+
+# Environment
+.env
+.env.local
+.env.*.local
+.env.production
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test & Coverage
+coverage/
+
+# Rigour artifacts
+rigour-report.json
+rigour-fix-packet.json
+.rigour/
+
+# TypeScript
+*.tsbuildinfo
+
+# Generated config
+rigovo.yml

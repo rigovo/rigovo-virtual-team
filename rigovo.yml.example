@@ -1,0 +1,40 @@
+version: 1
+project: my-startup-app
+
+# LLM Configuration
+models:
+  default: claude-sonnet-4-5-20250929
+  coder: claude-sonnet-4-5-20250929
+  reviewer: null  # Reviewer uses Rigour (deterministic), not LLM
+  keys:
+    anthropic: ${ANTHROPIC_API_KEY}
+    openai: ${OPENAI_API_KEY}
+
+# Quality Gates
+quality:
+  engine: rigour
+  config: ./rigour.yml
+  strict_mode: false
+
+# Memory
+memory:
+  embedding_provider: openai
+  embedding_model: text-embedding-3-small
+
+# Approval Gates (human-in-the-loop)
+approval:
+  after_planning: true
+  after_coding: false
+  after_review: false
+  before_commit: true
+  auto_pr: false
+
+# Trust Mode
+trust:
+  mode: balanced  # local | balanced | cloud
+
+# Team defaults
+team:
+  default_template: feature-build
+  max_retries: 3
+  timeout_minutes: 30
