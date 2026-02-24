@@ -88,9 +88,9 @@ groq = [
 [project.urls]
 Homepage = "https://rigovo.com"
 Documentation = "https://docs.rigovo.com"
-Repository = "https://github.com/rigovo/rigovo-teams"
-Changelog = "https://github.com/rigovo/rigovo-teams/blob/main/CHANGELOG.md"
-"Bug Tracker" = "https://github.com/rigovo/rigovo-teams/issues"
+Repository = "https://github.com/rigovo/rigovo-virtual-team"
+Changelog = "https://github.com/rigovo/rigovo-virtual-team/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/rigovo/rigovo-virtual-team/issues"
 
 [project.scripts]
 rigovo = "rigovo.main:app"
@@ -122,3 +122,25 @@ warn_unused_configs = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+# ── Semantic Release ──────────────────────────────────────────────
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "main"
+commit_message = "chore(release): v{version} [skip ci]"
+build_command = "python -m build"
+upload_to_pypi = false
+tag_format = "v{version}"
+
+[tool.semantic_release.changelog]
+changelog_file = "CHANGELOG.md"
+exclude_commit_patterns = ["^chore", "^ci", "^docs", "^style", "^refactor"]
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["feat", "fix", "perf", "refactor", "build", "chore", "ci", "docs", "style", "test"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]
