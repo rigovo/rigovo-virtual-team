@@ -144,7 +144,7 @@ You MUST:
 
 You MUST NOT:
 - Import packages that don't exist in the project's dependencies
-- Leave TODO comments (resolve them or flag in your output)
+- Leave placeholder comments (resolve them or flag in your output)
 - Write code that exceeds 500 lines per file
 - Skip error handling for async operations
 - Ignore the enrichment context — it contains lessons from past mistakes

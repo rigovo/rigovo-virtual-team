@@ -77,18 +77,18 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         vector = [0.0] * self.DIMENSIONS
         for token, count in tf.items():
             # Hash token to bucket
-            bucket = int(hashlib.md5(token.encode()).hexdigest(), 16) % self.DIMENSIONS
+            bucket = int(hashlib.sha256(token.encode()).hexdigest(), 16) % self.DIMENSIONS
             # TF weight (log-normalized)
             weight = 1.0 + math.log(count / total + 1e-10)
             # Sign from second hash (reduces collisions)
-            sign = 1.0 if int(hashlib.sha1(token.encode()).hexdigest(), 16) % 2 == 0 else -1.0
+            sign = 1.0 if int(hashlib.sha256(token.encode()).hexdigest(), 16) % 2 == 0 else -1.0
             vector[bucket] += sign * weight
 
         # Bigrams for phrase awareness
         for i in range(len(tokens) - 1):
             bigram = f"{tokens[i]}_{tokens[i + 1]}"
-            bucket = int(hashlib.md5(bigram.encode()).hexdigest(), 16) % self.DIMENSIONS
-            sign = 1.0 if int(hashlib.sha1(bigram.encode()).hexdigest(), 16) % 2 == 0 else -1.0
+            bucket = int(hashlib.sha256(bigram.encode()).hexdigest(), 16) % self.DIMENSIONS
+            sign = 1.0 if int(hashlib.sha256(bigram.encode()).hexdigest(), 16) % 2 == 0 else -1.0
             vector[bucket] += sign * 0.5  # Lower weight for bigrams
 
         # L2 normalize

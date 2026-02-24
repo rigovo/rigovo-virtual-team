@@ -40,7 +40,7 @@ def get_engineering_gates() -> list[RigourGateConfig]:
         # Warning gates (informational, don't block)
         RigourGateConfig("missing-types", "Missing Type Hints", 20, "style"),
         RigourGateConfig("missing-docstrings", "Missing Docstrings", 10, "style"),
-        RigourGateConfig("todo-comments", "TODO Comments", 5, "style"),
+        RigourGateConfig("placeholder-comments", "Placeholder Comments", 5, "style"),
         RigourGateConfig("console-logs", "Console.log/print Statements", 3, "style"),
         RigourGateConfig("unused-variables", "Unused Variables", 5, "correctness"),
         RigourGateConfig("unused-imports", "Unused Imports", 3, "correctness"),

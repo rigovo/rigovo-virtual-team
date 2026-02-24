@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shutil
@@ -73,10 +74,10 @@ class RigourQualityGate(QualityGate):
     async def run(self, gate_input: GateInput) -> GateResult:
         """Run quality gates and return structured results."""
         if self._binary:
-            return self._run_rigour_cli(gate_input)
+            return await self._run_rigour_cli(gate_input)
         return self._run_builtin_checks(gate_input)
 
-    def _run_rigour_cli(self, gate_input: GateInput) -> GateResult:
+    async def _run_rigour_cli(self, gate_input: GateInput) -> GateResult:
         """Execute rigour CLI and parse JSON output."""
         cmd = [self._binary, "check", "--json"]
 
@@ -87,12 +88,16 @@ class RigourQualityGate(QualityGate):
         project_root = Path(gate_input.project_root) if isinstance(gate_input.project_root, str) else gate_input.project_root
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=self._timeout,
-                cwd=str(project_root),
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=self._timeout,
+                    cwd=str(project_root),
+                )
             )
 
             return self._parse_rigour_output(result.stdout, result.returncode)

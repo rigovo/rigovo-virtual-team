@@ -5,10 +5,46 @@ build-backend = "hatchling.build"
 [project]
 name = "rigovo"
 version = "0.1.0"
-description = "Virtual Engineering Team as a Service — CLI"
+description = "Virtual Engineering Team as a Service — AI-powered multi-agent CLI for software development"
 readme = "README.md"
-requires-python = ">=3.10"  # Production targets 3.12; 3.10 compat via __future__.annotations
+requires-python = ">=3.10"
 license = "MIT"
+
+authors = [
+    { name = "Rigovo", email = "engineering@rigovo.com" },
+]
+maintainers = [
+    { name = "Rigovo", email = "engineering@rigovo.com" },
+]
+
+keywords = [
+    "ai",
+    "agents",
+    "multi-agent",
+    "software-engineering",
+    "code-review",
+    "llm",
+    "devtools",
+    "cli",
+    "automation",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
 
 dependencies = [
     # Orchestration
@@ -49,11 +85,26 @@ groq = [
     "langchain-groq>=0.2,<1.0",
 ]
 
+[project.urls]
+Homepage = "https://rigovo.com"
+Documentation = "https://docs.rigovo.com"
+Repository = "https://github.com/rigovo/rigovo-teams"
+Changelog = "https://github.com/rigovo/rigovo-teams/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/rigovo/rigovo-teams/issues"
+
 [project.scripts]
 rigovo = "rigovo.main:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rigovo"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/rigovo/**/*.py",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
 
 [tool.ruff]
 target-version = "py310"

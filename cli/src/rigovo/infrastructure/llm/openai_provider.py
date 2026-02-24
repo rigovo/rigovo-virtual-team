@@ -56,10 +56,14 @@ class OpenAIProvider(LLMProvider):
         if choice.message.tool_calls:
             import json
             for tc in choice.message.tool_calls:
+                try:
+                    parsed_input = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    parsed_input = {}
                 tool_calls.append({
                     "id": tc.id,
                     "name": tc.function.name,
-                    "input": json.loads(tc.function.arguments),
+                    "input": parsed_input,
                 })
 
         return LLMResponse(

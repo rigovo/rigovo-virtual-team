@@ -65,7 +65,7 @@ class LLMProvider(ABC):
         Returns:
             Standardised LLMResponse with content, usage, and tool calls.
         """
-        ...
+        raise NotImplementedError  # Abstract — implemented by infrastructure adapters
 
     @abstractmethod
     async def stream(
@@ -81,4 +81,4 @@ class LLMProvider(ABC):
         Returns an async iterator of partial responses.
         Used for real-time terminal display.
         """
-        ...
+        raise NotImplementedError  # Abstract — implemented by infrastructure adapters

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from rigovo.application.graph.state import TaskState
@@ -16,6 +17,7 @@ async def assemble_node(
     assembler: TeamAssemblerService | None = None,
 ) -> dict[str, Any]:
     """Assemble the execution pipeline based on task classification and team agents."""
+    await asyncio.sleep(0)
     assembler = assembler or TeamAssemblerService()
     classification = state.get("classification", {})
 

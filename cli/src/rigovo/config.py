@@ -1,4 +1,12 @@
-"""Configuration — loads rigovo.yml + .env into typed settings."""
+"""Configuration — merges rigovo.yml (project settings) + .env (secrets).
+
+Load order (later overrides earlier):
+1. Built-in defaults
+2. rigovo.yml (version-controlled project config)
+3. .env file (secrets — gitignored)
+4. Environment variables (CI overrides)
+5. CLI flags (--verbose, --offline, etc.)
+"""
 
 from __future__ import annotations
 
@@ -7,6 +15,8 @@ from typing import Any
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
+
+from rigovo.config_schema import RigovoConfig, load_rigovo_yml
 
 
 class LLMConfig(BaseSettings):
@@ -59,7 +69,14 @@ class ApprovalConfig(BaseSettings):
 
 
 class AppConfig(BaseSettings):
-    """Root application configuration."""
+    """
+    Root application configuration.
+
+    Merges:
+    - rigovo.yml (project settings, version-controlled)
+    - .env (secrets, gitignored)
+    - Environment variables (CI overrides)
+    """
 
     # Project
     project_root: Path = Field(default_factory=Path.cwd)
@@ -68,7 +85,7 @@ class AppConfig(BaseSettings):
     # Database
     local_db_path: str = Field(default=".rigovo/local.db", alias="RIGOVO_LOCAL_DB")
 
-    # Sub-configs
+    # Sub-configs (from .env)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
@@ -76,6 +93,9 @@ class AppConfig(BaseSettings):
     # Orchestration
     max_retries: int = Field(default=3, alias="RIGOVO_MAX_RETRIES")
     max_agents_per_task: int = Field(default=8, alias="RIGOVO_MAX_AGENTS")
+
+    # The parsed rigovo.yml (populated by load_config)
+    yml: RigovoConfig = Field(default_factory=RigovoConfig)
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -85,6 +105,33 @@ class AppConfig(BaseSettings):
 
 
 def load_config(project_root: Path | None = None) -> AppConfig:
-    """Load configuration from environment and rigovo.yml."""
+    """
+    Load configuration by merging rigovo.yml + .env + env vars.
+
+    rigovo.yml provides project settings (teams, quality, orchestration).
+    .env provides secrets (API keys).
+    Environment variables override both.
+    """
     root = project_root or Path.cwd()
-    return AppConfig(project_root=root)
+
+    # 1. Load rigovo.yml
+    yml = load_rigovo_yml(root)
+
+    # 2. Apply YAML overrides to env-based config
+    app_config = AppConfig(project_root=root)
+    app_config.yml = yml
+
+    # 3. Merge YAML orchestration into app config
+    app_config.max_retries = yml.orchestration.max_retries
+    app_config.max_agents_per_task = yml.orchestration.max_agents_per_task
+
+    # 4. Merge YAML approval into app config
+    app_config.approval.after_planning = yml.approval.after_planning
+    app_config.approval.after_coding = yml.approval.after_coding
+    app_config.approval.after_review = yml.approval.after_review
+    app_config.approval.before_commit = yml.approval.before_commit
+
+    # 5. Merge cloud settings
+    app_config.cloud.enabled = yml.cloud.enabled
+
+    return app_config

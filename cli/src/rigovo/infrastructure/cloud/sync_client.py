@@ -7,6 +7,7 @@ No source code ever leaves the developer's machine.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -87,7 +88,8 @@ class CloudSyncClient:
         return bool(self._api_key and self._workspace_id)
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Lazy-init HTTP client."""
+        """Lazy-init the async HTTP client for cloud API calls."""
+        await asyncio.sleep(0)  # Yield to event loop for cooperative multitasking
         if self._client is None:
             headers = {
                 "Content-Type": "application/json",

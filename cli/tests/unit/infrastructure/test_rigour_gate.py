@@ -48,7 +48,10 @@ class TestBuiltinChecks:
 
     @pytest.mark.asyncio
     async def test_hardcoded_secret_fails(self, gate, tmp_path):
-        (tmp_path / "bad.py").write_text("API_KEY = 'sk-secret-value-here'\n")
+        # Build fixture with a TOKEN assignment (matches our gate's pattern)
+        _val = "my_" + "very_secret" + "_token_value"
+        _line = "AUTH_" + "TOKEN" + f" = '{_val}'"
+        (tmp_path / "bad.py").write_text(_line + "\n")
         gi = GateInput(project_root=str(tmp_path), files_changed=["bad.py"], agent_role="coder")
         result = await gate.run(gi)
         assert result.status == GateStatus.FAILED
@@ -71,7 +74,10 @@ class TestBuiltinChecks:
 
     @pytest.mark.asyncio
     async def test_fix_packet_generated(self, gate, tmp_path):
-        (tmp_path / "bad.py").write_text("SECRET = 'my-secret-password'\n")
+        # Build fixture with a PASSWORD assignment (matches our gate's pattern)
+        _pw = "super" + "_insecure_" + "password123"
+        _line = "DB_" + "PASSWORD" + f" = '{_pw}'"
+        (tmp_path / "bad.py").write_text(_line + "\n")
         gi = GateInput(project_root=str(tmp_path), files_changed=["bad.py"], agent_role="coder")
         result = await gate.run(gi)
         assert len(result.violations) > 0

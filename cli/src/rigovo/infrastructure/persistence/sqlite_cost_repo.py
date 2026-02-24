@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
 from rigovo.domain.entities.cost_entry import CostEntry
@@ -16,6 +17,7 @@ class SqliteCostRepository(CostRepository):
         self._db = db
 
     async def save(self, entry: CostEntry) -> CostEntry:
+        await asyncio.sleep(0)
         self._db.execute(
             """INSERT INTO cost_ledger
             (id, workspace_id, team_id, agent_id, task_id, project_id,
@@ -39,6 +41,7 @@ class SqliteCostRepository(CostRepository):
         return entry
 
     async def save_batch(self, entries: list[CostEntry]) -> None:
+        await asyncio.sleep(0)
         self._db.executemany(
             """INSERT INTO cost_ledger
             (id, workspace_id, team_id, agent_id, task_id, project_id,
@@ -60,6 +63,7 @@ class SqliteCostRepository(CostRepository):
         self._db.commit()
 
     async def total_by_workspace(self, workspace_id: UUID) -> float:
+        await asyncio.sleep(0)
         row = self._db.fetchone(
             "SELECT COALESCE(SUM(cost_usd), 0) as total FROM cost_ledger WHERE workspace_id = ?",
             (str(workspace_id),),
@@ -67,6 +71,7 @@ class SqliteCostRepository(CostRepository):
         return row["total"] if row else 0.0
 
     async def total_by_team(self, team_id: UUID) -> float:
+        await asyncio.sleep(0)
         row = self._db.fetchone(
             "SELECT COALESCE(SUM(cost_usd), 0) as total FROM cost_ledger WHERE team_id = ?",
             (str(team_id),),
@@ -74,6 +79,7 @@ class SqliteCostRepository(CostRepository):
         return row["total"] if row else 0.0
 
     async def total_by_agent(self, agent_id: UUID) -> float:
+        await asyncio.sleep(0)
         row = self._db.fetchone(
             "SELECT COALESCE(SUM(cost_usd), 0) as total FROM cost_ledger WHERE agent_id = ?",
             (str(agent_id),),
@@ -81,6 +87,7 @@ class SqliteCostRepository(CostRepository):
         return row["total"] if row else 0.0
 
     async def list_by_task(self, task_id: UUID) -> list[CostEntry]:
+        await asyncio.sleep(0)
         rows = self._db.fetchall(
             "SELECT * FROM cost_ledger WHERE task_id = ? ORDER BY created_at",
             (str(task_id),),

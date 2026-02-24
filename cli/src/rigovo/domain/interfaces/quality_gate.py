@@ -55,4 +55,4 @@ class QualityGate(ABC):
         Returns a deterministic GateResult. No LLM opinions.
         Same input ALWAYS produces the same output.
         """
-        ...
+        raise NotImplementedError  # Abstract — implemented by domain plugins

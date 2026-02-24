@@ -109,26 +109,60 @@ class Container:
         return self._quality_gates
 
     def _build_quality_gates(self) -> list[QualityGate]:
-        """Build quality gates from domain plugins."""
+        """
+        Build quality gates from rigovo.yml + domain plugins.
+
+        Priority:
+        1. rigovo.yml quality.gates overrides (user-configurable thresholds)
+        2. Domain plugin gate configs (sensible defaults)
+        3. Rigour CLI when available, built-in AST fallback otherwise
+        """
+        from rigovo.domain.entities.quality import ViolationSeverity
         from rigovo.infrastructure.quality.rigour_gate import (
             RigourGateConfig,
             RigourQualityGate,
         )
 
-        # Collect gate configs from all domain plugins
+        yml_quality = self.config.yml.quality
         all_configs: list[RigourGateConfig] = []
+
+        # Build configs from rigovo.yml gate overrides
+        severity_map = {
+            "error": ViolationSeverity.ERROR,
+            "warning": ViolationSeverity.WARNING,
+            "info": ViolationSeverity.INFO,
+        }
+
+        for gate_id, gate_override in yml_quality.gates.items():
+            all_configs.append(
+                RigourGateConfig(
+                    gate_id=gate_id,
+                    name=gate_id.replace("-", " ").title(),
+                    threshold=gate_override.threshold,
+                    severity=severity_map.get(gate_override.severity, ViolationSeverity.ERROR),
+                    enabled=gate_override.enabled,
+                )
+            )
+
+        # Add any extra gates from domain plugins (deduped)
+        existing_ids = {c.gate_id for c in all_configs}
         for domain in self.domains.values():
             domain_gates = domain.get_quality_gates()
             for gate_cfg in domain_gates:
-                all_configs.append(
-                    RigourGateConfig(
-                        gate_id=gate_cfg.gate_id,
-                        name=gate_cfg.name,
-                        threshold=gate_cfg.threshold,
+                if gate_cfg.gate_id not in existing_ids:
+                    all_configs.append(
+                        RigourGateConfig(
+                            gate_id=gate_cfg.gate_id,
+                            name=gate_cfg.name,
+                            threshold=gate_cfg.threshold,
+                        )
                     )
-                )
 
-        return [RigourQualityGate(gate_configs=all_configs)]
+        return [RigourQualityGate(
+            gate_configs=all_configs,
+            rigour_binary=yml_quality.rigour_binary,
+            timeout_seconds=yml_quality.rigour_timeout,
+        )]
 
     # --- Cloud Sync ---
 

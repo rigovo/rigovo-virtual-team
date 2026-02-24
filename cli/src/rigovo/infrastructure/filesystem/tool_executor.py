@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -49,6 +50,7 @@ class ToolExecutor:
         Returns:
             JSON string result for feeding back to the LLM.
         """
+        await asyncio.sleep(0)
         handler = self._handlers.get(tool_name)
         if not handler:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})

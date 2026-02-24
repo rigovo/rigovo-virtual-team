@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from datetime import datetime
@@ -25,6 +26,7 @@ class SqliteMemoryRepository(MemoryRepository):
         self._db = db
 
     async def save(self, memory: Memory) -> Memory:
+        await asyncio.sleep(0)
         embedding_json = json.dumps(memory.embedding) if memory.embedding else None
         self._db.execute(
             """INSERT OR REPLACE INTO memories
@@ -57,6 +59,7 @@ class SqliteMemoryRepository(MemoryRepository):
         memory_types: list[MemoryType] | None = None,
     ) -> list[Memory]:
         """Search memories by cosine similarity (computed in Python)."""
+        await asyncio.sleep(0)
         type_filter = ""
         params: tuple = (str(workspace_id),)
         if memory_types:
@@ -72,7 +75,10 @@ class SqliteMemoryRepository(MemoryRepository):
         # Compute cosine similarity in Python
         scored: list[tuple[float, Memory]] = []
         for row in rows:
-            embedding = json.loads(row["embedding"])
+            try:
+                embedding = json.loads(row["embedding"])
+            except json.JSONDecodeError:
+                embedding = []
             sim = self._cosine_similarity(query_embedding, embedding)
             memory = self._row_to_memory(row)
             scored.append((sim, memory))
@@ -81,6 +87,7 @@ class SqliteMemoryRepository(MemoryRepository):
         return [m for _, m in scored[:limit]]
 
     async def list_by_workspace(self, workspace_id: UUID, limit: int = 50) -> list[Memory]:
+        await asyncio.sleep(0)
         rows = self._db.fetchall(
             "SELECT * FROM memories WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?",
             (str(workspace_id), limit),
@@ -88,6 +95,7 @@ class SqliteMemoryRepository(MemoryRepository):
         return [self._row_to_memory(r) for r in rows]
 
     async def get_by_task(self, task_id: UUID) -> list[Memory]:
+        await asyncio.sleep(0)
         rows = self._db.fetchall(
             "SELECT * FROM memories WHERE source_task_id = ? ORDER BY created_at",
             (str(task_id),),
@@ -108,6 +116,12 @@ class SqliteMemoryRepository(MemoryRepository):
 
     @staticmethod
     def _row_to_memory(row) -> Memory:
+        embedding = None
+        if row["embedding"]:
+            try:
+                embedding = json.loads(row["embedding"])
+            except json.JSONDecodeError:
+                embedding = None
         return Memory(
             id=UUID(row["id"]),
             workspace_id=UUID(row["workspace_id"]),
@@ -116,7 +130,7 @@ class SqliteMemoryRepository(MemoryRepository):
             source_agent_id=UUID(row["source_agent_id"]) if row["source_agent_id"] else None,
             content=row["content"],
             memory_type=MemoryType(row["memory_type"]),
-            embedding=json.loads(row["embedding"]) if row["embedding"] else None,
+            embedding=embedding,
             usage_count=row["usage_count"] or 0,
             cross_project_usage=row["cross_project_usage"] or 0,
             last_used_at=datetime.fromisoformat(row["last_used_at"]) if row["last_used_at"] else None,

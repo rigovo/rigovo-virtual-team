@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from uuid import UUID
@@ -20,12 +21,14 @@ class SqliteTaskRepository(TaskRepository):
         self._db = db
 
     async def get_by_id(self, task_id: UUID) -> Task | None:
+        await asyncio.sleep(0)
         row = self._db.fetchone("SELECT * FROM tasks WHERE id = ?", (str(task_id),))
         if not row:
             return None
         return self._row_to_task(row)
 
     async def list_by_workspace(self, workspace_id: UUID, limit: int = 50) -> list[Task]:
+        await asyncio.sleep(0)
         rows = self._db.fetchall(
             "SELECT * FROM tasks WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?",
             (str(workspace_id), limit),
@@ -33,6 +36,7 @@ class SqliteTaskRepository(TaskRepository):
         return [self._row_to_task(r) for r in rows]
 
     async def list_by_team(self, team_id: UUID, limit: int = 50) -> list[Task]:
+        await asyncio.sleep(0)
         rows = self._db.fetchall(
             "SELECT * FROM tasks WHERE team_id = ? ORDER BY created_at DESC LIMIT ?",
             (str(team_id), limit),
@@ -40,6 +44,7 @@ class SqliteTaskRepository(TaskRepository):
         return [self._row_to_task(r) for r in rows]
 
     async def save(self, task: Task) -> Task:
+        await asyncio.sleep(0)
         self._db.execute(
             """INSERT OR REPLACE INTO tasks
             (id, workspace_id, project_id, team_id, description, task_type,
@@ -77,6 +82,7 @@ class SqliteTaskRepository(TaskRepository):
         return task
 
     async def update_status(self, task: Task) -> None:
+        await asyncio.sleep(0)
         self._db.execute(
             """UPDATE tasks SET status = ?, current_checkpoint = ?,
                total_tokens = ?, total_cost_usd = ?, duration_ms = ?,
@@ -130,7 +136,10 @@ class SqliteTaskRepository(TaskRepository):
         task.complexity = TaskComplexity(row["complexity"]) if row["complexity"] else None
         task.status = TaskStatus(row["status"])
         task.current_checkpoint = row["current_checkpoint"]
-        task.approval_data = json.loads(row["approval_data"]) if row["approval_data"] else {}
+        try:
+            task.approval_data = json.loads(row["approval_data"]) if row["approval_data"] else {}
+        except (json.JSONDecodeError, TypeError):
+            task.approval_data = {}
         task.total_tokens = row["total_tokens"] or 0
         task.total_cost_usd = row["total_cost_usd"] or 0.0
         task.duration_ms = row["duration_ms"] or 0

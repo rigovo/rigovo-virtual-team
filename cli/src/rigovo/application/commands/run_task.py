@@ -130,7 +130,7 @@ class RunTaskCommand:
         # Get agent role definitions from domain plugin
         agent_roles = {}
         if domain_plugin:
-            agent_roles = {r.role: r for r in domain_plugin.get_agent_roles()}
+            agent_roles = {r.role_id: r for r in domain_plugin.get_agent_roles()}
 
         # Build initial graph state
         initial_state: TaskState = {
@@ -159,6 +159,8 @@ class RunTaskCommand:
             # Cost tracking
             "total_tokens": 0,
             "total_cost_usd": 0.0,
+            "budget_max_cost_per_task": 2.00,
+            "budget_max_tokens_per_task": 200_000,
             # Memory
             "memories_to_store": [],
             # Final
@@ -263,14 +265,14 @@ class RunTaskCommand:
     ) -> list[Agent]:
         """Build agent entities from domain role definitions."""
         agents = []
-        for role_name, role_def in agent_roles.items():
+        for role_id, role_def in agent_roles.items():
             agent = Agent(
                 workspace_id=self._workspace_id,
                 team_id=uuid4(),  # Placeholder
-                name=f"{role_name.title().replace('_', ' ')}",
-                role=role_name,
-                model=self._master_llm.__class__.__name__,
-                system_prompt=role_def.system_prompt,
+                name=role_def.name,
+                role=role_id,
+                llm_model=role_def.default_llm_model,
+                system_prompt=role_def.default_system_prompt,
             )
             agents.append(agent)
         return agents

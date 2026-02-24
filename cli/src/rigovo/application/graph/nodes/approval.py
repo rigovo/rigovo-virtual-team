@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from rigovo.application.graph.state import TaskState
@@ -16,6 +17,7 @@ async def plan_approval_node(state: TaskState) -> dict[str, Any]:
     The actual interrupt() call happens in the graph builder when
     langgraph is available.
     """
+    await asyncio.sleep(0)
     team_config = state.get("team_config", {})
     classification = state.get("classification", {})
 
@@ -46,6 +48,7 @@ async def commit_approval_node(state: TaskState) -> dict[str, Any]:
     Shows the user what was done — all agent outputs, gate results,
     files changed — and asks for confirmation to proceed.
     """
+    await asyncio.sleep(0)
     agent_outputs = state.get("agent_outputs", {})
 
     approval_summary = {

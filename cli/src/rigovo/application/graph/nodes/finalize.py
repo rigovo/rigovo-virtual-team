@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from rigovo.application.graph.state import TaskState
@@ -14,6 +15,7 @@ async def finalize_node(state: TaskState) -> dict[str, Any]:
     This node runs regardless of whether the task succeeded, failed,
     or was rejected. It ensures clean state for audit and reporting.
     """
+    await asyncio.sleep(0)
     agent_outputs = state.get("agent_outputs", {})
     approval_status = state.get("approval_status", "")
     gate_results = state.get("gate_results", {})

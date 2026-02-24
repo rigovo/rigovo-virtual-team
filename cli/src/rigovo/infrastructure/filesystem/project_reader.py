@@ -141,7 +141,20 @@ class ProjectReader:
         file_glob: str | None = None,
         max_results: int = 50,
     ) -> dict[str, Any]:
-        """Search for text pattern across project files."""
+        """
+        Search for a regex pattern across all project source files.
+
+        Walks the file tree respecting SKIP_DIRS and MAX_FILE_SIZE limits.
+        Returns matches with file path, line number, and truncated content.
+
+        Args:
+            pattern: Regex pattern to search for (case-insensitive).
+            file_glob: Optional glob to filter which files to search.
+            max_results: Cap on returned matches to avoid huge payloads.
+
+        Returns:
+            Dict with 'pattern', 'matches' list, and 'truncated' boolean.
+        """
         import re
 
         try:
@@ -162,7 +175,8 @@ class ProjectReader:
 
             try:
                 content = filepath.read_text(encoding="utf-8", errors="replace")
-            except Exception:
+            except (OSError, UnicodeDecodeError):
+                # Skip files that can't be read (permissions, encoding issues)
                 continue
 
             for i, line in enumerate(content.splitlines(), 1):
@@ -186,13 +200,22 @@ class ProjectReader:
                 try:
                     content = filepath.read_text(encoding="utf-8", errors="replace")
                     found[filename] = content[:5000]  # Truncate large lock files
-                except Exception:
+                except (OSError, UnicodeDecodeError):
+                    # Mark files that can't be read due to permissions or encoding
                     found[filename] = "<unreadable>"
 
         return {"project_root": str(self._root), "dependency_files": found}
 
     def detect_tech_stack(self) -> dict[str, Any]:
-        """Auto-detect the project's technology stack."""
+        """
+        Auto-detect the project's technology stack from manifest files.
+
+        Checks for known config files (package.json, pyproject.toml, Cargo.toml,
+        go.mod, etc.) and infers languages, frameworks, and build tools.
+
+        Returns:
+            Dict with 'languages', 'frameworks', and 'build_tools' lists.
+        """
         stack: dict[str, Any] = {"languages": [], "frameworks": [], "build_tools": []}
 
         checks = [
@@ -229,7 +252,8 @@ class ProjectReader:
                 for dep, name in framework_checks:
                     if dep in deps:
                         stack["frameworks"].append(name)
-            except Exception:
+            except (json.JSONDecodeError, OSError, KeyError):
+                # Skip malformed or unreadable package.json files
                 pass
 
         return stack

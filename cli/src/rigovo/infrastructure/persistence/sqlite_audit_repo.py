@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from uuid import UUID
@@ -18,6 +19,7 @@ class SqliteAuditRepository(AuditRepository):
         self._db = db
 
     async def append(self, entry: AuditEntry) -> AuditEntry:
+        await asyncio.sleep(0)
         self._db.execute(
             """INSERT INTO audit_log
             (id, workspace_id, team_id, agent_id, task_id, action_type,
@@ -39,6 +41,7 @@ class SqliteAuditRepository(AuditRepository):
         return entry
 
     async def list_by_workspace(self, workspace_id: UUID, limit: int = 100) -> list[AuditEntry]:
+        await asyncio.sleep(0)
         rows = self._db.fetchall(
             "SELECT * FROM audit_log WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?",
             (str(workspace_id), limit),
@@ -46,6 +49,7 @@ class SqliteAuditRepository(AuditRepository):
         return [self._row_to_entry(r) for r in rows]
 
     async def list_by_task(self, task_id: UUID) -> list[AuditEntry]:
+        await asyncio.sleep(0)
         rows = self._db.fetchall(
             "SELECT * FROM audit_log WHERE task_id = ? ORDER BY created_at",
             (str(task_id),),
@@ -54,6 +58,12 @@ class SqliteAuditRepository(AuditRepository):
 
     @staticmethod
     def _row_to_entry(row) -> AuditEntry:
+        metadata = {}
+        if row["metadata"]:
+            try:
+                metadata = json.loads(row["metadata"])
+            except json.JSONDecodeError:
+                metadata = {}
         return AuditEntry(
             id=UUID(row["id"]),
             workspace_id=UUID(row["workspace_id"]),
@@ -63,6 +73,6 @@ class SqliteAuditRepository(AuditRepository):
             action=AuditAction(row["action_type"]),
             agent_role=row["agent_role"],
             summary=row["summary"] or "",
-            metadata=json.loads(row["metadata"]) if row["metadata"] else {},
+            metadata=metadata,
             created_at=datetime.fromisoformat(row["created_at"]),
         )

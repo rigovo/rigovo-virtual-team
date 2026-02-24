@@ -22,83 +22,102 @@ class WorkspaceRepository(ABC):
     """Workspace CRUD operations."""
 
     @abstractmethod
-    async def get_by_id(self, workspace_id: UUID) -> Workspace | None: ...
+    async def get_by_id(self, workspace_id: UUID) -> Workspace | None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_by_slug(self, slug: str) -> Workspace | None: ...
+    async def get_by_slug(self, slug: str) -> Workspace | None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def save(self, workspace: Workspace) -> Workspace: ...
+    async def save(self, workspace: Workspace) -> Workspace:
+        raise NotImplementedError
 
 
 class TeamRepository(ABC):
     """Team CRUD + queries."""
 
     @abstractmethod
-    async def get_by_id(self, team_id: UUID) -> Team | None: ...
+    async def get_by_id(self, team_id: UUID) -> Team | None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def list_by_workspace(self, workspace_id: UUID) -> list[Team]: ...
+    async def list_by_workspace(self, workspace_id: UUID) -> list[Team]:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_by_domain(self, workspace_id: UUID, domain: str) -> list[Team]: ...
+    async def get_by_domain(self, workspace_id: UUID, domain: str) -> list[Team]:
+        raise NotImplementedError
 
     @abstractmethod
-    async def save(self, team: Team) -> Team: ...
+    async def save(self, team: Team) -> Team:
+        raise NotImplementedError
 
 
 class AgentRepository(ABC):
     """Agent CRUD + performance queries."""
 
     @abstractmethod
-    async def get_by_id(self, agent_id: UUID) -> Agent | None: ...
+    async def get_by_id(self, agent_id: UUID) -> Agent | None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def list_by_team(self, team_id: UUID) -> list[Agent]: ...
+    async def list_by_team(self, team_id: UUID) -> list[Agent]:
+        raise NotImplementedError
 
     @abstractmethod
-    async def list_by_workspace(self, workspace_id: UUID) -> list[Agent]: ...
+    async def list_by_workspace(self, workspace_id: UUID) -> list[Agent]:
+        raise NotImplementedError
 
     @abstractmethod
-    async def save(self, agent: Agent) -> Agent: ...
+    async def save(self, agent: Agent) -> Agent:
+        raise NotImplementedError
 
     @abstractmethod
     async def update_enrichment(
         self, agent_id: UUID, enrichment: EnrichmentContext,
-    ) -> None: ...
+    ) -> None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def update_stats(self, agent: Agent) -> None: ...
+    async def update_stats(self, agent: Agent) -> None:
+        raise NotImplementedError
 
 
 class TaskRepository(ABC):
     """Task lifecycle operations."""
 
     @abstractmethod
-    async def get_by_id(self, task_id: UUID) -> Task | None: ...
+    async def get_by_id(self, task_id: UUID) -> Task | None:
+        raise NotImplementedError
 
     @abstractmethod
     async def list_by_workspace(
         self, workspace_id: UUID, limit: int = 50,
-    ) -> list[Task]: ...
+    ) -> list[Task]:
+        raise NotImplementedError
 
     @abstractmethod
     async def list_by_team(
         self, team_id: UUID, limit: int = 50,
-    ) -> list[Task]: ...
+    ) -> list[Task]:
+        raise NotImplementedError
 
     @abstractmethod
-    async def save(self, task: Task) -> Task: ...
+    async def save(self, task: Task) -> Task:
+        raise NotImplementedError
 
     @abstractmethod
-    async def update_status(self, task: Task) -> None: ...
+    async def update_status(self, task: Task) -> None:
+        raise NotImplementedError
 
 
 class MemoryRepository(ABC):
     """Memory storage and retrieval with semantic search."""
 
     @abstractmethod
-    async def save(self, memory: Memory) -> Memory: ...
+    async def save(self, memory: Memory) -> Memory:
+        raise NotImplementedError
 
     @abstractmethod
     async def search(
@@ -107,49 +126,61 @@ class MemoryRepository(ABC):
         query_embedding: list[float],
         limit: int = 10,
         memory_types: list[MemoryType] | None = None,
-    ) -> list[Memory]: ...
+    ) -> list[Memory]:
+        raise NotImplementedError
 
     @abstractmethod
     async def list_by_workspace(
         self, workspace_id: UUID, limit: int = 50,
-    ) -> list[Memory]: ...
+    ) -> list[Memory]:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_by_task(self, task_id: UUID) -> list[Memory]: ...
+    async def get_by_task(self, task_id: UUID) -> list[Memory]:
+        raise NotImplementedError
 
 
 class CostRepository(ABC):
     """Cost tracking operations."""
 
     @abstractmethod
-    async def save(self, entry: CostEntry) -> CostEntry: ...
+    async def save(self, entry: CostEntry) -> CostEntry:
+        raise NotImplementedError
 
     @abstractmethod
-    async def save_batch(self, entries: list[CostEntry]) -> None: ...
+    async def save_batch(self, entries: list[CostEntry]) -> None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def total_by_workspace(self, workspace_id: UUID) -> float: ...
+    async def total_by_workspace(self, workspace_id: UUID) -> float:
+        raise NotImplementedError
 
     @abstractmethod
-    async def total_by_team(self, team_id: UUID) -> float: ...
+    async def total_by_team(self, team_id: UUID) -> float:
+        raise NotImplementedError
 
     @abstractmethod
-    async def total_by_agent(self, agent_id: UUID) -> float: ...
+    async def total_by_agent(self, agent_id: UUID) -> float:
+        raise NotImplementedError
 
     @abstractmethod
-    async def list_by_task(self, task_id: UUID) -> list[CostEntry]: ...
+    async def list_by_task(self, task_id: UUID) -> list[CostEntry]:
+        raise NotImplementedError
 
 
 class AuditRepository(ABC):
     """Immutable audit log operations."""
 
     @abstractmethod
-    async def append(self, entry: AuditEntry) -> AuditEntry: ...
+    async def append(self, entry: AuditEntry) -> AuditEntry:
+        raise NotImplementedError
 
     @abstractmethod
     async def list_by_workspace(
         self, workspace_id: UUID, limit: int = 100,
-    ) -> list[AuditEntry]: ...
+    ) -> list[AuditEntry]:
+        raise NotImplementedError
 
     @abstractmethod
-    async def list_by_task(self, task_id: UUID) -> list[AuditEntry]: ...
+    async def list_by_task(self, task_id: UUID) -> list[AuditEntry]:
+        raise NotImplementedError
