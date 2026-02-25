@@ -11,10 +11,6 @@ permissions:
   id-token: write
   contents: write
 
-defaults:
-  run:
-    working-directory: cli
-
 jobs:
   release:
     name: Semantic Release & Publish
@@ -57,7 +53,7 @@ jobs:
         if: steps.semrel.outputs.tag != ''
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: cli/dist/
+          packages-dir: dist/
 
       - name: Create GitHub Release
         if: steps.semrel.outputs.tag != ''

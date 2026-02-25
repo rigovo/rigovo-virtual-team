@@ -3,18 +3,12 @@ name: CI
 on:
   push:
     branches: [main, develop]
-    paths: [cli/**]
   pull_request:
     branches: [main]
-    paths: [cli/**]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
-defaults:
-  run:
-    working-directory: cli
 
 jobs:
   test:
@@ -37,7 +31,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('cli/pyproject.toml') }}
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-pip-${{ matrix.python-version }}-
 
@@ -58,7 +52,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: cli/coverage.xml
+          path: coverage.xml
 
   lint:
     name: Lint
@@ -94,7 +88,6 @@ jobs:
           node-version: "20"
 
       - name: Run Rigour gates
-        working-directory: cli
         run: npx -y @rigour-labs/cli check --ci
 
   build:
@@ -123,4 +116,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dist
-          path: cli/dist/
+          path: dist/
