@@ -316,7 +316,7 @@ class GraphBuilder:
             gate_results = state.get("gate_results", {})
             if not gate_results.get("passed", True):
                 retry_count = state.get("retry_count", 0)
-                max_retries = state.get("max_retries", 3)
+                max_retries = state.get("max_retries", 5)
 
                 while retry_count < max_retries and not gate_results.get("passed", True):
                     update = await execute_agent_node(

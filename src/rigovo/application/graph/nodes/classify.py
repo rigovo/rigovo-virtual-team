@@ -41,8 +41,15 @@ async def classify_node(
     )
 
     try:
-        classification = json.loads(response.content)
-    except json.JSONDecodeError:
+        # Strip markdown code fences if LLM wraps JSON in ```json ... ```
+        text = response.content.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+        classification = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
         classification = {
             "task_type": "feature",
             "complexity": "medium",

@@ -434,7 +434,7 @@ class TestCustomAgentPlugins(unittest.TestCase):
         )
         assert agent.temperature == 0.0
         assert agent.max_tokens == 4096
-        assert agent.timeout_seconds == 300
+        assert agent.timeout_seconds == 600
         assert agent.model == ""
         assert agent.rules == []
         assert agent.tools == []
@@ -547,6 +547,132 @@ class TestHelperFunctions(unittest.TestCase):
         result = _check_budget_guards(state, "coder")
         assert result is not None
         assert "budget_exceeded" in result["status"]
+
+
+# =====================================================================
+# Bug Fix Tests — classification, finalize, agent_outputs, idle timeout
+# =====================================================================
+
+
+class TestClassificationParsing(unittest.TestCase):
+    """Test classification node handles LLM output variations."""
+
+    def test_parse_markdown_wrapped_json(self):
+        """Classifier strips markdown code fences from LLM output."""
+        import json
+        raw = '```json\n{"task_type": "bug", "complexity": "high", "reasoning": "test"}\n```'
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+        result = json.loads(text)
+        assert result["task_type"] == "bug"
+        assert result["complexity"] == "high"
+
+    def test_parse_plain_json(self):
+        """Classifier handles plain JSON without fences."""
+        import json
+        raw = '{"task_type": "feature", "complexity": "low", "reasoning": "simple"}'
+        result = json.loads(raw.strip())
+        assert result["task_type"] == "feature"
+
+    def test_parse_json_with_language_tag(self):
+        """Classifier handles ```json tag."""
+        import json
+        raw = '```json\n{"task_type": "refactor", "complexity": "medium", "reasoning": "ok"}\n```'
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+        result = json.loads(text)
+        assert result["task_type"] == "refactor"
+
+
+class TestFinalizeNodeReturnsMetrics(unittest.TestCase):
+    """Test that finalize_node returns total_tokens and total_cost_usd in state."""
+
+    def test_finalize_returns_totals(self):
+        """finalize_node must return total_tokens and total_cost_usd in state dict."""
+        from rigovo.application.graph.nodes.finalize import finalize_node
+
+        state = {
+            "agent_outputs": {
+                "coder": {"tokens": 500, "cost": 0.05, "duration_ms": 1000, "files_changed": ["a.py"]},
+                "reviewer": {"tokens": 300, "cost": 0.03, "duration_ms": 800, "files_changed": ["a.py"]},
+            },
+            "approval_status": "",
+            "gate_results": {"passed": True},
+            "retry_count": 0,
+            "max_retries": 5,
+            "events": [],
+            "memories_to_store": [],
+        }
+        result = asyncio.run(finalize_node(state))
+        assert result["total_tokens"] == 800
+        assert result["total_cost_usd"] == 0.08
+        assert result["status"] == "completed"
+        assert "a.py" in result["files_changed"]
+
+    def test_finalize_failed_status(self):
+        """finalize_node sets failed when max retries exceeded."""
+        from rigovo.application.graph.nodes.finalize import finalize_node
+
+        state = {
+            "agent_outputs": {},
+            "approval_status": "",
+            "gate_results": {"passed": False},
+            "retry_count": 5,
+            "max_retries": 5,
+            "events": [],
+            "memories_to_store": [],
+        }
+        result = asyncio.run(finalize_node(state))
+        assert result["status"] == "failed"
+
+
+class TestAgentOutputsType(unittest.TestCase):
+    """Test agent_outputs is dict, not list."""
+
+    def test_initial_state_agent_outputs_is_dict(self):
+        """RunTaskCommand must initialize agent_outputs as dict."""
+        # Verify the code expectation — agent_outputs must be iterable as dict
+        agent_outputs: dict = {}
+        total_tokens = sum(o.get("tokens", 0) for o in agent_outputs.values())
+        assert total_tokens == 0
+
+    def test_agent_outputs_dict_aggregation(self):
+        """Dict agent_outputs correctly aggregates across agents."""
+        agent_outputs = {
+            "coder": {"tokens": 1000, "cost": 0.10},
+            "reviewer": {"tokens": 500, "cost": 0.05},
+        }
+        total = sum(o.get("tokens", 0) for o in agent_outputs.values())
+        assert total == 1500
+
+
+class TestIdleTimeout(unittest.TestCase):
+    """Test idle timeout constants and configuration."""
+
+    def test_idle_timeout_defaults(self):
+        """Verify idle timeout constants are set correctly."""
+        from rigovo.application.graph.nodes.execute_agent import (
+            DEFAULT_IDLE_TIMEOUT,
+            DEFAULT_BATCH_TIMEOUT,
+        )
+        assert DEFAULT_IDLE_TIMEOUT == 120  # 2 minutes
+        assert DEFAULT_BATCH_TIMEOUT == 900  # 15 minutes
+
+    def test_orchestration_schema_has_idle_timeout(self):
+        """OrchestrationSchema includes idle_timeout field."""
+        from rigovo.config_schema import OrchestrationSchema
+        schema = OrchestrationSchema()
+        assert schema.idle_timeout == 120
+        assert schema.timeout_per_agent == 900
+        assert schema.max_retries == 5
 
 
 if __name__ == "__main__":

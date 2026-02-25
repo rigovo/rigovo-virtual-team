@@ -27,7 +27,7 @@ def check_gates_and_route(state: TaskState) -> str:
     """
     gate_results = state.get("gate_results", {})
     retry_count = state.get("retry_count", 0)
-    max_retries = state.get("max_retries", 3)
+    max_retries = state.get("max_retries", 5)
 
     if gate_results.get("passed", True) or gate_results.get("status") == "skipped":
         return "pass_next_agent"

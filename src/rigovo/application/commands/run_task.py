@@ -71,7 +71,7 @@ class RunTaskCommand:
         event_emitter: EventEmitter | None = None,
         db: LocalDatabase | None = None,
         approval_handler: Callable | None = None,
-        max_retries: int = 3,
+        max_retries: int = 5,
         offline: bool = False,
         enable_streaming: bool = True,
         enable_parallel: bool = False,
@@ -160,7 +160,7 @@ class RunTaskCommand:
             "team_config": {},
             "current_agent_index": 0,
             "current_agent_role": None,
-            "agent_outputs": [],
+            "agent_outputs": {},
             "gate_results": {},
             "retry_count": 0,
             "max_retries": self._max_retries,
@@ -233,8 +233,19 @@ class RunTaskCommand:
         else:
             task.fail()
 
+        # Extract totals from finalize_node state or fall back to cost_accumulator
         task.total_tokens = final_state.get("total_tokens", 0)
         task.total_cost_usd = final_state.get("total_cost_usd", 0.0)
+
+        # If finalize_node set them, they'll be non-zero; otherwise sum from cost_accumulator
+        if task.total_tokens == 0:
+            cost_acc = final_state.get("cost_accumulator", {})
+            task.total_tokens = sum(v.get("tokens", 0) for v in cost_acc.values())
+        if task.total_cost_usd == 0.0:
+            cost_acc = final_state.get("cost_accumulator", {})
+            task.total_cost_usd = round(
+                sum(v.get("cost", 0.0) for v in cost_acc.values()), 6
+            )
         task.duration_ms = elapsed_ms
 
         if self._task_repo:
@@ -259,7 +270,7 @@ class RunTaskCommand:
             )
 
         # --- 8. Emit finalization event ---
-        agent_outputs = final_state.get("agent_outputs", [])
+        agent_outputs = final_state.get("agent_outputs", {})
         self._emit_sync("task_finalized", {
             "type": "task_finalized",
             "status": status,
@@ -389,7 +400,3 @@ class RunTaskCommand:
                         seen.add(f)
         return files
 
-    async def _emit(self, event_type: str, data: dict[str, Any]) -> None:
-        """Emit an event if event emitter is available."""
-        if self._event_emitter:
-            self._event_emitter.emit(event_type, data)

@@ -189,6 +189,7 @@ def register(app: typer.Typer) -> None:
         console.print()
 
         _setup_logging(verbose)
+        ui = None
         try:
             from rigovo.infrastructure.terminal.rich_output import TerminalUI
 

@@ -35,13 +35,17 @@ async def finalize_node(state: TaskState) -> dict[str, Any]:
         final_status = "rejected"
     elif state.get("error"):
         final_status = "failed"
-    elif not gate_results.get("passed", True) and state.get("retry_count", 0) >= state.get("max_retries", 3):
+    elif not gate_results.get("passed", True) and state.get("retry_count", 0) >= state.get("max_retries", 5):
         final_status = "failed"
     else:
         final_status = "completed"
 
     return {
         "status": final_status,
+        "total_tokens": total_tokens,
+        "total_cost_usd": round(total_cost, 6),
+        "total_duration_ms": total_duration,
+        "files_changed": files_changed,
         "events": state.get("events", []) + [{
             "type": "task_finalized",
             "status": final_status,

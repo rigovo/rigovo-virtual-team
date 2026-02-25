@@ -49,8 +49,8 @@ class AgentOverride(BaseModel):
     rules: list[str] = Field(default_factory=list)    # CTO-defined rules
     tools: list[str] = Field(default_factory=list)     # Restrict tool set
     approval_required: bool = False              # Require human approval
-    max_retries: int = 3
-    timeout_seconds: int = 300
+    max_retries: int = 5
+    timeout_seconds: int = 600
 
 
 class CustomAgentSchema(BaseModel):
@@ -79,7 +79,7 @@ class CustomAgentSchema(BaseModel):
     max_tokens: int = 4096
     rules: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
-    timeout_seconds: int = 300
+    timeout_seconds: int = 600
     parallel: bool = False                       # Can run in parallel group
 
 
@@ -151,9 +151,10 @@ class BudgetSchema(BaseModel):
 class OrchestrationSchema(BaseModel):
     """Pipeline and execution configuration."""
 
-    max_retries: int = 3
+    max_retries: int = 5                  # LLM agents need patience
     max_agents_per_task: int = 8
-    timeout_per_agent: int = 300          # seconds
+    timeout_per_agent: int = 900          # 15 min batch ceiling (streaming uses idle)
+    idle_timeout: int = 120               # 2 min idle = abort (no tokens received)
     parallel_agents: bool = False
 
     budget: BudgetSchema = Field(default_factory=BudgetSchema)

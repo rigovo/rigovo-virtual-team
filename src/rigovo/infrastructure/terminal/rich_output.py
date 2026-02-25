@@ -18,13 +18,6 @@ from typing import Any
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
-from rich.progress import (
-    BarColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeElapsedColumn,
-)
 from rich.table import Table
 from rich.text import Text
 
@@ -474,7 +467,8 @@ class TerminalUI:
 
         approved = response in ("", "approve", "yes", "y", "ok")
         status = "approved" if approved else "rejected"
-        self.console.print(f"  [{'green' if approved else 'red'}]{status.upper()}[/{'green' if approved else 'red'}]\n")
+        color = "green" if approved else "red"
+        self.console.print(f"  [{color}]{status.upper()}[/{color}]\n")
 
         self._approval_pending = False
         if self._live is None and approved:
@@ -508,10 +502,11 @@ class TerminalUI:
         t.add_column("Value")
         t.add_row("Status", f"[{color}]{status.upper()}[/{color}]")
         t.add_row("Duration", f"{elapsed:.1f}s")
+        default_icon = "\u2699"
         t.add_row(
             "Agents",
             " \u2192 ".join(
-                f"{ROLE_ICONS.get(r, '\u2699')} {r}" for r in agents
+                f"{ROLE_ICONS.get(r, default_icon)} {r}" for r in agents
             )
             or "\u2014",
         )

@@ -93,7 +93,7 @@ async def quality_check_node(
             for v in all_violations
         ]
         retry_count = state.get("retry_count", 0) + 1
-        max_retries = state.get("max_retries", 3)
+        max_retries = state.get("max_retries", 5)
 
         fix_packet = FixPacket(
             items=fix_items,

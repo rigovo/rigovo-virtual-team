@@ -97,7 +97,7 @@ class AppConfig(BaseSettings):
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
 
     # Orchestration
-    max_retries: int = Field(default=3, alias="RIGOVO_MAX_RETRIES")
+    max_retries: int = Field(default=5, alias="RIGOVO_MAX_RETRIES")
     max_agents_per_task: int = Field(default=8, alias="RIGOVO_MAX_AGENTS")
 
     # The parsed rigovo.yml (populated by load_config)

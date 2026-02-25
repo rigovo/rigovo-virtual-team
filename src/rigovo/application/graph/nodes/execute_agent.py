@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 # --- Named constants for agent execution defaults ---
 DEFAULT_LLM_MODEL = "claude-sonnet-4-5-20250929"
-DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_IDLE_TIMEOUT = 120     # No tokens for 2 min → something's wrong
+DEFAULT_BATCH_TIMEOUT = 900    # 15 min hard ceiling for batch (non-streaming)
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 8192
 MS_PER_SECOND = 1000
@@ -134,9 +135,20 @@ async def execute_agent_node(
         stream_callback: Optional callback(role, chunk) for streaming tokens.
             When provided, uses llm.stream() for real-time output.
     """
-    team_config = state["team_config"]
-    current_role = state["current_agent_role"]
-    agent_config = team_config["agents"][current_role]
+    team_config = state.get("team_config", {})
+    current_role = state.get("current_agent_role", "")
+    agents = team_config.get("agents", {})
+    if current_role not in agents:
+        return {
+            "status": f"agent_{current_role}_error",
+            "error": f"Agent role '{current_role}' not found in team config",
+            "events": state.get("events", []) + [{
+                "type": "agent_timeout",
+                "role": current_role,
+                "error": f"Role '{current_role}' not configured",
+            }],
+        }
+    agent_config = agents[current_role]
 
     # --- Budget guards ---
     budget_error = _check_budget_guards(state, current_role)
@@ -150,7 +162,8 @@ async def execute_agent_node(
     # --- LLM setup ---
     llm_model = agent_config.get("llm_model", DEFAULT_LLM_MODEL)
     llm: LLMProvider = llm_factory(llm_model)
-    timeout_seconds = agent_config.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+    idle_timeout = agent_config.get("idle_timeout", DEFAULT_IDLE_TIMEOUT)
+    batch_timeout = agent_config.get("timeout_seconds", DEFAULT_BATCH_TIMEOUT)
 
     # Emit agent_started event
     events = list(state.get("events", []))
@@ -164,33 +177,35 @@ async def execute_agent_node(
 
     try:
         if stream_callback:
-            # --- Streaming mode (item 2) ---
+            # --- Streaming mode: idle timeout only (no wall clock) ---
+            # As long as tokens keep arriving, agent runs indefinitely.
+            # Only aborts if no tokens for idle_timeout seconds.
             response = await _execute_streaming(
-                llm, messages, agent_config, timeout_seconds,
+                llm, messages, agent_config, idle_timeout,
                 current_role, stream_callback,
             )
         else:
-            # --- Batch mode ---
+            # --- Batch mode: generous wall-clock timeout ---
             response = await asyncio.wait_for(
                 llm.invoke(
                     messages=messages,
                     temperature=agent_config.get("temperature", DEFAULT_TEMPERATURE),
                     max_tokens=agent_config.get("max_tokens", DEFAULT_MAX_TOKENS),
                 ),
-                timeout=timeout_seconds,
+                timeout=batch_timeout,
             )
     except asyncio.TimeoutError:
         duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)
-        logger.warning("Agent %s timed out after %ds", current_role, timeout_seconds)
+        logger.warning("Agent %s timed out after %ds", current_role, batch_timeout)
         events.append({
             "type": "agent_timeout",
             "role": current_role,
-            "timeout_seconds": timeout_seconds,
+            "timeout_seconds": batch_timeout,
             "duration_ms": duration_ms,
         })
         return {
             "status": f"agent_{current_role}_timeout",
-            "error": f"Agent '{current_role}' timed out after {timeout_seconds}s",
+            "error": f"Agent '{current_role}' timed out after {batch_timeout}s",
             "events": events,
         }
 
@@ -242,29 +257,49 @@ async def _execute_streaming(
     llm: LLMProvider,
     messages: list[dict[str, str]],
     agent_config: dict[str, Any],
-    timeout_seconds: int,
+    idle_timeout: int,
     role: str,
     stream_callback: Any,
 ) -> Any:
-    """Execute agent with streaming, calling stream_callback for each chunk."""
+    """Execute agent with streaming using idle timeout.
+
+    Unlike a wall-clock timeout, this only triggers if NO tokens arrive
+    for `idle_timeout` seconds. As long as the LLM is actively streaming,
+    it runs indefinitely (like Claude Code, Cursor, Aider).
+
+    Implementation: wraps the async generator's __anext__() in
+    asyncio.wait_for() so each individual chunk must arrive within
+    idle_timeout seconds, but there is no total wall-clock limit.
+    """
     from rigovo.domain.interfaces.llm_provider import LLMResponse, LLMUsage
 
     collected_text = ""
+    stream = llm.stream(
+        messages=messages,
+        temperature=agent_config.get("temperature", DEFAULT_TEMPERATURE),
+        max_tokens=agent_config.get("max_tokens", DEFAULT_MAX_TOKENS),
+    )
+    stream_iter = stream.__aiter__()
 
-    async def _stream_inner():
-        nonlocal collected_text
-        async for chunk in llm.stream(
-            messages=messages,
-            temperature=agent_config.get("temperature", DEFAULT_TEMPERATURE),
-            max_tokens=agent_config.get("max_tokens", DEFAULT_MAX_TOKENS),
-        ):
-            collected_text += chunk
-            try:
-                stream_callback(role, chunk)
-            except Exception:
-                logger.debug("Stream callback error for %s", role)
+    while True:
+        try:
+            chunk = await asyncio.wait_for(
+                stream_iter.__anext__(), timeout=idle_timeout,
+            )
+        except StopAsyncIteration:
+            break  # Stream finished normally
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Agent %s idle for %ds (no tokens), aborting stream",
+                role, idle_timeout,
+            )
+            break
 
-    await asyncio.wait_for(_stream_inner(), timeout=timeout_seconds)
+        collected_text += chunk
+        try:
+            stream_callback(role, chunk)
+        except Exception:
+            logger.debug("Stream callback error for %s", role)
 
     # Build a synthetic LLMResponse from streamed content
     # Note: token counts are estimates for streaming mode
