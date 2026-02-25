@@ -268,7 +268,7 @@ flowchart TD
 
     subgraph EXECUTE_LOOP["Phase 4: Agent Execution Loop"]
         EXECUTE[⚡ execute_agent<br/>Run current agent with<br/>context engineering]
-        EXECUTE -.-> CONSULT[💬 consult_agent<br/>Advisory-only role-to-role<br/>consultation (policy-gated)]
+        EXECUTE -.-> CONSULT[💬 consult_agent<br/>Advisory-only role-to-role<br/>consultation policy-gated]
         CONSULT -.-> EXECUTE
         EXECUTE --> QUALITY[🛡️ quality_check<br/>Run Rigour AST gates<br/>on files changed]
         QUALITY --> GATE_ROUTE{Gates passed?}
@@ -432,7 +432,7 @@ Agents can request targeted advice from other roles during execution via `consul
 
 ```mermaid
 flowchart LR
-    A[Requesting Agent<br/>e.g. reviewer] -->|consult_agent(to_role, question)| P{Policy Gate<br/>allowed_targets}
+    A[Requesting Agent<br/>e.g. reviewer] -->|consult request to role| P{Policy Gate<br/>allowed_targets}
     P -->|blocked| ERR[Tool Error<br/>policy violation]
     P -->|allowed| READY{Target role<br/>already has output?}
     READY -->|yes| IMM[Immediate Advisory Response<br/>from target summary]
