@@ -1,15 +1,19 @@
 """Graph builder — constructs the LangGraph orchestration graph.
 
-This module assembles the complete task execution graph from individual nodes
-and edges. It's the "main" of the orchestration layer.
+This module assembles the complete task execution graph from individual
+nodes and edges.  It is the composition root of the orchestration layer.
 
-When LangGraph is available, this builds a real StateGraph with checkpointing.
-When running without LangGraph (tests, lightweight mode), it provides a
-simple sequential executor.
+**Primary path** — ``build_langgraph()`` returns a compiled LangGraph
+``StateGraph`` with checkpointing, conditional routing, and the full
+intelligent-agent pipeline.
+
+**Fallback path** — ``run_sequential()`` provides a lightweight executor
+for unit tests or environments where ``langgraph`` is not installed.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 from rigovo.application.graph.state import TaskState
@@ -33,6 +37,8 @@ from rigovo.domain.interfaces.llm_provider import LLMProvider
 from rigovo.domain.interfaces.quality_gate import QualityGate
 from rigovo.domain.services.cost_calculator import CostCalculator
 
+logger = logging.getLogger(__name__)
+
 
 class GraphBuilder:
     """
@@ -49,35 +55,42 @@ class GraphBuilder:
         master_llm: LLMProvider,
         cost_calculator: CostCalculator,
         quality_gates: list[QualityGate],
+        agents: list[Agent] | None = None,
         approval_handler: Callable[[TaskState], dict[str, Any]] | None = None,
+        auto_approve: bool = True,
     ) -> None:
         self._llm_factory = llm_factory
         self._master_llm = master_llm
         self._cost_calculator = cost_calculator
         self._quality_gates = quality_gates
+        self._agents = agents or []
         self._approval_handler = approval_handler
+        self._auto_approve = auto_approve
+
+    # ------------------------------------------------------------------
+    # Primary path — LangGraph compiled graph
+    # ------------------------------------------------------------------
 
     def build_langgraph(self, checkpointer: Any = None) -> Any:
         """
-        Build a real LangGraph StateGraph.
+        Build a compiled LangGraph ``StateGraph``.
 
-        Requires langgraph to be installed. Returns compiled graph.
+        Returns the compiled graph ready for ``await graph.ainvoke(state)``.
+        Raises ``ImportError`` when ``langgraph`` is not installed.
         """
-        try:
-            from langgraph.graph import StateGraph, START, END
-        except ImportError:
-            raise ImportError(
-                "langgraph is required for full orchestration. "
-                "Install with: pip install langgraph"
-            )
+        from langgraph.graph import StateGraph, START, END
 
         graph = StateGraph(TaskState)
 
-        # Bind dependencies into node closures
+        # Capture dependencies in closures
         master_llm = self._master_llm
         llm_factory = self._llm_factory
         cost_calc = self._cost_calculator
         gates = self._quality_gates
+        agents = self._agents
+        auto_approve = self._auto_approve
+
+        # --- Node wrappers (bind injected deps) ---
 
         async def _scan_project(state: TaskState) -> dict:
             return await scan_project_node(state)
@@ -86,11 +99,13 @@ class GraphBuilder:
             return await classify_node(state, master_llm)
 
         async def _assemble(state: TaskState) -> dict:
-            # In real usage, agents come from DB. For now, use state.
-            return await assemble_node(state, agents=[])
+            return await assemble_node(state, agents=agents)
 
         async def _plan_approval(state: TaskState) -> dict:
-            return await plan_approval_node(state)
+            result = await plan_approval_node(state)
+            if auto_approve:
+                result["approval_status"] = "approved"
+            return result
 
         async def _execute_agent(state: TaskState) -> dict:
             return await execute_agent_node(state, llm_factory, cost_calc)
@@ -102,7 +117,10 @@ class GraphBuilder:
             return advance_to_next_agent(state)
 
         async def _commit_approval(state: TaskState) -> dict:
-            return await commit_approval_node(state)
+            result = await commit_approval_node(state)
+            if auto_approve:
+                result["approval_status"] = "approved"
+            return result
 
         async def _enrich(state: TaskState) -> dict:
             return await enrich_node(state)
@@ -113,7 +131,7 @@ class GraphBuilder:
         async def _finalize(state: TaskState) -> dict:
             return await finalize_node(state)
 
-        # Add nodes — the intelligent agent pipeline
+        # --- Register nodes ---
         graph.add_node("scan_project", _scan_project)
         graph.add_node("classify", _classify)
         graph.add_node("assemble", _assemble)
@@ -126,7 +144,7 @@ class GraphBuilder:
         graph.add_node("store_memory", _store_memory)
         graph.add_node("finalize", _finalize)
 
-        # Edges — scan_project → classify → assemble → ...
+        # --- Edges ---
         graph.add_edge(START, "scan_project")
         graph.add_edge("scan_project", "classify")
         graph.add_edge("classify", "assemble")
@@ -155,28 +173,31 @@ class GraphBuilder:
             "rejected": "finalize",
         })
 
-        # enrich → store_memory → finalize (the learning pipeline)
         graph.add_edge("enrich", "store_memory")
         graph.add_edge("store_memory", "finalize")
         graph.add_edge("finalize", END)
 
-        # Compile
         if checkpointer:
             return graph.compile(checkpointer=checkpointer)
         return graph.compile()
 
+    # ------------------------------------------------------------------
+    # Fallback path — simple sequential executor (no LangGraph needed)
+    # ------------------------------------------------------------------
+
     async def run_sequential(
         self,
         initial_state: TaskState,
-        agents: list[Agent],
+        agents: list[Agent] | None = None,
         available_teams: list[dict[str, Any]] | None = None,
     ) -> TaskState:
         """
-        Run the graph sequentially without LangGraph (for tests or simple mode).
+        Run the pipeline sequentially without LangGraph.
 
         No checkpointing, no interrupt(). Useful for unit tests and
-        when langgraph is not installed.
+        environments where ``langgraph`` is not installed.
         """
+        resolved_agents = agents if agents is not None else self._agents
         state = dict(initial_state)
 
         # 0. Scan project — perception BEFORE reasoning
@@ -188,7 +209,7 @@ class GraphBuilder:
         state.update(update)
 
         # 2. Assemble pipeline
-        update = await assemble_node(state, agents)
+        update = await assemble_node(state, resolved_agents)
         state.update(update)
 
         # 3. Plan approval (auto-approve in sequential mode)

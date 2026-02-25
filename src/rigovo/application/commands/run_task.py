@@ -177,14 +177,13 @@ class RunTaskCommand:
             master_llm=self._master_llm,
             cost_calculator=self._cost_calculator,
             quality_gates=self._quality_gates,
+            agents=agents,
             approval_handler=self._approval_handler,
+            auto_approve=True,  # Non-interactive for now
         )
 
         try:
-            final_state = await graph_builder.run_sequential(
-                initial_state=initial_state,
-                agents=agents,
-            )
+            final_state = await self._run_graph(graph_builder, initial_state)
         except Exception as e:
             logger.exception("Task execution failed: %s", e)
             task.fail()
@@ -257,6 +256,26 @@ class RunTaskCommand:
             "agents_run": [o.get("role", "?") for o in agent_outputs],
             "files_changed": self._extract_files_changed(agent_outputs),
         }
+
+    async def _run_graph(
+        self,
+        graph_builder: GraphBuilder,
+        initial_state: TaskState,
+    ) -> dict[str, Any]:
+        """
+        Execute the orchestration graph.
+
+        Primary path: LangGraph compiled graph (``ainvoke``).
+        Fallback: sequential executor when langgraph is unavailable.
+        """
+        try:
+            compiled = graph_builder.build_langgraph()
+            logger.info("Running task via LangGraph orchestration engine")
+            result = await compiled.ainvoke(initial_state)
+            return dict(result)
+        except ImportError:
+            logger.info("LangGraph not installed — falling back to sequential runner")
+            return await graph_builder.run_sequential(initial_state=initial_state)
 
     def _build_agents(
         self,
