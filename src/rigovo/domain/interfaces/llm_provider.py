@@ -43,7 +43,7 @@ class LLMProvider(ABC):
     @property
     @abstractmethod
     def model_name(self) -> str:
-        """The model identifier (e.g. 'claude-sonnet-4-5-20250929')."""
+        """The model identifier (e.g. 'claude-sonnet-4-6')."""
         ...
 
     @abstractmethod

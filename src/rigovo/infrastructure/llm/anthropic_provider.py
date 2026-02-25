@@ -15,7 +15,7 @@ class AnthropicProvider(LLMProvider):
     full control over the API call and response parsing.
     """
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-5-20250929") -> None:
+    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6") -> None:
         self._api_key = api_key
         self._model = model
         self._client: Any = None
@@ -60,7 +60,16 @@ class AnthropicProvider(LLMProvider):
             "temperature": temperature,
         }
         if system_msg:
-            kwargs["system"] = system_msg
+            # Use prompt caching for system prompts — they're identical across
+            # rounds in an agentic loop, saving 90% of input tokens after the
+            # first call. cache_control type "ephemeral" caches for 5 minutes.
+            kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": system_msg,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
 
@@ -115,7 +124,15 @@ class AnthropicProvider(LLMProvider):
             "temperature": temperature,
         }
         if system_msg:
-            kwargs["system"] = system_msg
+            kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": system_msg,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        if tools:
+            kwargs["tools"] = self._convert_tools(tools)
 
         stream = await client.messages.stream(**kwargs).__aenter__()
         try:

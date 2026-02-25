@@ -263,7 +263,7 @@ def init(
             "# ANTHROPIC_API_KEY=sk-ant-...\n"
             "# OPENAI_API_KEY=sk-...\n"
             "# Model override (optional)\n"
-            "# LLM_MODEL=claude-sonnet-4-5-20250929\n"
+            "# LLM_MODEL=claude-sonnet-4-6\n"
             "# Cloud sync (optional — get key at app.rigovo.com)\n"
             "# RIGOVO_API_KEY=\n"
             "# RIGOVO_WORKSPACE_ID=\n"

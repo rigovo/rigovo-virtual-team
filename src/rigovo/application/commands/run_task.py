@@ -36,6 +36,8 @@ from rigovo.domain.interfaces.llm_provider import LLMProvider
 from rigovo.domain.interfaces.quality_gate import QualityGate
 from rigovo.domain.services.cost_calculator import CostCalculator
 from rigovo.domain.services.team_assembler import TeamAssemblerService
+from rigovo.infrastructure.llm.model_catalog import resolve_model_for_role
+from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
 from rigovo.infrastructure.persistence.sqlite_local import LocalDatabase
 from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
 from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
@@ -189,7 +191,10 @@ class RunTaskCommand:
                     "chunk": chunk,
                 })
 
-        # --- 5. Build and run graph ---
+        # --- 5. Prefetch Rigour CLI (runs in background while graph executes) ---
+        rigour_prefetch = asyncio.create_task(self._prefetch_rigour())
+
+        # --- 6. Build and run graph ---
         graph_builder = GraphBuilder(
             llm_factory=self._llm_factory,
             master_llm=self._master_llm,
@@ -372,19 +377,43 @@ class RunTaskCommand:
         domain_id: str,
         agent_roles: dict[str, Any],
     ) -> list[Agent]:
-        """Build agent entities from domain role definitions."""
+        """Build agent entities from domain role definitions.
+
+        Uses the model catalog to assign the optimal model per role:
+        - Core roles (planner, coder) → Sonnet (needs full reasoning)
+        - Review roles (reviewer, qa, security) → Haiku (60-80% cheaper)
+        - User override via role_def.default_llm_model always wins
+        """
         agents = []
         for role_id, role_def in agent_roles.items():
+            # Resolve model: user override > role default > catalog default
+            model = resolve_model_for_role(
+                role_id=role_id,
+                user_model=role_def.default_llm_model,  # Empty = use catalog
+            )
             agent = Agent(
                 workspace_id=self._workspace_id,
                 team_id=uuid4(),
                 name=role_def.name,
                 role=role_id,
-                llm_model=role_def.default_llm_model,
+                llm_model=model,
                 system_prompt=role_def.default_system_prompt,
+                tools=list(role_def.default_tools) if role_def.default_tools else [],
             )
             agents.append(agent)
         return agents
+
+    @staticmethod
+    async def _prefetch_rigour() -> None:
+        """Pre-install Rigour CLI in background while agents execute.
+
+        This runs alongside the planner/coder so the CLI is ready
+        by the time quality gates need it. Eliminates 30-60s first-run lag.
+        """
+        try:
+            await RigourQualityGate.ensure_binary()
+        except Exception as e:
+            logger.debug("Rigour prefetch failed (non-fatal): %s", e)
 
     @staticmethod
     def _extract_files_changed(agent_outputs: Any) -> list[str]:

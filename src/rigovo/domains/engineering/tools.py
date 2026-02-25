@@ -21,7 +21,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
     "planner": ["read_file", "list_directory", "search_codebase", "read_dependencies"],
     "coder": [
         "read_file", "write_file", "list_directory", "search_codebase",
-        "run_command", "read_dependencies",
+        "run_command", "read_dependencies", "spawn_subtask",
     ],
     "reviewer": ["read_file", "list_directory", "search_codebase"],
     "security": ["read_file", "search_codebase", "run_command"],
@@ -123,6 +123,38 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
         "parameters": {
             "type": "object",
             "properties": {},
+        },
+    },
+    "spawn_subtask": {
+        "name": "spawn_subtask",
+        "description": (
+            "Spawn a sub-agent to handle a specific subtask in parallel. "
+            "Use this when a task can be decomposed into independent pieces. "
+            "For example, 'implement auth module' and 'add API endpoint' can "
+            "run as separate sub-agents simultaneously. Each sub-agent has "
+            "full access to read_file, write_file, search_codebase, and "
+            "run_command. Returns the sub-agent's output when complete."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": (
+                        "Clear description of the subtask. Be specific about "
+                        "which files to create/modify and what the expected outcome is."
+                    ),
+                },
+                "files_context": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "List of file paths the sub-agent should read for context "
+                        "before starting work."
+                    ),
+                },
+            },
+            "required": ["description"],
         },
     },
 }

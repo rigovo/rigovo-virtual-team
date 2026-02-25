@@ -17,13 +17,14 @@ class TestCostCalculator:
 
     def test_claude_sonnet_cost(self):
         # 1000 input + 500 output at Sonnet pricing ($3/M input, $15/M output)
-        cost = self.calc.calculate("claude-sonnet-4-5-20250929", 1000, 500)
+        cost = self.calc.calculate("claude-sonnet-4-6", 1000, 500)
         expected = (1000 / 1_000_000) * 3.00 + (500 / 1_000_000) * 15.00
         assert cost == round(expected, 6)
 
     def test_gpt4o_cost(self):
         cost = self.calc.calculate("gpt-4o", 2000, 1000)
-        expected = (2000 / 1_000_000) * 2.50 + (1000 / 1_000_000) * 10.00
+        # GPT-4o pricing: $5.00/M input, $15.00/M output (Feb 2026)
+        expected = (2000 / 1_000_000) * 5.00 + (1000 / 1_000_000) * 15.00
         assert cost == round(expected, 6)
 
     def test_unknown_model_uses_default(self):
@@ -37,7 +38,7 @@ class TestCostCalculator:
 
     def test_estimate_task_cost(self):
         estimate = self.calc.estimate_task_cost(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             agent_count=3,
             avg_tokens_per_agent=4000,
         )

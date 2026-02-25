@@ -84,6 +84,71 @@ ROLE_REQUIREMENTS: dict[str, tuple[Capability, ...]] = {
     "sre": (Capability.TEMPLATING,),
 }
 
+# ---------------------------------------------------------------------------
+# Per-role default model selection
+# ---------------------------------------------------------------------------
+# Rigovo defaults to the BEST model for each role — superintelligence first.
+# Core roles (planner, coder) → Opus 4.6 (best intelligence, built for agents)
+# Lead → Opus 4.6 (architectural decisions need the strongest reasoning)
+# Reviewer → Sonnet 4.6 (needs analysis but not full Opus power)
+# Budget roles (qa, security, devops, sre, docs) → Haiku 4.5 (fast, cheap)
+#
+# Users can override via rigovo.yml — this is just the intelligent default.
+# The system is provider-agnostic: if user has only OpenAI key, the catalog
+# resolves GPT-5 for standard tier, GPT-5-mini for budget tier, etc.
+
+ROLE_DEFAULT_MODELS: dict[str, str] = {
+    "lead": "claude-opus-4-6",               # Best reasoning for arch decisions
+    "planner": "claude-sonnet-4-6",           # Planning: Sonnet is fast + smart enough
+    "coder": "claude-opus-4-6",              # Coding: Opus = best agent model
+    "reviewer": "claude-sonnet-4-6",          # Code review needs analysis, Sonnet suffices
+    "security": "claude-haiku-4-5-20251001",  # Checklist-based audit
+    "qa": "claude-haiku-4-5-20251001",        # Test generation is formulaic
+    "devops": "claude-haiku-4-5-20251001",    # Template-based configs
+    "sre": "claude-haiku-4-5-20251001",       # Template-based configs
+    "docs": "claude-haiku-4-5-20251001",      # Text generation
+}
+
+
+def resolve_model_for_role(
+    role_id: str,
+    user_model: str = "",
+    available_providers: set[Provider] | None = None,
+) -> str:
+    """Resolve the best model for a given agent role.
+
+    Priority:
+    1. User-specified model (from CLI flag or config) — always wins
+    2. Role default from ROLE_DEFAULT_MODELS
+    3. Fallback to claude-sonnet-4-6 (latest standard tier)
+
+    Args:
+        role_id: The agent role (e.g., "coder", "reviewer").
+        user_model: Optional user-override model ID.
+        available_providers: Optional set of available providers to filter by.
+
+    Returns:
+        Model ID string.
+    """
+    if user_model:
+        return user_model
+
+    default = ROLE_DEFAULT_MODELS.get(role_id, "claude-sonnet-4-6")
+
+    # If the user only has certain providers, check the default is compatible
+    if available_providers:
+        spec = get_model(default)
+        if spec and spec.provider not in available_providers:
+            # Fall back to preset recommendation for this role
+            reqs = ROLE_REQUIREMENTS.get(role_id, (Capability.CODING,))
+            tier = "budget" if role_id in {"reviewer", "qa", "security", "devops", "sre", "docs"} else "standard"
+            alt = _pick_best(reqs, tier, available_providers)
+            if alt:
+                return alt.id
+
+    return default
+
+
 ROLE_TOKEN_ESTIMATES: dict[str, tuple[int, int]] = {
     "lead": (4000, 2000),
     "planner": (6000, 3000),

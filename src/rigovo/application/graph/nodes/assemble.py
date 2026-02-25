@@ -56,10 +56,17 @@ async def assemble_node(
         "agent_outputs": {},
         "retry_count": 0,
         "status": "assembled",
-        "events": state.get("events", []) + [{
-            "type": "pipeline_assembled",
-            "agent_count": pipeline.agent_count,
-            "roles": pipeline.roles,
-            "gates_after": pipeline.gates_after,
-        }],
+        "events": state.get("events", []) + [
+            {
+                "type": "pipeline_assembled",
+                "agent_count": pipeline.agent_count,
+                "roles": pipeline.roles,
+                "gates_after": pipeline.gates_after,
+                # Agent → LLM mapping for transparency (shown in TUI)
+                "agent_models": {
+                    role: config.get("llm_model", "unknown")
+                    for role, config in agent_configs.items()
+                },
+            },
+        ],
     }

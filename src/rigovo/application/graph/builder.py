@@ -26,6 +26,8 @@ from rigovo.application.graph.edges import (
     check_gates_and_route,
     check_pipeline_complete,
     advance_to_next_agent,
+    check_debate_needed,
+    prepare_debate_round,
 )
 from rigovo.application.graph.nodes.scan_project import scan_project_node
 from rigovo.application.graph.nodes.classify import classify_node
@@ -68,7 +70,7 @@ class GraphBuilder:
         agents: list[Agent] | None = None,
         approval_handler: Callable[[TaskState], dict[str, Any]] | None = None,
         auto_approve: bool = True,
-        enable_parallel: bool = False,
+        enable_parallel: bool = True,   # ON by default — the magic
         stream_callback: Any | None = None,
     ) -> None:
         self._llm_factory = llm_factory
@@ -186,6 +188,38 @@ class GraphBuilder:
         async def _finalize(state: TaskState) -> dict:
             return await finalize_node(state)
 
+        async def _parallel_fan_out(state: TaskState) -> dict:
+            """Execute all remaining parallelizable agents simultaneously."""
+            team_config = state.get("team_config", {})
+            pipeline_order = team_config.get("pipeline_order", [])
+            current_index = state.get("current_agent_index", 0)
+            remaining_roles = pipeline_order[current_index + 1:]
+
+            # Emit parallel_started event
+            events = list(state.get("events", []))
+            events.append({
+                "type": "parallel_started",
+                "roles": remaining_roles,
+            })
+
+            result = await execute_agents_parallel(
+                {**state, "events": events},
+                remaining_roles,
+                llm_factory,
+                cost_calc,
+                stream_cb,
+            )
+
+            # Add parallel_complete event and advance index to end of pipeline
+            result_events = list(result.get("events", []))
+            result_events.append({"type": "parallel_complete"})
+            result["events"] = result_events
+            result["current_agent_index"] = len(pipeline_order) - 1
+            return result
+
+        async def _prepare_debate(state: TaskState) -> dict:
+            return prepare_debate_round(state)
+
         # --- Register nodes ---
         graph.add_node("scan_project", _scan_project)
         graph.add_node("classify", _classify)
@@ -194,12 +228,15 @@ class GraphBuilder:
         graph.add_node("execute_agent", _execute_agent)
         graph.add_node("quality_check", _quality_check)
         graph.add_node("route_next", _route_next)
+        graph.add_node("parallel_fan_out", _parallel_fan_out)
+        graph.add_node("debate_check", _prepare_debate)  # Debate prep node
         graph.add_node("commit_approval", _commit_approval)
         graph.add_node("enrich", _enrich)
         graph.add_node("store_memory", _store_memory)
         graph.add_node("finalize", _finalize)
 
         # --- Edges ---
+        # Pipeline: scan → classify → assemble → plan_approval
         graph.add_edge(START, "scan_project")
         graph.add_edge("scan_project", "classify")
         graph.add_edge("classify", "assemble")
@@ -210,6 +247,7 @@ class GraphBuilder:
             "rejected": "finalize",
         })
 
+        # Agent execution → quality gates
         graph.add_edge("execute_agent", "quality_check")
 
         graph.add_conditional_edges("quality_check", check_gates_and_route, {
@@ -218,10 +256,21 @@ class GraphBuilder:
             "fail_max_retries": "finalize",
         })
 
+        # After routing: sequential, parallel fan-out, or done
         graph.add_conditional_edges("route_next", check_pipeline_complete, {
             "more_agents": "execute_agent",
+            "parallel_fan_out": "parallel_fan_out",
             "pipeline_done": "commit_approval",
         })
+
+        # After parallel fan-out: check if reviewer wants debate
+        graph.add_conditional_edges("parallel_fan_out", check_debate_needed, {
+            "debate_needed": "debate_check",
+            "debate_done": "commit_approval",
+        })
+
+        # Debate check preps coder re-execution with reviewer feedback
+        graph.add_edge("debate_check", "execute_agent")
 
         graph.add_conditional_edges("commit_approval", check_approval, {
             "approved": "enrich",

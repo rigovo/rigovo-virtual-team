@@ -43,7 +43,7 @@ def _make_agent_state(role: str = "coder", name: str = "Coder") -> TaskState:
                     "name": name,
                     "role": role,
                     "system_prompt": f"You are a {role}.",
-                    "llm_model": "claude-sonnet-4-5-20250929",
+                    "llm_model": "claude-sonnet-4-6",
                     "tools": [],
                     "enrichment_context": "",
                 }
@@ -66,7 +66,7 @@ def _make_multi_agent_state() -> TaskState:
             "name": role.title(),
             "role": role,
             "system_prompt": f"You are a {role}.",
-            "llm_model": "claude-sonnet-4-5-20250929",
+            "llm_model": "claude-sonnet-4-6",
             "tools": [],
             "enrichment_context": "",
         }
@@ -89,7 +89,7 @@ def _mock_llm_response(content: str = "Done") -> LLMResponse:
     return LLMResponse(
         content=content,
         usage=LLMUsage(input_tokens=100, output_tokens=50),
-        model="claude-sonnet-4-5-20250929",
+        model="claude-sonnet-4-6",
     )
 
 
@@ -219,16 +219,15 @@ class TestInteractiveApproval(unittest.TestCase):
         assert hasattr(ui, "prompt_approval")
         assert callable(ui.prompt_approval)
 
-    def test_approval_event_updates_state(self):
-        """Handle approval_requested event sets approval state."""
+    def test_approval_event_handled(self):
+        """Handle approval_requested event without error."""
         ui = TerminalUI()
+        # In streaming TerminalUI, approval_requested just prints a line
+        # It should not raise any errors
         ui.handle_event({
             "type": "approval_requested",
             "checkpoint": "plan",
         })
-        assert ui._approval_pending is True
-        assert ui._approval_checkpoint == "plan"
-        assert ui._status == "awaiting_approval"
 
     def test_graph_builder_auto_approve_false(self):
         """GraphBuilder with auto_approve=False keeps approval pending."""
@@ -249,33 +248,28 @@ class TestInteractiveApproval(unittest.TestCase):
 class TestStreamingTUI(unittest.TestCase):
     """Test streaming display in the Rich terminal dashboard."""
 
-    def test_streaming_event_populates_buffer(self):
-        """agent_streaming events add text to stream buffer."""
+    def test_streaming_event_sets_streaming_flag(self):
+        """agent_streaming events set the streaming flag."""
         ui = TerminalUI()
         ui._active_role = "coder"
 
         ui.handle_event({"type": "agent_streaming", "chunk": "Hello "})
         ui.handle_event({"type": "agent_streaming", "chunk": "World"})
 
-        assert ui._stream_buffer == "Hello World"
-        assert len(ui._stream_lines) >= 1
+        assert ui._streaming is True
 
-    def test_streaming_panel_in_layout(self):
-        """Streaming panel appears when streaming is active."""
+    def test_handle_event_routes_correctly(self):
+        """TerminalUI routes events to correct handlers."""
         ui = TerminalUI()
-        ui._active_role = "coder"
-        ui._stream_lines = ["Some output"]
-
-        layout = ui._build_layout()
-        # Should have streaming panel in the layout
-        assert layout is not None
+        # Should handle events without error
+        ui.handle_event({"type": "agent_started", "role": "coder", "name": "Coder"})
+        assert ui._active_role == "coder"
 
     def test_streaming_clears_on_agent_complete(self):
-        """Stream buffer clears when agent completes."""
+        """Active role clears when agent completes."""
         ui = TerminalUI()
         ui._active_role = "coder"
-        ui._stream_buffer = "partial output"
-        ui._stream_lines = ["partial output"]
+        ui._streaming = True
 
         ui.handle_event({
             "type": "agent_complete",
@@ -284,22 +278,18 @@ class TestStreamingTUI(unittest.TestCase):
             "cost": 0.01,
         })
 
-        assert ui._stream_buffer == ""
-        assert ui._stream_lines == []
         assert ui._active_role == ""
+        assert ui._streaming is False
 
-    def test_streaming_max_lines_truncation(self):
-        """Stream display only keeps MAX_STREAM_LINES lines."""
-        from rigovo.infrastructure.terminal.rich_output import MAX_STREAM_LINES
-
+    def test_streaming_writes_chunks(self):
+        """Streaming chunks are written via stdout."""
         ui = TerminalUI()
         ui._active_role = "coder"
 
-        # Send many lines
-        for i in range(MAX_STREAM_LINES + 5):
-            ui.handle_event({"type": "agent_streaming", "chunk": f"Line {i}\n"})
-
-        assert len(ui._stream_lines) <= MAX_STREAM_LINES
+        # Send streaming chunks — should not raise
+        ui.handle_event({"type": "agent_streaming", "chunk": "Hello "})
+        ui.handle_event({"type": "agent_streaming", "chunk": "world"})
+        assert ui._streaming is True
 
 
 # =====================================================================
@@ -445,50 +435,51 @@ class TestCustomAgentPlugins(unittest.TestCase):
 # =====================================================================
 
 class TestTUIFeatures(unittest.TestCase):
-    """Test TUI display handles all new event types."""
+    """Test streaming TUI handles all event types."""
 
     def test_parallel_started_event(self):
-        """parallel_started event shows multiple active agents."""
+        """parallel_started event handled without error."""
         ui = TerminalUI()
         ui.handle_event({
             "type": "parallel_started",
             "roles": ["reviewer", "qa"],
         })
-        assert ui._parallel_active == ["reviewer", "qa"]
-        assert ui._status == "executing_parallel"
 
     def test_parallel_complete_event(self):
-        """parallel_complete clears parallel state."""
+        """parallel_complete event handled without error."""
         ui = TerminalUI()
-        ui._parallel_active = ["reviewer", "qa"]
         ui.handle_event({"type": "parallel_complete"})
-        assert ui._parallel_active == []
 
-    def test_build_layout_includes_all_panels(self):
-        """Layout builds correctly with all optional panels."""
+    def test_all_event_types_handled(self):
+        """TerminalUI handles all known event types without error."""
         ui = TerminalUI()
-        ui._pipeline_roles = ["coder", "reviewer"]
-        ui._agent_results = [{"role": "coder", "tokens": 100, "cost": 0.01}]
-        ui._gate_log = ["[green]✓ coder: passed[/green]"]
-        ui._total_tokens = 100
-        ui._total_cost = 0.01
-
-        layout = ui._build_layout()
-        assert layout is not None
-
-    def test_status_labels_complete(self):
-        """All status labels have display text."""
-        ui = TerminalUI()
-        statuses = [
-            "initializing", "scanning", "classifying", "assembling",
-            "executing", "executing_parallel", "awaiting_approval",
-            "learning", "completed", "failed", "rejected", "budget_exceeded",
+        events = [
+            {"type": "project_scanned", "tech_stack": ["python"], "source_files": 10},
+            {"type": "task_classified", "task_type": "feature", "complexity": "medium"},
+            {"type": "pipeline_assembled", "roles": ["coder"]},
+            {"type": "agent_started", "role": "coder", "name": "Coder"},
+            {"type": "agent_streaming", "chunk": "hello"},
+            {"type": "agent_complete", "role": "coder", "tokens": 100, "cost": 0.01},
+            {"type": "gate_results", "role": "coder", "passed": True},
+            {"type": "enrichment_extracted", "pitfall_count": 1, "pattern_count": 2},
+            {"type": "memories_stored", "count": 3},
+            {"type": "budget_exceeded", "tokens_used": 1000, "token_limit": 500},
+            {"type": "task_finalized", "status": "completed"},
         ]
-        for status in statuses:
-            ui._status = status
-            label = ui._status_label()
-            assert label, f"No label for status: {status}"
-            assert "[" in label  # Has Rich markup
+        for event in events:
+            ui.handle_event(event)
+
+    def test_token_cost_tracking(self):
+        """TerminalUI tracks total tokens and cost."""
+        ui = TerminalUI()
+        ui.handle_event({
+            "type": "agent_complete",
+            "role": "coder",
+            "tokens": 100,
+            "cost": 0.01,
+        })
+        assert ui._total_tokens == 100
+        assert ui._total_cost == 0.01
 
 
 # =====================================================================

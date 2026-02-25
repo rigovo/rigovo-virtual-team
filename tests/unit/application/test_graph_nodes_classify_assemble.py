@@ -129,7 +129,7 @@ class TestAssembleNode(unittest.IsolatedAsyncioTestCase):
         agent1.name = "Backend Engineer"
         agent1.role = "backend"
         agent1.system_prompt = "You are a backend engineer."
-        agent1.llm_model = "claude-sonnet-4-5-20250929"
+        agent1.llm_model = "claude-sonnet-4-6"
         agent1.tools = []
         agent1.enrichment = MagicMock()
         agent1.enrichment.to_prompt_section.return_value = "Backend context"
@@ -139,7 +139,7 @@ class TestAssembleNode(unittest.IsolatedAsyncioTestCase):
         agent2.name = "Frontend Engineer"
         agent2.role = "frontend"
         agent2.system_prompt = "You are a frontend engineer."
-        agent2.llm_model = "claude-sonnet-4-5-20250929"
+        agent2.llm_model = "claude-sonnet-4-6"
         agent2.tools = []
         agent2.enrichment = MagicMock()
         agent2.enrichment.to_prompt_section.return_value = "Frontend context"

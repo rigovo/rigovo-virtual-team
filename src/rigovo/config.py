@@ -22,7 +22,7 @@ from rigovo.config_schema import RigovoConfig, load_rigovo_yml
 class LLMConfig(BaseSettings):
     """LLM provider configuration. Loaded from environment variables."""
 
-    model: str = Field(default="claude-sonnet-4-5-20250929", alias="LLM_MODEL")
+    model: str = Field(default="claude-sonnet-4-6", alias="LLM_MODEL")
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY")

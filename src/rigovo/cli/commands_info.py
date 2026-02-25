@@ -303,8 +303,10 @@ def _show_agents_table(plugin, roles, team_cfg) -> None:
         tool_count = len(plugin.get_tools(role.role_id))
 
         short_model = (
-            model.replace("claude-sonnet-4-5-20250929", "sonnet-4.5")
-            .replace("claude-opus-4-5-20251101", "opus-4.5")
+            model.replace("claude-opus-4-6", "opus-4.6")
+            .replace("claude-sonnet-4-6", "sonnet-4.6")
+            .replace("claude-opus-4-5-20250624", "opus-4.5")
+            .replace("claude-sonnet-4-5-20250929", "sonnet-4.5")
             .replace("claude-haiku-4-5-20251001", "haiku-4.5")
         )
 

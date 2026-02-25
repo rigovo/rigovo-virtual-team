@@ -142,7 +142,7 @@ Rigovo — Agents
   Software Engineer (coder)
   Implements code changes following the plan. Writes production-quality code.
 
-  Model:          claude-sonnet-4-5-20250929
+  Model:          claude-sonnet-4-6
   Produces code:  Yes
   Pipeline order: 1
   Tools:          read_file, write_file, list_directory, search_codebase,

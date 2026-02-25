@@ -6,7 +6,7 @@ from typing import Any
 
 from rigovo.application.graph.state import TaskState
 from rigovo.domain.interfaces.quality_gate import QualityGate, GateInput
-from rigovo.domain.entities.quality import GateStatus, FixPacket, FixItem
+from rigovo.domain.entities.quality import GateStatus, FixPacket, FixItem, Violation, ViolationSeverity
 
 
 async def quality_check_node(
@@ -38,6 +38,52 @@ async def quality_check_node(
     # Get files changed by the current agent
     agent_output = state.get("agent_outputs", {}).get(current_role, {})
     files_changed = agent_output.get("files_changed", [])
+
+    # Code-producing agents MUST produce files. If they didn't, that's a failure.
+    code_producing_roles = {"coder", "qa", "devops", "sre"}
+    if current_role in code_producing_roles and not files_changed:
+        violation = Violation(
+            gate_id="no-files-produced",
+            message=f"Agent '{current_role}' is expected to produce code but wrote 0 files",
+            severity=ViolationSeverity.ERROR,
+            suggestion="Use the write_file tool to create or modify files",
+        )
+        retry_count = state.get("retry_count", 0) + 1
+        max_retries = state.get("max_retries", 5)
+
+        fix_packet = FixPacket(
+            items=[
+                FixItem(
+                    gate_id=violation.gate_id,
+                    file_path="",
+                    message=violation.message,
+                    suggestion=violation.suggestion or "",
+                    severity=violation.severity,
+                )
+            ],
+            attempt=retry_count,
+            max_attempts=max_retries,
+        )
+
+        return {
+            "gate_results": {
+                "status": GateStatus.FAILED,
+                "passed": False,
+                "gates_run": 1,
+                "gates_passed": 0,
+                "violation_count": 1,
+            },
+            "fix_packets": state.get("fix_packets", []) + [fix_packet.to_prompt()],
+            "retry_count": retry_count,
+            "status": f"gate_failed_{current_role}",
+            "events": state.get("events", []) + [{
+                "type": "gate_results",
+                "role": current_role,
+                "passed": False,
+                "gates_run": 1,
+                "violations": 1,
+            }],
+        }
 
     gate_input = GateInput(
         project_root=state.get("project_root", "."),

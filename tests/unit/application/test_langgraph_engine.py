@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,31 @@ class _MockLLM:
             ])
         # Agent execution prompt (anything else)
         else:
+            # If tools are provided, simulate a write_file tool call on first invocation
+            # then return text on follow-up (after tool results)
+            has_tool_result = any(
+                isinstance(m.get("content"), list)
+                and any(
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in m.get("content", [])
+                )
+                for m in messages
+            )
+            if tools and not has_tool_result:
+                # First call with tools: return a write_file tool call
+                return LLMResponse(
+                    content="",
+                    usage=LLMUsage(input_tokens=80, output_tokens=40),
+                    model=self.model_name,
+                    tool_calls=[{
+                        "id": "toolu_mock_01",
+                        "name": "write_file",
+                        "input": {
+                            "path": "src/feature.py",
+                            "content": "# Implemented feature\ndef feature():\n    pass\n",
+                        },
+                    }],
+                )
             content = "Implemented the requested feature. All files updated."
 
         return LLMResponse(
@@ -78,13 +104,21 @@ _ROLE_ORDER = {"lead": 0, "planner": 1, "coder": 2, "reviewer": 3, "qa": 4, "sec
 
 def _make_mock_agent(role: str, name: str) -> Agent:
     """Create a mock Agent entity for testing."""
+    # Default tools by role (matching domains/engineering/tools.py)
+    default_tools = {
+        "coder": ["read_file", "write_file", "list_directory", "search_codebase", "run_command"],
+        "planner": ["read_file", "list_directory", "search_codebase"],
+        "reviewer": ["read_file", "list_directory", "search_codebase"],
+        "qa": ["read_file", "write_file", "list_directory", "search_codebase", "run_command"],
+        "security": ["read_file", "search_codebase", "run_command"],
+    }
     agent = MagicMock(spec=Agent)
     agent.id = f"agent-{role}"
     agent.name = name
     agent.role = role
     agent.system_prompt = f"You are the {name}."
     agent.llm_model = "mock-model"
-    agent.tools = []
+    agent.tools = default_tools.get(role, [])
     agent.is_active = True
     agent.pipeline_order = _ROLE_ORDER.get(role, 10)
     agent.enrichment = MagicMock()
@@ -165,12 +199,15 @@ class TestLangGraphExecution(unittest.IsolatedAsyncioTestCase):
             auto_approve=True,
         )
 
+    def setUp(self):
+        self._tmp_dir = tempfile.mkdtemp(prefix="rigovo_test_")
+
     def _make_initial_state(self) -> TaskState:
         return {
             "task_id": "test-task-001",
             "workspace_id": "ws-001",
             "description": "Add JWT authentication to the API",
-            "project_root": ".",
+            "project_root": self._tmp_dir,
             "team_config": {},
             "current_agent_index": 0,
             "current_agent_role": "",

@@ -120,7 +120,7 @@ class Agent:
 
     # Configuration
     system_prompt: str = ""
-    llm_model: str = "claude-sonnet-4-5-20250929"
+    llm_model: str = "claude-sonnet-4-6"
     tools: list[str] = field(default_factory=list)
     custom_rules: list[str] = field(default_factory=list)
 

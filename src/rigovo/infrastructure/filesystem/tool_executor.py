@@ -14,6 +14,18 @@ from rigovo.infrastructure.filesystem.command_runner import CommandRunner
 
 logger = logging.getLogger(__name__)
 
+# Maximum characters in a tool result before truncation.
+# Prevents 50KB+ file reads from blowing up context windows.
+MAX_TOOL_RESULT_CHARS = 30_000
+
+
+def _truncate_result(result_str: str) -> str:
+    """Truncate tool result if it exceeds MAX_TOOL_RESULT_CHARS."""
+    if len(result_str) <= MAX_TOOL_RESULT_CHARS:
+        return result_str
+    truncated = result_str[:MAX_TOOL_RESULT_CHARS]
+    return truncated + f"\n... [truncated, {len(result_str):,} chars total]"
+
 
 class ToolExecutor:
     """
@@ -57,7 +69,8 @@ class ToolExecutor:
 
         try:
             result = handler(tool_input)
-            return json.dumps(result, default=str)
+            result_str = json.dumps(result, default=str)
+            return _truncate_result(result_str)
         except Exception as e:
             logger.exception("Tool execution error: %s", tool_name)
             return json.dumps({"error": f"Tool execution failed: {e}"})

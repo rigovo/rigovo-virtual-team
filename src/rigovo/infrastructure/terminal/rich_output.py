@@ -101,6 +101,7 @@ class TerminalUI:
             "task_failed": self._on_failed,
             "parallel_started": self._on_parallel_started,
             "parallel_complete": self._on_parallel_complete,
+            "debate_round": self._on_debate_round,
         }.get(event_type)
 
         if handler:
@@ -132,11 +133,51 @@ class TerminalUI:
 
     def _on_assembled(self, e: dict) -> None:
         roles = e.get("roles", [])
+        agent_models = e.get("agent_models", {})
         pipeline_str = " [dim]\u2192[/dim] ".join(
             f"{ROLE_ICONS.get(r, chr(0x2699))} [bold]{r}[/bold]" for r in roles
         )
         self.console.print(f"  [cyan]\U0001f527 Pipeline:[/cyan] {pipeline_str}")
+
+        # Show which LLM powers each agent — transparency for the user
+        if agent_models:
+            for role in roles:
+                model = agent_models.get(role, "default")
+                icon = ROLE_ICONS.get(role, "\u2699")
+                # Shorten model IDs for display (e.g., "claude-sonnet-4-5-20250929" → "sonnet-4.5")
+                short = self._shorten_model_name(model)
+                self.console.print(
+                    f"     [dim]{icon} {role} \u2192 {short}[/dim]"
+                )
         self.console.print()
+
+    @staticmethod
+    def _shorten_model_name(model_id: str) -> str:
+        """Shorten a model ID for compact TUI display."""
+        shortcuts = {
+            # Anthropic
+            "claude-opus-4-6": "Claude Opus 4.6",
+            "claude-sonnet-4-6": "Claude Sonnet 4.6",
+            "claude-opus-4-5-20250624": "Claude Opus 4.5",
+            "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
+            "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+            # OpenAI
+            "gpt-5": "GPT-5",
+            "gpt-5-mini": "GPT-5 Mini",
+            "gpt-4o": "GPT-4o",
+            "gpt-4o-mini": "GPT-4o Mini",
+            "o1": "o1",
+            "o3-mini": "o3-mini",
+            # Google
+            "gemini-2.5-pro": "Gemini 2.5 Pro",
+            "gemini-2.5-flash": "Gemini 2.5 Flash",
+            # DeepSeek
+            "deepseek-chat": "DeepSeek V3.2",
+            "deepseek-reasoner": "DeepSeek R1",
+            # Mistral
+            "mistral-large-latest": "Mistral Large 3",
+        }
+        return shortcuts.get(model_id, model_id)
 
     def _on_agent_started(self, e: dict) -> None:
         self._end_stream()
@@ -183,6 +224,7 @@ class TerminalUI:
         cost = e.get("cost", 0.0)
         duration_ms = e.get("duration_ms", 0)
         duration_s = duration_ms / 1000 if duration_ms else 0
+        files_changed = e.get("files_changed", [])
 
         self._total_tokens += tokens
         self._total_cost += cost
@@ -192,6 +234,13 @@ class TerminalUI:
             f"  [green]\u2713 {icon} {role}[/green] "
             f"[dim]{tokens:,} tok \u2502 ${cost:.4f} \u2502 {duration_s:.1f}s[/dim]"
         )
+        if files_changed:
+            self.console.print(
+                f"  [dim]  \u2514\u2500 {len(files_changed)} file(s): "
+                + ", ".join(files_changed[:5])
+                + (" ..." if len(files_changed) > 5 else "")
+                + "[/dim]"
+            )
         self.console.print()
 
     def _on_agent_timeout(self, e: dict) -> None:
@@ -268,6 +317,17 @@ class TerminalUI:
         self.console.print(
             "  [magenta]\u2713 Parallel execution complete[/magenta]"
         )
+        self.console.print()
+
+    def _on_debate_round(self, e: dict) -> None:
+        debate_round = e.get("round", 1)
+        feedback = e.get("reviewer_feedback", "")[:100]
+        self.console.print(
+            f"\n  [bold yellow]\U0001f4ac Debate round {debate_round}:[/bold yellow]"
+            f" Reviewer requested changes"
+        )
+        if feedback:
+            self.console.print(f"     [dim italic]{feedback}...[/dim italic]")
         self.console.print()
 
     # ------------------------------------------------------------------

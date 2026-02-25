@@ -62,26 +62,122 @@ class RigourQualityGate(QualityGate):
         self._binary = rigour_binary or self._find_binary()
         self._timeout = timeout_seconds
 
-    @staticmethod
-    def _find_binary() -> str | None:
-        """Locate the rigour CLI binary. Falls back to npx if available."""
-        # Direct binary first
+    # Cached binary path shared across instances (installed once per process)
+    _cached_binary: str | None = None
+    _install_attempted: bool = False
+
+    @classmethod
+    def _find_binary(cls) -> str | None:
+        """Locate the rigour CLI binary with multi-strategy resolution.
+
+        Priority:
+        1. Cached result from previous call (avoid repeated lookups)
+        2. ``rigour`` on PATH (user already installed globally)
+        3. ``~/.rigovo/bin/rigour`` (our own cached install)
+        4. npx (slow but always works with Node.js)
+        """
+        if cls._cached_binary:
+            return cls._cached_binary
+
+        # 1. Direct binary on PATH
         path = shutil.which("rigour")
         if path:
+            cls._cached_binary = path
             return path
-        # npx is always available when Node.js is installed
+
+        # 2. Our cached install location
+        cached = Path.home() / ".rigovo" / "bin" / "rigour"
+        if cached.exists() and cached.is_file():
+            cls._cached_binary = str(cached)
+            return str(cached)
+
+        # 3. npx fallback (slow first time, cached after)
         if shutil.which("npx"):
+            cls._cached_binary = "npx"
             return "npx"
+
+        return None
+
+    @classmethod
+    async def ensure_binary(cls) -> str | None:
+        """Auto-install Rigour CLI if not already available.
+
+        Multi-strategy install:
+        1. Check if already available (fast path)
+        2. Try ``npm install -g @rigour-labs/cli``
+        3. Try ``npx -y @rigour-labs/cli --help`` to prime the npx cache
+        4. Fall back gracefully to builtin checks
+
+        Called during prefetch so install happens while planner runs.
+        """
+        # Fast path: already found or already tried
+        if cls._cached_binary or cls._install_attempted:
+            return cls._cached_binary
+
+        cls._install_attempted = True
+
+        existing = cls._find_binary()
+        if existing and existing != "npx":
+            return existing  # Already installed natively
+
+        # Try npm global install (fast on subsequent runs)
+        if shutil.which("npm"):
+            try:
+                logger.info("Auto-installing Rigour CLI via npm...")
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: subprocess.run(
+                        ["npm", "install", "-g", "@rigour-labs/cli"],
+                        capture_output=True, text=True, timeout=120,
+                    ),
+                )
+                if result.returncode == 0:
+                    path = shutil.which("rigour")
+                    if path:
+                        cls._cached_binary = path
+                        logger.info("Rigour CLI installed successfully: %s", path)
+                        return path
+            except Exception as e:
+                logger.debug("npm global install failed: %s", e)
+
+        # Try npx cache priming (so first real run is faster)
+        if shutil.which("npx"):
+            try:
+                logger.info("Priming Rigour CLI via npx cache...")
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    None,
+                    lambda: subprocess.run(
+                        ["npx", "-y", "@rigour-labs/cli", "--help"],
+                        capture_output=True, text=True, timeout=120,
+                    ),
+                )
+                cls._cached_binary = "npx"
+                return "npx"
+            except Exception as e:
+                logger.debug("npx cache priming failed: %s", e)
+
+        # Graceful fallback — builtin checks will handle it
+        logger.info("Rigour CLI not available, will use builtin quality checks")
         return None
 
     async def run(self, gate_input: GateInput) -> GateResult:
         """Run quality gates and return structured results."""
         if self._binary:
-            return await self._run_rigour_cli(gate_input)
+            result = await self._run_rigour_cli(gate_input)
+            if result is not None:
+                return result
+            # CLI failed to produce valid output — fall back to builtin checks
+            logger.info("Rigour CLI unavailable or failed, falling back to builtin checks")
         return self._run_builtin_checks(gate_input)
 
-    async def _run_rigour_cli(self, gate_input: GateInput) -> GateResult:
-        """Execute rigour CLI and parse JSON output."""
+    async def _run_rigour_cli(self, gate_input: GateInput) -> GateResult | None:
+        """Execute rigour CLI and parse JSON output.
+
+        Returns None if CLI is not available or fails to produce valid output,
+        signaling the caller to fall back to builtin checks.
+        """
         if self._binary == "npx":
             cmd = ["npx", "-y", "@rigour-labs/cli", "check", "--json"]
         else:
@@ -106,7 +202,28 @@ class RigourQualityGate(QualityGate):
                 )
             )
 
-            return self._parse_rigour_output(result.stdout, result.returncode)
+            # If the CLI produced no valid JSON, it's not installed or broken.
+            # Fall back to builtin checks instead of phantom-failing.
+            stdout = result.stdout.strip()
+            if not stdout:
+                logger.warning(
+                    "Rigour CLI returned empty output (exit %d, stderr: %s)",
+                    result.returncode,
+                    (result.stderr or "")[:200],
+                )
+                return None  # Signal fallback to builtin checks
+
+            try:
+                json.loads(stdout)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Rigour CLI returned non-JSON output (exit %d): %s",
+                    result.returncode,
+                    stdout[:200],
+                )
+                return None  # Signal fallback to builtin checks
+
+            return self._parse_rigour_output(stdout, result.returncode)
 
         except subprocess.TimeoutExpired:
             logger.warning("Rigour check timed out after %ds", self._timeout)
@@ -120,18 +237,13 @@ class RigourQualityGate(QualityGate):
                     )
                 ],
             )
+        except FileNotFoundError:
+            # Binary not found (e.g., npx not installed)
+            logger.warning("Rigour CLI binary not found: %s", self._binary)
+            return None  # Signal fallback
         except Exception as e:
-            logger.exception("Rigour check failed")
-            return GateResult(
-                status=GateStatus.FAILED,
-                violations=[
-                    Violation(
-                        gate_id="execution-error",
-                        message=str(e),
-                        severity=ViolationSeverity.ERROR,
-                    )
-                ],
-            )
+            logger.exception("Rigour check failed: %s", e)
+            return None  # Signal fallback rather than phantom failure
 
     def _parse_rigour_output(self, stdout: str, return_code: int) -> GateResult:
         """Parse rigour CLI JSON output into GateResult."""

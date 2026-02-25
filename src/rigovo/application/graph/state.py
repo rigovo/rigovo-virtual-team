@@ -77,6 +77,11 @@ class TaskState(TypedDict, total=False):
     project_snapshot: Any               # ProjectSnapshot from scanner (set at task start)
     enrichment_updates: list[dict[str, Any]]  # Learnings extracted post-pipeline
 
+    # --- Agent debate ---
+    debate_round: int                   # Current debate iteration (0 = first pass)
+    max_debate_rounds: int              # Max coder↔reviewer iterations (default 2)
+    reviewer_feedback: str              # Reviewer's CHANGES_REQUESTED feedback for coder
+
     # --- Memory ---
     memories_to_store: list[str]        # Memory text to persist post-task
 

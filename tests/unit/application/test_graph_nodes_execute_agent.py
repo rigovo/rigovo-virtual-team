@@ -54,7 +54,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                         "name": "Backend",
                         "role": "backend",
                         "system_prompt": "You are a backend engineer.",
-                        "llm_model": "claude-sonnet-4-5-20250929",
+                        "llm_model": "claude-sonnet-4-6",
                         "tools": [],
                         "enrichment_context": "Context here",
                     }
@@ -68,7 +68,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         mock_response = LLMResponse(
             content="Fixed the login issue",
             usage=LLMUsage(input_tokens=200, output_tokens=100),
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
         )
 
         mock_llm = AsyncMock()
@@ -107,7 +107,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                         "name": "Frontend",
                         "role": "frontend",
                         "system_prompt": "You are a frontend engineer.",
-                        "llm_model": "claude-sonnet-4-5-20250929",
+                        "llm_model": "claude-sonnet-4-6",
                         "tools": [],
                         "enrichment_context": "",
                     }
@@ -125,7 +125,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         mock_response = LLMResponse(
             content="UI implemented",
             usage=LLMUsage(input_tokens=250, output_tokens=75),
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
         )
 
         mock_llm = AsyncMock()
@@ -164,7 +164,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                         "name": "Backend",
                         "role": "backend",
                         "system_prompt": "Fix the code.",
-                        "llm_model": "claude-sonnet-4-5-20250929",
+                        "llm_model": "claude-sonnet-4-6",
                         "tools": [],
                     }
                 }
@@ -178,7 +178,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         mock_response = LLMResponse(
             content="Fixed",
             usage=LLMUsage(input_tokens=300, output_tokens=50),
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
         )
 
         mock_llm = AsyncMock()
@@ -212,7 +212,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                         "name": "Backend",
                         "role": "backend",
                         "system_prompt": "Prompt",
-                        "llm_model": "claude-sonnet-4-5-20250929",
+                        "llm_model": "claude-sonnet-4-6",
                         "tools": [],
                     }
                 }
@@ -225,7 +225,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         mock_response = LLMResponse(
             content="Output",
             usage=LLMUsage(input_tokens=100, output_tokens=50),
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
         )
 
         mock_llm = AsyncMock()

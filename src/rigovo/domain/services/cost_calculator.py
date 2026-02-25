@@ -25,18 +25,31 @@ class ModelPricing:
     """
 
     prices: dict[str, dict[str, float]] = field(default_factory=lambda: {
-        # Anthropic
-        "claude-opus-4-5-20251101": {"input": 15.00, "output": 75.00},
+        # Anthropic (Feb 2026)
+        "claude-opus-4-6": {"input": 5.00, "output": 25.00},
+        "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
+        "claude-opus-4-5-20250624": {"input": 5.00, "output": 25.00},
         "claude-sonnet-4-5-20250929": {"input": 3.00, "output": 15.00},
-        "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
-        # OpenAI
-        "gpt-4o": {"input": 2.50, "output": 10.00},
+        "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
+        # OpenAI (Feb 2026)
+        "gpt-5": {"input": 1.25, "output": 10.00},
+        "gpt-5-mini": {"input": 0.25, "output": 2.00},
+        "gpt-4o": {"input": 5.00, "output": 15.00},
         "gpt-4o-mini": {"input": 0.15, "output": 0.60},
         "o1": {"input": 15.00, "output": 60.00},
-        "o1-mini": {"input": 3.00, "output": 12.00},
-        # Groq (hosted Llama/Mixtral — cheap)
+        "o3-mini": {"input": 1.10, "output": 4.40},
+        # Google (Feb 2026)
+        "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
+        "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
+        # DeepSeek (Feb 2026) — dramatically cheaper
+        "deepseek-chat": {"input": 0.27, "output": 0.42},
+        "deepseek-reasoner": {"input": 0.12, "output": 0.20},
+        # Mistral (Feb 2026)
+        "mistral-large-latest": {"input": 2.00, "output": 6.00},
+        "mistral-medium-latest": {"input": 0.40, "output": 2.00},
+        "codestral-latest": {"input": 0.30, "output": 0.90},
+        # Groq (hosted open-source)
         "llama-3.3-70b-versatile": {"input": 0.59, "output": 0.79},
-        "mixtral-8x7b-32768": {"input": 0.24, "output": 0.24},
         # Ollama (local — free, but track for comparison)
         "ollama/llama3": {"input": 0.0, "output": 0.0},
         "ollama/codellama": {"input": 0.0, "output": 0.0},

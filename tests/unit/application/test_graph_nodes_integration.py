@@ -77,7 +77,7 @@ class TestNodeIntegration(unittest.IsolatedAsyncioTestCase):
         agent.name = "Engineer"
         agent.role = "engineer"
         agent.system_prompt = "You are an engineer."
-        agent.llm_model = "claude-sonnet-4-5-20250929"
+        agent.llm_model = "claude-sonnet-4-6"
         agent.tools = []
         agent.enrichment = MagicMock()
         agent.enrichment.to_prompt_section.return_value = "Context"
@@ -113,7 +113,7 @@ class TestNodeIntegration(unittest.IsolatedAsyncioTestCase):
                         "name": "Backend",
                         "role": "backend",
                         "system_prompt": "Prompt",
-                        "llm_model": "claude-sonnet-4-5-20250929",
+                        "llm_model": "claude-sonnet-4-6",
                         "tools": [],
                     }
                 }
@@ -127,7 +127,7 @@ class TestNodeIntegration(unittest.IsolatedAsyncioTestCase):
         mock_response = LLMResponse(
             content="Completed",
             usage=LLMUsage(input_tokens=100, output_tokens=50),
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
         )
         mock_llm = AsyncMock()
         mock_llm.invoke.return_value = mock_response
