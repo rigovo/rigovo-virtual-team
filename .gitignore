@@ -50,3 +50,6 @@ rigour-fix-packet.json
 # Node (for Rigour CLI)
 node_modules/
 package-lock.json
+
+# Test projects (local E2E testing)
+test-project/

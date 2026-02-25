@@ -53,12 +53,43 @@ class AgentOverride(BaseModel):
     timeout_seconds: int = 300
 
 
+class CustomAgentSchema(BaseModel):
+    """Custom agent plugin defined in rigovo.yml (item 9).
+
+    Allows users to define entirely new agent roles beyond the built-in ones.
+    Custom agents participate in the pipeline like any built-in agent.
+
+    Example in rigovo.yml::
+
+        custom_agents:
+          - id: "i18n"
+            name: "Internationalization Agent"
+            role: "i18n"
+            system_prompt: "You are an expert in i18n..."
+            pipeline_after: "coder"
+    """
+
+    id: str                                      # Unique agent identifier
+    name: str                                    # Display name
+    role: str                                    # Role in pipeline
+    system_prompt: str                           # Full system prompt
+    pipeline_after: str = "coder"                # Insert after this role
+    model: str = ""                              # LLM model override
+    temperature: float = 0.0
+    max_tokens: int = 4096
+    rules: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    timeout_seconds: int = 300
+    parallel: bool = False                       # Can run in parallel group
+
+
 class TeamSchema(BaseModel):
     """Team-level configuration."""
 
     enabled: bool = True
     domain: str = "engineering"
     agents: dict[str, AgentOverride] = Field(default_factory=dict)
+    custom_agents: list[CustomAgentSchema] = Field(default_factory=list)
 
 
 class GateOverride(BaseModel):

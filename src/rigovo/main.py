@@ -56,7 +56,21 @@ def run(
     team: str | None = typer.Option(None, "--team", "-t", help="Target team"),
     offline: bool = typer.Option(False, "--offline", help="No cloud sync"),
     ci: bool = typer.Option(False, "--ci", help="CI mode: non-interactive"),
-    tui: bool = typer.Option(False, "--tui", help="Launch TUI dashboard"),
+    plain: bool = typer.Option(
+        False, "--plain", help="Plain output (no live dashboard)",
+    ),
+    approve: bool = typer.Option(
+        False, "--approve", "-a",
+        help="Interactive approval mode — pause for human approval at checkpoints",
+    ),
+    parallel: bool = typer.Option(
+        False, "--parallel",
+        help="Enable parallel execution for independent agents",
+    ),
+    resume: str | None = typer.Option(
+        None, "--resume", "-r",
+        help="Resume from checkpoint (task ID from a previous crashed run)",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose"),
     project_dir: str | None = typer.Option(
         None, "--project", "-p", help="Project directory",
@@ -77,63 +91,96 @@ def run(
         console.print("  Or run: [bold]rigovo init[/bold]")
         raise typer.Exit(1)
 
-    if tui:
-        from rigovo.infrastructure.terminal.dashboard import run_dashboard
+    # --- Terminal UI setup ---
+    ui = None
+    approval_handler = None
 
-        dashboard = run_dashboard(
-            task_description=description,
-            project_root=str(project_root),
-            budget=container.config.budget.max_cost_per_task if hasattr(container.config, "budget") else 0,
-        )
-        # Wire events to dashboard
-        emitter = container.get_event_emitter()
-        emitter.on_all(
-            lambda data, et: dashboard.call_from_thread(dashboard.handle_event, {**data, "type": et}),
-        )
-        dashboard.run()
-        return
-
-    if not ci:
+    if not ci and not plain:
         from rigovo.infrastructure.terminal.rich_output import TerminalUI
 
         ui = TerminalUI(console)
         emitter = container.get_event_emitter()
 
+        # Subscribe to ALL pipeline events for real-time display
         for event_type in [
-            "task_started", "task_classified", "pipeline_assembled",
-            "agent_complete", "gate_results", "approval_requested",
+            "task_started", "project_scanned", "task_classified",
+            "pipeline_assembled", "agent_started", "agent_streaming",
+            "agent_complete", "agent_timeout", "gate_results",
+            "approval_requested", "enrichment_extracted",
+            "memories_stored", "budget_exceeded",
             "task_finalized", "task_failed",
+            "parallel_started", "parallel_complete",
         ]:
             emitter.on(
                 event_type,
                 lambda data, _et=event_type: ui.handle_event({**data, "type": _et}),
             )
 
+        ui.start(description=description, team=team)
+
+        # --- Item 4: Interactive approval handler ---
+        if approve:
+            def approval_handler(state):
+                checkpoint = state.get("current_checkpoint", "plan")
+                details = ""
+                if checkpoint == "plan":
+                    tc = state.get("team_config", {})
+                    roles = tc.get("pipeline_order", [])
+                    details = f"Pipeline: {' → '.join(roles)}"
+                approved = ui.prompt_approval(checkpoint, details)
+                return {
+                    "approval_status": "approved" if approved else "rejected",
+                    "approval_feedback": "" if approved else "User rejected",
+                }
+    elif not ci:
         console.print("\n[bold blue]Rigovo[/bold blue] — Starting task...\n")
         console.print(f"  [dim]Description:[/dim] {description}")
         if team:
             console.print(f"  [dim]Team:[/dim] {team}")
+        if resume:
+            console.print(f"  [dim]Resuming from:[/dim] {resume}")
+        if parallel:
+            console.print("  [dim]Parallel execution:[/dim] enabled")
         console.print()
 
+    # --- Read parallel setting from config ---
+    enable_parallel = parallel or container.config.yml.orchestration.parallel_agents
+
     try:
-        cmd = container.build_run_task_command(offline=offline)
-        result = asyncio.run(cmd.execute(description=description, team_name=team))
+        cmd = container.build_run_task_command(
+            offline=offline,
+            approval_handler=approval_handler,
+            enable_streaming=not plain and not ci,
+            enable_parallel=enable_parallel,
+            auto_approve=not approve,
+        )
+        result = asyncio.run(
+            cmd.execute(
+                description=description,
+                team_name=team,
+                resume_thread_id=resume,
+            )
+        )
 
         if ci:
             print(json.dumps(result, default=str))
-        elif result["status"] == "failed":
+        elif result["status"] == "failed" and not ui:
             console.print(
                 f"\n[red]Task failed:[/red] {result.get('error', 'Unknown error')}",
             )
             raise typer.Exit(1)
 
     except KeyboardInterrupt:
+        if ui:
+            ui.stop()
         if ci:
             print(json.dumps({"status": "interrupted"}))
         else:
             console.print("\n[yellow]Interrupted by user.[/yellow]")
         raise typer.Exit(130)
     except Exception as e:
+        if ui:
+            ui.stop()
         if ci:
             print(json.dumps({"status": "error", "error": str(e)}))
         elif verbose:
@@ -142,6 +189,8 @@ def run(
             console.print(f"\n[red]Error:[/red] {e}")
         raise typer.Exit(1)
     finally:
+        if ui:
+            ui.stop()
         container.close()
 
 
@@ -162,13 +211,13 @@ def init(
     # 1. Create .rigovo directory
     rigovo_dir = root / ".rigovo"
     rigovo_dir.mkdir(parents=True, exist_ok=True)
-    console.print("  [green]✓[/green] Created .rigovo/ directory")
+    console.print("  [green]\u2713[/green] Created .rigovo/ directory")
 
     # 2. Auto-detect project and generate rigovo.yml
     yml_path = root / "rigovo.yml"
     if yml_path.exists() and not force:
         console.print(
-            "  [dim]⊘ rigovo.yml already exists (use --force to overwrite)[/dim]",
+            "  [dim]\u2298 rigovo.yml already exists (use --force to overwrite)[/dim]",
         )
     else:
         from rigovo.config_schema import detect_project_config, save_rigovo_yml
@@ -177,7 +226,7 @@ def init(
         save_rigovo_yml(detected, root)
 
         proj = detected.project
-        console.print("  [green]✓[/green] Generated rigovo.yml")
+        console.print("  [green]\u2713[/green] Generated rigovo.yml")
         if proj.language:
             console.print(f"    [dim]Language:[/dim]   {proj.language}")
         if proj.framework:
@@ -210,15 +259,15 @@ def init(
             "# RIGOVO_API_KEY=\n"
             "# RIGOVO_WORKSPACE_ID=\n"
         )
-        console.print("  [green]✓[/green] Created .env template")
+        console.print("  [green]\u2713[/green] Created .env template")
     else:
-        console.print("  [dim]⊘ .env already exists[/dim]")
+        console.print("  [dim]\u2298 .env already exists[/dim]")
 
     # 4. Initialize local database
     container = _load_container(root)
     db = container.get_db()
     db.initialize()
-    console.print("  [green]✓[/green] Initialized local database")
+    console.print("  [green]\u2713[/green] Initialized local database")
 
     # 5. Update .gitignore
     _update_gitignore(root)
@@ -273,11 +322,11 @@ def _update_gitignore(root: Path) -> None:
                 for entry in added:
                     f.write(f"{entry}\n")
             console.print(
-                f"  [green]✓[/green] Updated .gitignore (+{', '.join(added)})",
+                f"  [green]\u2713[/green] Updated .gitignore (+{', '.join(added)})",
             )
     else:
         gitignore.write_text("# Rigovo\n.rigovo/\n.env\n")
-        console.print("  [green]✓[/green] Created .gitignore")
+        console.print("  [green]\u2713[/green] Created .gitignore")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -351,6 +352,8 @@ class TestRunTaskCommandUsesLangGraph(unittest.IsolatedAsyncioTestCase):
 
         # RunTaskCommand._run_graph should use langgraph (since it's installed)
         cmd = RunTaskCommand.__new__(RunTaskCommand)
+        cmd._event_emitter = None  # No emitter in test
+        cmd._project_root = Path(".")  # Required for checkpointer path
         state: TaskState = {
             "task_id": "t-1",
             "workspace_id": "ws-1",

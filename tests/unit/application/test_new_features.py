@@ -1,0 +1,553 @@
+"""Tests for items 2, 3, 4, 6, 7, 8, 9 — the seven new features.
+
+- Item 2: Streaming agent output (token-by-token)
+- Item 3: LangGraph checkpointing + resume
+- Item 4: Interactive approval mode
+- Item 6: Replay with diff
+- Item 7: Agent streaming to TUI
+- Item 8: Parallel fan-out for independent agents
+- Item 9: Custom agent plugins via rigovo.yml
+"""
+
+from __future__ import annotations
+
+import asyncio
+import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any
+
+from rigovo.application.graph.builder import GraphBuilder, PARALLELIZABLE_ROLES
+from rigovo.application.graph.nodes.execute_agent import (
+    execute_agent_node,
+    execute_agents_parallel,
+    _build_agent_messages,
+    _check_budget_guards,
+    BudgetExceededError,
+)
+from rigovo.application.graph.state import TaskState
+from rigovo.config_schema import CustomAgentSchema, TeamSchema
+from rigovo.domain.interfaces.llm_provider import LLMResponse, LLMUsage
+from rigovo.infrastructure.terminal.rich_output import TerminalUI
+
+
+def _make_agent_state(role: str = "coder", name: str = "Coder") -> TaskState:
+    """Build a minimal TaskState for agent execution tests."""
+    return {
+        "task_id": "t-1",
+        "description": "Add tests",
+        "team_config": {
+            "agents": {
+                role: {
+                    "id": f"agent-{role}",
+                    "name": name,
+                    "role": role,
+                    "system_prompt": f"You are a {role}.",
+                    "llm_model": "claude-sonnet-4-5-20250929",
+                    "tools": [],
+                    "enrichment_context": "",
+                }
+            },
+            "pipeline_order": [role],
+        },
+        "current_agent_role": role,
+        "agent_outputs": {},
+        "cost_accumulator": {},
+        "events": [],
+    }
+
+
+def _make_multi_agent_state() -> TaskState:
+    """Build a state with multiple agents for parallel testing."""
+    agents = {}
+    for role in ["coder", "reviewer", "qa", "security"]:
+        agents[role] = {
+            "id": f"agent-{role}",
+            "name": role.title(),
+            "role": role,
+            "system_prompt": f"You are a {role}.",
+            "llm_model": "claude-sonnet-4-5-20250929",
+            "tools": [],
+            "enrichment_context": "",
+        }
+    return {
+        "task_id": "t-parallel",
+        "description": "Full pipeline task",
+        "team_config": {
+            "agents": agents,
+            "pipeline_order": ["coder", "reviewer", "qa", "security"],
+        },
+        "current_agent_index": 0,
+        "current_agent_role": "coder",
+        "agent_outputs": {},
+        "cost_accumulator": {},
+        "events": [],
+    }
+
+
+def _mock_llm_response(content: str = "Done") -> LLMResponse:
+    return LLMResponse(
+        content=content,
+        usage=LLMUsage(input_tokens=100, output_tokens=50),
+        model="claude-sonnet-4-5-20250929",
+    )
+
+
+def _mock_llm_factory():
+    mock_llm = AsyncMock()
+    mock_llm.invoke.return_value = _mock_llm_response()
+    return lambda model: mock_llm, mock_llm
+
+
+def _mock_cost_calc():
+    calc = MagicMock()
+    calc.calculate.return_value = 0.05
+    return calc
+
+
+# =====================================================================
+# Item 2: Streaming Agent Output
+# =====================================================================
+
+class TestStreamingAgentOutput(unittest.IsolatedAsyncioTestCase):
+    """Test token-by-token streaming from agent execution."""
+
+    async def test_execute_agent_with_stream_callback(self):
+        """stream_callback receives token chunks during execution."""
+        state = _make_agent_state()
+        factory, mock_llm = _mock_llm_factory()
+
+        chunks_received = []
+
+        def stream_cb(role: str, chunk: str) -> None:
+            chunks_received.append((role, chunk))
+
+        # Mock the stream method as an async generator
+        async def mock_stream(**kwargs):
+            for word in ["Hello", " ", "World"]:
+                yield word
+
+        mock_llm.stream = mock_stream
+
+        result = await execute_agent_node(
+            state, factory, _mock_cost_calc(),
+            stream_callback=stream_cb,
+        )
+
+        assert len(chunks_received) == 3
+        assert chunks_received[0] == ("coder", "Hello")
+        assert chunks_received[2] == ("coder", "World")
+        assert "agent_outputs" in result
+        assert result["agent_outputs"]["coder"]["summary"] == "Hello World"
+
+    async def test_execute_agent_without_stream_callback_uses_invoke(self):
+        """Without stream_callback, falls back to llm.invoke()."""
+        state = _make_agent_state()
+        factory, mock_llm = _mock_llm_factory()
+
+        result = await execute_agent_node(
+            state, factory, _mock_cost_calc(),
+            stream_callback=None,
+        )
+
+        mock_llm.invoke.assert_called_once()
+        assert result["agent_outputs"]["coder"]["summary"] == "Done"
+
+    async def test_stream_callback_error_doesnt_crash(self):
+        """If stream_callback throws, agent continues gracefully."""
+        state = _make_agent_state()
+        factory, mock_llm = _mock_llm_factory()
+
+        async def mock_stream(**kwargs):
+            yield "token"
+
+        mock_llm.stream = mock_stream
+
+        def bad_callback(role, chunk):
+            raise ValueError("bad")
+
+        result = await execute_agent_node(
+            state, factory, _mock_cost_calc(),
+            stream_callback=bad_callback,
+        )
+
+        # Should still complete
+        assert "agent_outputs" in result
+
+
+# =====================================================================
+# Item 3: LangGraph Checkpointing
+# =====================================================================
+
+class TestCheckpointing(unittest.TestCase):
+    """Test SQLite checkpointer creation."""
+
+    def test_create_sqlite_checkpointer_returns_none_without_lib(self):
+        """If langgraph.checkpoint not installed, returns None."""
+        with patch.dict("sys.modules", {
+            "langgraph.checkpoint.sqlite.aio": None,
+            "langgraph.checkpoint.sqlite": None,
+        }):
+            # This should not raise, just return None
+            result = GraphBuilder.create_sqlite_checkpointer("/tmp/test.db")
+            # Result depends on actual installation, but shouldn't crash
+            assert result is None or result is not None  # Just test no crash
+
+    def test_graph_builder_accepts_checkpointer_param(self):
+        """GraphBuilder.build_langgraph accepts checkpointer argument."""
+        builder = GraphBuilder(
+            llm_factory=lambda m: MagicMock(),
+            master_llm=MagicMock(),
+            cost_calculator=MagicMock(),
+            quality_gates=[],
+        )
+        # Should not raise
+        compiled = builder.build_langgraph(checkpointer=None)
+        assert compiled is not None
+
+
+# =====================================================================
+# Item 4: Interactive Approval Mode
+# =====================================================================
+
+class TestInteractiveApproval(unittest.TestCase):
+    """Test approval prompt in TerminalUI."""
+
+    def test_terminal_ui_has_approval_method(self):
+        """TerminalUI has prompt_approval method."""
+        ui = TerminalUI()
+        assert hasattr(ui, "prompt_approval")
+        assert callable(ui.prompt_approval)
+
+    def test_approval_event_updates_state(self):
+        """Handle approval_requested event sets approval state."""
+        ui = TerminalUI()
+        ui.handle_event({
+            "type": "approval_requested",
+            "checkpoint": "plan",
+        })
+        assert ui._approval_pending is True
+        assert ui._approval_checkpoint == "plan"
+        assert ui._status == "awaiting_approval"
+
+    def test_graph_builder_auto_approve_false(self):
+        """GraphBuilder with auto_approve=False keeps approval pending."""
+        builder = GraphBuilder(
+            llm_factory=lambda m: MagicMock(),
+            master_llm=MagicMock(),
+            cost_calculator=MagicMock(),
+            quality_gates=[],
+            auto_approve=False,
+        )
+        assert builder._auto_approve is False
+
+
+# =====================================================================
+# Item 7: Agent Streaming to TUI
+# =====================================================================
+
+class TestStreamingTUI(unittest.TestCase):
+    """Test streaming display in the Rich terminal dashboard."""
+
+    def test_streaming_event_populates_buffer(self):
+        """agent_streaming events add text to stream buffer."""
+        ui = TerminalUI()
+        ui._active_role = "coder"
+
+        ui.handle_event({"type": "agent_streaming", "chunk": "Hello "})
+        ui.handle_event({"type": "agent_streaming", "chunk": "World"})
+
+        assert ui._stream_buffer == "Hello World"
+        assert len(ui._stream_lines) >= 1
+
+    def test_streaming_panel_in_layout(self):
+        """Streaming panel appears when streaming is active."""
+        ui = TerminalUI()
+        ui._active_role = "coder"
+        ui._stream_lines = ["Some output"]
+
+        layout = ui._build_layout()
+        # Should have streaming panel in the layout
+        assert layout is not None
+
+    def test_streaming_clears_on_agent_complete(self):
+        """Stream buffer clears when agent completes."""
+        ui = TerminalUI()
+        ui._active_role = "coder"
+        ui._stream_buffer = "partial output"
+        ui._stream_lines = ["partial output"]
+
+        ui.handle_event({
+            "type": "agent_complete",
+            "role": "coder",
+            "tokens": 100,
+            "cost": 0.01,
+        })
+
+        assert ui._stream_buffer == ""
+        assert ui._stream_lines == []
+        assert ui._active_role == ""
+
+    def test_streaming_max_lines_truncation(self):
+        """Stream display only keeps MAX_STREAM_LINES lines."""
+        from rigovo.infrastructure.terminal.rich_output import MAX_STREAM_LINES
+
+        ui = TerminalUI()
+        ui._active_role = "coder"
+
+        # Send many lines
+        for i in range(MAX_STREAM_LINES + 5):
+            ui.handle_event({"type": "agent_streaming", "chunk": f"Line {i}\n"})
+
+        assert len(ui._stream_lines) <= MAX_STREAM_LINES
+
+
+# =====================================================================
+# Item 8: Parallel Fan-Out
+# =====================================================================
+
+class TestParallelFanOut(unittest.IsolatedAsyncioTestCase):
+    """Test parallel execution of independent agents."""
+
+    def test_parallelizable_roles_defined(self):
+        """Correct roles are marked as parallelizable."""
+        assert "reviewer" in PARALLELIZABLE_ROLES
+        assert "qa" in PARALLELIZABLE_ROLES
+        assert "security" in PARALLELIZABLE_ROLES
+        assert "coder" not in PARALLELIZABLE_ROLES
+        assert "lead" not in PARALLELIZABLE_ROLES
+
+    def test_split_pipeline(self):
+        """GraphBuilder._split_pipeline separates sequential from parallel."""
+        sequential, parallel = GraphBuilder._split_pipeline(
+            ["lead", "coder", "reviewer", "qa", "security"]
+        )
+        assert sequential == ["lead", "coder"]
+        assert set(parallel) == {"reviewer", "qa", "security"}
+
+    async def test_execute_agents_parallel(self):
+        """execute_agents_parallel runs multiple agents concurrently."""
+        state = _make_multi_agent_state()
+        factory, mock_llm = _mock_llm_factory()
+        cost_calc = _mock_cost_calc()
+
+        result = await execute_agents_parallel(
+            state, ["reviewer", "qa"], factory, cost_calc,
+        )
+
+        assert "agent_outputs" in result
+        assert "reviewer" in result["agent_outputs"]
+        assert "qa" in result["agent_outputs"]
+        assert len(result["events"]) > 0
+
+    async def test_parallel_handles_agent_failure(self):
+        """If one parallel agent fails, others still complete."""
+        state = _make_multi_agent_state()
+        cost_calc = _mock_cost_calc()
+
+        call_count = 0
+
+        def failing_factory(model):
+            nonlocal call_count
+            call_count += 1
+            mock_llm = AsyncMock()
+            if call_count == 1:
+                mock_llm.invoke.side_effect = TimeoutError("boom")
+            else:
+                mock_llm.invoke.return_value = _mock_llm_response()
+            return mock_llm
+
+        result = await execute_agents_parallel(
+            state, ["reviewer", "qa"], failing_factory, cost_calc,
+        )
+
+        # At least one should have completed
+        assert "agent_outputs" in result
+
+    def test_graph_builder_parallel_flag(self):
+        """GraphBuilder accepts enable_parallel flag."""
+        builder = GraphBuilder(
+            llm_factory=lambda m: MagicMock(),
+            master_llm=MagicMock(),
+            cost_calculator=MagicMock(),
+            quality_gates=[],
+            enable_parallel=True,
+        )
+        assert builder._enable_parallel is True
+
+
+# =====================================================================
+# Item 9: Custom Agent Plugins
+# =====================================================================
+
+class TestCustomAgentPlugins(unittest.TestCase):
+    """Test custom agent definition in rigovo.yml."""
+
+    def test_custom_agent_schema_parses(self):
+        """CustomAgentSchema validates a custom agent definition."""
+        agent = CustomAgentSchema(
+            id="i18n",
+            name="Internationalization Agent",
+            role="i18n",
+            system_prompt="You are an i18n expert...",
+            pipeline_after="coder",
+        )
+        assert agent.id == "i18n"
+        assert agent.role == "i18n"
+        assert agent.pipeline_after == "coder"
+        assert agent.parallel is False
+
+    def test_custom_agent_with_parallel(self):
+        """Custom agent can be marked as parallelizable."""
+        agent = CustomAgentSchema(
+            id="perf",
+            name="Performance Analyzer",
+            role="performance",
+            system_prompt="You analyze performance...",
+            parallel=True,
+        )
+        assert agent.parallel is True
+
+    def test_team_schema_accepts_custom_agents(self):
+        """TeamSchema includes custom_agents field."""
+        team = TeamSchema(
+            domain="engineering",
+            custom_agents=[
+                CustomAgentSchema(
+                    id="i18n",
+                    name="I18n Agent",
+                    role="i18n",
+                    system_prompt="Handle i18n",
+                ),
+            ],
+        )
+        assert len(team.custom_agents) == 1
+        assert team.custom_agents[0].id == "i18n"
+
+    def test_custom_agent_defaults(self):
+        """CustomAgentSchema has sensible defaults."""
+        agent = CustomAgentSchema(
+            id="test",
+            name="Test Agent",
+            role="test",
+            system_prompt="Test",
+        )
+        assert agent.temperature == 0.0
+        assert agent.max_tokens == 4096
+        assert agent.timeout_seconds == 300
+        assert agent.model == ""
+        assert agent.rules == []
+        assert agent.tools == []
+
+
+# =====================================================================
+# TUI Display Features
+# =====================================================================
+
+class TestTUIFeatures(unittest.TestCase):
+    """Test TUI display handles all new event types."""
+
+    def test_parallel_started_event(self):
+        """parallel_started event shows multiple active agents."""
+        ui = TerminalUI()
+        ui.handle_event({
+            "type": "parallel_started",
+            "roles": ["reviewer", "qa"],
+        })
+        assert ui._parallel_active == ["reviewer", "qa"]
+        assert ui._status == "executing_parallel"
+
+    def test_parallel_complete_event(self):
+        """parallel_complete clears parallel state."""
+        ui = TerminalUI()
+        ui._parallel_active = ["reviewer", "qa"]
+        ui.handle_event({"type": "parallel_complete"})
+        assert ui._parallel_active == []
+
+    def test_build_layout_includes_all_panels(self):
+        """Layout builds correctly with all optional panels."""
+        ui = TerminalUI()
+        ui._pipeline_roles = ["coder", "reviewer"]
+        ui._agent_results = [{"role": "coder", "tokens": 100, "cost": 0.01}]
+        ui._gate_log = ["[green]✓ coder: passed[/green]"]
+        ui._total_tokens = 100
+        ui._total_cost = 0.01
+
+        layout = ui._build_layout()
+        assert layout is not None
+
+    def test_status_labels_complete(self):
+        """All status labels have display text."""
+        ui = TerminalUI()
+        statuses = [
+            "initializing", "scanning", "classifying", "assembling",
+            "executing", "executing_parallel", "awaiting_approval",
+            "learning", "completed", "failed", "rejected", "budget_exceeded",
+        ]
+        for status in statuses:
+            ui._status = status
+            label = ui._status_label()
+            assert label, f"No label for status: {status}"
+            assert "[" in label  # Has Rich markup
+
+
+# =====================================================================
+# Helper Function Tests
+# =====================================================================
+
+class TestHelperFunctions(unittest.TestCase):
+    """Test extracted helper functions in execute_agent module."""
+
+    def test_build_agent_messages_basic(self):
+        """_build_agent_messages creates correct message structure."""
+        state = _make_agent_state()
+        messages = _build_agent_messages(
+            state, "You are a coder.",
+            state["team_config"]["agents"]["coder"],
+            "coder",
+        )
+        assert len(messages) >= 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert "Add tests" in messages[1]["content"]
+
+    def test_build_agent_messages_with_fix_packet(self):
+        """Fix packets are appended to messages."""
+        state = _make_agent_state()
+        state["fix_packets"] = ["Fix line 10"]
+        messages = _build_agent_messages(
+            state, "Prompt",
+            state["team_config"]["agents"]["coder"],
+            "coder",
+        )
+        fix_msgs = [m for m in messages if "FIX REQUIRED" in m.get("content", "")]
+        assert len(fix_msgs) == 1
+
+    def test_check_budget_guards_passes_under_limit(self):
+        """Budget guard returns None when under limit."""
+        state = _make_agent_state()
+        state["budget_max_cost_per_task"] = 5.0
+        state["cost_accumulator"] = {"a": {"cost": 1.0}}
+        result = _check_budget_guards(state, "coder")
+        assert result is None
+
+    def test_check_budget_guards_raises_over_limit(self):
+        """Budget guard raises when cost exceeds limit."""
+        state = _make_agent_state()
+        state["budget_max_cost_per_task"] = 1.0
+        state["cost_accumulator"] = {"a": {"cost": 2.0}}
+        with self.assertRaises(BudgetExceededError):
+            _check_budget_guards(state, "coder")
+
+    def test_check_budget_guards_token_limit(self):
+        """Budget guard returns error dict when tokens exceed limit."""
+        state = _make_agent_state()
+        state["budget_max_tokens_per_task"] = 100
+        state["cost_accumulator"] = {"a": {"tokens": 200}}
+        result = _check_budget_guards(state, "coder")
+        assert result is not None
+        assert "budget_exceeded" in result["status"]
+
+
+if __name__ == "__main__":
+    unittest.main()

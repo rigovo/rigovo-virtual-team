@@ -6,6 +6,7 @@ Modules depend on interfaces, container provides implementations.
 
 from __future__ import annotations
 
+from typing import Any, Callable
 from uuid import UUID
 
 from rigovo.config import AppConfig
@@ -124,7 +125,14 @@ class Container:
         )
         return LocalEmbeddingProvider()
 
-    def build_run_task_command(self, offline: bool = False):
+    def build_run_task_command(
+        self,
+        offline: bool = False,
+        approval_handler: Callable | None = None,
+        enable_streaming: bool = True,
+        enable_parallel: bool = False,
+        auto_approve: bool = True,
+    ):
         """Build a fully-wired RunTaskCommand."""
         from rigovo.application.commands.run_task import RunTaskCommand
 
@@ -145,8 +153,12 @@ class Container:
             domain_plugins=self.domains,
             event_emitter=self.get_event_emitter(),
             db=self.get_db(),
+            approval_handler=approval_handler,
             max_retries=self.config.max_retries,
             offline=offline,
+            enable_streaming=enable_streaming,
+            enable_parallel=enable_parallel,
+            auto_approve=auto_approve,
         )
 
     def close(self) -> None:

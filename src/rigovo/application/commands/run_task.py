@@ -3,6 +3,12 @@
 This is the application-layer entry point for `rigovo run`.
 It wires together classification, routing, assembly, execution,
 quality gates, approval, memory storage, and finalization.
+
+Features:
+- Streaming agent output to terminal (item 2)
+- LangGraph checkpointing for crash recovery (item 3)
+- Interactive approval handler (item 4)
+- Parallel fan-out for independent agents (item 8)
 """
 
 from __future__ import annotations
@@ -45,10 +51,11 @@ class RunTaskCommand:
     Responsibilities:
     - Creates task entity and persists it
     - Builds initial graph state
-    - Runs the graph (sequential or LangGraph)
+    - Runs the graph (LangGraph with checkpointing, or sequential fallback)
+    - Streams agent output to terminal in real-time
+    - Handles interactive approval when --approve is set
     - Emits events for terminal UI
     - Persists results (task, costs, audit)
-    - Syncs to cloud if configured
     """
 
     def __init__(
@@ -66,6 +73,9 @@ class RunTaskCommand:
         approval_handler: Callable | None = None,
         max_retries: int = 3,
         offline: bool = False,
+        enable_streaming: bool = True,
+        enable_parallel: bool = False,
+        auto_approve: bool = True,
     ) -> None:
         self._workspace_id = workspace_id
         self._project_root = project_root
@@ -80,6 +90,9 @@ class RunTaskCommand:
         self._approval_handler = approval_handler
         self._max_retries = max_retries
         self._offline = offline
+        self._enable_streaming = enable_streaming
+        self._enable_parallel = enable_parallel
+        self._auto_approve = auto_approve
 
         # Master Agent sub-services
         self._classifier = TaskClassifier(master_llm)
@@ -96,9 +109,15 @@ class RunTaskCommand:
         self,
         description: str,
         team_name: str | None = None,
+        resume_thread_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute a task end-to-end.
+
+        Args:
+            description: Task description.
+            team_name: Optional target team name.
+            resume_thread_id: Optional thread ID to resume from checkpoint (item 3).
 
         Returns:
             Final state dict with status, costs, files changed, etc.
@@ -117,61 +136,60 @@ class RunTaskCommand:
         if self._task_repo:
             await self._task_repo.save(task)
 
-        await self._emit("task_started", {
+        self._emit_sync("task_started", {
             "task_id": str(task_id),
             "description": description,
         })
 
         # --- 2. Build initial state ---
-        # Resolve team and domain
-        domain_id = "engineering"  # Default; router picks if multiple
+        domain_id = "engineering"
         domain_plugin = self._domain_plugins.get(domain_id)
 
-        # Get agent role definitions from domain plugin
         agent_roles = {}
         if domain_plugin:
             agent_roles = {r.role_id: r for r in domain_plugin.get_agent_roles()}
 
-        # Build initial graph state
         initial_state: TaskState = {
             "task_id": str(task_id),
             "workspace_id": str(self._workspace_id),
             "project_root": str(self._project_root),
             "description": description,
             "domain": domain_id,
-            # Classification (filled by classify node)
             "task_type": None,
             "complexity": None,
-            # Team (filled by assemble node)
             "team_config": {},
             "current_agent_index": 0,
             "current_agent_role": None,
-            # Execution
             "agent_outputs": [],
             "gate_results": {},
             "retry_count": 0,
             "max_retries": self._max_retries,
             "fix_packet": None,
-            # Approval
             "approval_status": None,
             "approval_feedback": None,
             "current_checkpoint": None,
-            # Cost tracking
             "total_tokens": 0,
             "total_cost_usd": 0.0,
             "budget_max_cost_per_task": 2.00,
             "budget_max_tokens_per_task": 200_000,
-            # Memory
             "memories_to_store": [],
-            # Final
             "status": "running",
             "events": [],
         }
 
-        # --- 3. Build agents from domain plugin ---
+        # --- 3. Build agents ---
         agents = self._build_agents(domain_id, agent_roles)
 
-        # --- 4. Build and run graph ---
+        # --- 4. Stream callback for real-time output (item 2) ---
+        stream_callback = None
+        if self._enable_streaming and self._event_emitter:
+            def stream_callback(role: str, chunk: str) -> None:
+                self._emit_sync("agent_streaming", {
+                    "role": role,
+                    "chunk": chunk,
+                })
+
+        # --- 5. Build and run graph ---
         graph_builder = GraphBuilder(
             llm_factory=self._llm_factory,
             master_llm=self._master_llm,
@@ -179,17 +197,22 @@ class RunTaskCommand:
             quality_gates=self._quality_gates,
             agents=agents,
             approval_handler=self._approval_handler,
-            auto_approve=True,  # Non-interactive for now
+            auto_approve=self._auto_approve,
+            enable_parallel=self._enable_parallel,
+            stream_callback=stream_callback,
         )
 
         try:
-            final_state = await self._run_graph(graph_builder, initial_state)
+            final_state = await self._run_graph(
+                graph_builder, initial_state,
+                resume_thread_id=resume_thread_id,
+            )
         except Exception as e:
             logger.exception("Task execution failed: %s", e)
             task.fail()
             if self._task_repo:
                 await self._task_repo.save(task)
-            await self._emit("task_failed", {
+            self._emit_sync("task_failed", {
                 "task_id": str(task_id),
                 "error": str(e),
             })
@@ -199,7 +222,7 @@ class RunTaskCommand:
                 "task_id": str(task_id),
             }
 
-        # --- 5. Update task from final state ---
+        # --- 6. Update task from final state ---
         elapsed_ms = int((time.monotonic() - start_time) * 1000)
         status = final_state.get("status", "completed")
 
@@ -217,7 +240,7 @@ class RunTaskCommand:
         if self._task_repo:
             await self._task_repo.save(task)
 
-        # --- 6. Audit log ---
+        # --- 7. Audit log ---
         if self._audit_repo:
             await self._audit_repo.append(
                 AuditEntry(
@@ -235,14 +258,16 @@ class RunTaskCommand:
                 )
             )
 
-        # --- 7. Emit finalization event ---
+        # --- 8. Emit finalization event ---
         agent_outputs = final_state.get("agent_outputs", [])
-        await self._emit("task_finalized", {
+        self._emit_sync("task_finalized", {
             "type": "task_finalized",
             "status": status,
             "total_cost": task.total_cost_usd,
             "total_tokens": task.total_tokens,
-            "agents_run": [o.get("role", "?") for o in agent_outputs],
+            "agents_run": [o.get("role", "?") for o in agent_outputs]
+            if isinstance(agent_outputs, list)
+            else list(agent_outputs.keys()),
             "retries": final_state.get("retry_count", 0),
             "memories_stored": len(final_state.get("memories_to_store", [])),
         })
@@ -253,7 +278,9 @@ class RunTaskCommand:
             "total_tokens": task.total_tokens,
             "total_cost_usd": task.total_cost_usd,
             "duration_ms": elapsed_ms,
-            "agents_run": [o.get("role", "?") for o in agent_outputs],
+            "agents_run": [o.get("role", "?") for o in agent_outputs]
+            if isinstance(agent_outputs, list)
+            else list(agent_outputs.keys()),
             "files_changed": self._extract_files_changed(agent_outputs),
         }
 
@@ -261,21 +288,73 @@ class RunTaskCommand:
         self,
         graph_builder: GraphBuilder,
         initial_state: TaskState,
+        resume_thread_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute the orchestration graph.
 
-        Primary path: LangGraph compiled graph (``ainvoke``).
+        Primary: LangGraph with SQLite checkpointing and streaming.
         Fallback: sequential executor when langgraph is unavailable.
         """
         try:
-            compiled = graph_builder.build_langgraph()
+            # --- Item 3: Checkpointing for crash recovery ---
+            checkpointer = None
+            checkpoint_db = self._project_root / ".rigovo" / "checkpoints.db"
+            try:
+                checkpointer = GraphBuilder.create_sqlite_checkpointer(checkpoint_db)
+            except Exception:
+                logger.debug("Checkpointer unavailable, running without recovery")
+
+            compiled = graph_builder.build_langgraph(checkpointer=checkpointer)
             logger.info("Running task via LangGraph orchestration engine")
-            result = await compiled.ainvoke(initial_state)
-            return dict(result)
+
+            # Configure for resume or fresh run
+            config: dict[str, Any] = {}
+            if resume_thread_id:
+                config["configurable"] = {"thread_id": resume_thread_id}
+                logger.info("Resuming from checkpoint: %s", resume_thread_id)
+            elif checkpointer:
+                config["configurable"] = {"thread_id": initial_state["task_id"]}
+
+            result = await self._stream_graph(compiled, initial_state, config)
+            return result
         except ImportError:
             logger.info("LangGraph not installed — falling back to sequential runner")
             return await graph_builder.run_sequential(initial_state=initial_state)
+
+    async def _stream_graph(
+        self,
+        compiled: Any,
+        initial_state: TaskState,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Stream graph execution, emitting events after each node."""
+        seen_event_count = len(initial_state.get("events", []))
+        final_state: dict[str, Any] = dict(initial_state)
+
+        stream_kwargs: dict[str, Any] = {"stream_mode": "updates"}
+        if config:
+            stream_kwargs["config"] = config
+
+        async for chunk in compiled.astream(initial_state, **stream_kwargs):
+            for node_name, update in chunk.items():
+                if not isinstance(update, dict):
+                    continue
+                final_state.update(update)
+
+                # Broadcast any NEW events added by this node
+                all_events = update.get("events", [])
+                new_events = all_events[seen_event_count:]
+                for event in new_events:
+                    self._emit_sync(event.get("type", node_name), event)
+                seen_event_count = len(final_state.get("events", []))
+
+        return final_state
+
+    def _emit_sync(self, event_type: str, data: dict[str, Any]) -> None:
+        """Emit an event synchronously."""
+        if self._event_emitter:
+            self._event_emitter.emit(event_type, data)
 
     def _build_agents(
         self,
@@ -287,7 +366,7 @@ class RunTaskCommand:
         for role_id, role_def in agent_roles.items():
             agent = Agent(
                 workspace_id=self._workspace_id,
-                team_id=uuid4(),  # Placeholder
+                team_id=uuid4(),
                 name=role_def.name,
                 role=role_id,
                 llm_model=role_def.default_llm_model,
@@ -297,18 +376,20 @@ class RunTaskCommand:
         return agents
 
     @staticmethod
-    def _extract_files_changed(agent_outputs: list[dict[str, Any]]) -> list[str]:
+    def _extract_files_changed(agent_outputs: Any) -> list[str]:
         """Extract all files changed across all agent outputs."""
         files = []
-        seen = set()
-        for output in agent_outputs:
-            for f in output.get("files_changed", []):
-                if f not in seen:
-                    files.append(f)
-                    seen.add(f)
+        seen: set[str] = set()
+        items = agent_outputs if isinstance(agent_outputs, list) else agent_outputs.values()
+        for output in items:
+            if isinstance(output, dict):
+                for f in output.get("files_changed", []):
+                    if f not in seen:
+                        files.append(f)
+                        seen.add(f)
         return files
 
     async def _emit(self, event_type: str, data: dict[str, Any]) -> None:
         """Emit an event if event emitter is available."""
         if self._event_emitter:
-            await self._event_emitter.emit(event_type, data)
+            self._event_emitter.emit(event_type, data)

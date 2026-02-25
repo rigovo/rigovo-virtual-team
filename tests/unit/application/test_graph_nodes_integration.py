@@ -149,8 +149,8 @@ class TestNodeIntegration(unittest.IsolatedAsyncioTestCase):
         finalize_result = await finalize_node(state_after_execute)
 
         assert finalize_result["status"] == "completed"
-        # Events include agent_complete from execute_agent_node + task_finalized from finalize_node
-        assert len(finalize_result["events"]) == 2
+        # Events: agent_started + agent_complete + task_finalized
+        assert len(finalize_result["events"]) == 3
         assert finalize_result["events"][-1]["type"] == "task_finalized"
 
 

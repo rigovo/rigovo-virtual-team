@@ -1,19 +1,22 @@
 """Graph builder — constructs the LangGraph orchestration graph.
 
-This module assembles the complete task execution graph from individual
-nodes and edges.  It is the composition root of the orchestration layer.
-
 **Primary path** — ``build_langgraph()`` returns a compiled LangGraph
-``StateGraph`` with checkpointing, conditional routing, and the full
-intelligent-agent pipeline.
+``StateGraph`` with checkpointing, conditional routing, parallel fan-out,
+and the full intelligent-agent pipeline.
 
 **Fallback path** — ``run_sequential()`` provides a lightweight executor
 for unit tests or environments where ``langgraph`` is not installed.
+
+Features:
+- SQLite checkpointing for crash recovery (item 3)
+- Interactive approval with interrupt (item 4)
+- Parallel fan-out for independent agents (item 8)
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Callable
 
 from rigovo.application.graph.state import TaskState
@@ -26,7 +29,10 @@ from rigovo.application.graph.edges import (
 from rigovo.application.graph.nodes.scan_project import scan_project_node
 from rigovo.application.graph.nodes.classify import classify_node
 from rigovo.application.graph.nodes.assemble import assemble_node
-from rigovo.application.graph.nodes.execute_agent import execute_agent_node
+from rigovo.application.graph.nodes.execute_agent import (
+    execute_agent_node,
+    execute_agents_parallel,
+)
 from rigovo.application.graph.nodes.quality_check import quality_check_node
 from rigovo.application.graph.nodes.approval import plan_approval_node, commit_approval_node
 from rigovo.application.graph.nodes.enrich import enrich_node
@@ -38,6 +44,9 @@ from rigovo.domain.interfaces.quality_gate import QualityGate
 from rigovo.domain.services.cost_calculator import CostCalculator
 
 logger = logging.getLogger(__name__)
+
+# Roles that can run in parallel (no inter-dependency)
+PARALLELIZABLE_ROLES = {"reviewer", "qa", "security", "docs"}
 
 
 class GraphBuilder:
@@ -58,6 +67,8 @@ class GraphBuilder:
         agents: list[Agent] | None = None,
         approval_handler: Callable[[TaskState], dict[str, Any]] | None = None,
         auto_approve: bool = True,
+        enable_parallel: bool = False,
+        stream_callback: Any | None = None,
     ) -> None:
         self._llm_factory = llm_factory
         self._master_llm = master_llm
@@ -66,6 +77,36 @@ class GraphBuilder:
         self._agents = agents or []
         self._approval_handler = approval_handler
         self._auto_approve = auto_approve
+        self._enable_parallel = enable_parallel
+        self._stream_callback = stream_callback
+
+    # ------------------------------------------------------------------
+    # Checkpointer factory (item 3)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def create_sqlite_checkpointer(db_path: str | Path | None = None) -> Any:
+        """Create a SQLite checkpointer for crash recovery.
+
+        Args:
+            db_path: Path to SQLite database. Defaults to .rigovo/checkpoints.db.
+
+        Returns:
+            A LangGraph-compatible checkpointer, or None if unavailable.
+        """
+        try:
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        except ImportError:
+            try:
+                from langgraph.checkpoint.sqlite import SqliteSaver
+                path = str(db_path) if db_path else ".rigovo/checkpoints.db"
+                return SqliteSaver.from_conn_string(path)
+            except ImportError:
+                logger.debug("No SQLite checkpointer available")
+                return None
+
+        path = str(db_path) if db_path else ".rigovo/checkpoints.db"
+        return AsyncSqliteSaver.from_conn_string(path)
 
     # ------------------------------------------------------------------
     # Primary path — LangGraph compiled graph
@@ -89,6 +130,7 @@ class GraphBuilder:
         gates = self._quality_gates
         agents = self._agents
         auto_approve = self._auto_approve
+        stream_cb = self._stream_callback
 
         # --- Node wrappers (bind injected deps) ---
 
@@ -108,7 +150,9 @@ class GraphBuilder:
             return result
 
         async def _execute_agent(state: TaskState) -> dict:
-            return await execute_agent_node(state, llm_factory, cost_calc)
+            return await execute_agent_node(
+                state, llm_factory, cost_calc, stream_callback=stream_cb,
+            )
 
         async def _quality_check(state: TaskState) -> dict:
             return await quality_check_node(state, gates)
@@ -217,46 +261,28 @@ class GraphBuilder:
         state.update(update)
         state["approval_status"] = "approved"
 
-        # 4. Execute agents sequentially
+        # 4. Execute agents
         pipeline_order = state.get("team_config", {}).get("pipeline_order", [])
 
-        for i, role in enumerate(pipeline_order):
-            state["current_agent_index"] = i
-            state["current_agent_role"] = role
-
-            # Execute
-            update = await execute_agent_node(state, self._llm_factory, self._cost_calculator)
-            state.update(update)
-
-            # Quality check
-            update = await quality_check_node(state, self._quality_gates)
-            state.update(update)
-
-            # Handle gate failure
-            gate_results = state.get("gate_results", {})
-            if not gate_results.get("passed", True):
-                retry_count = state.get("retry_count", 0)
-                max_retries = state.get("max_retries", 3)
-
-                while retry_count < max_retries and not gate_results.get("passed", True):
-                    update = await execute_agent_node(
-                        state, self._llm_factory, self._cost_calculator,
-                    )
-                    state.update(update)
-                    update = await quality_check_node(state, self._quality_gates)
-                    state.update(update)
-                    gate_results = state.get("gate_results", {})
-                    retry_count = state.get("retry_count", 0)
-
-                if not gate_results.get("passed", True):
-                    break
+        if self._enable_parallel:
+            # Split into sequential and parallel groups
+            sequential, parallel = self._split_pipeline(pipeline_order)
+            await self._run_sequential_agents(state, sequential)
+            if parallel:
+                update = await execute_agents_parallel(
+                    state, parallel, self._llm_factory,
+                    self._cost_calculator, self._stream_callback,
+                )
+                state.update(update)
+        else:
+            await self._run_sequential_agents(state, pipeline_order)
 
         # 5. Commit approval (auto-approve in sequential mode)
         update = await commit_approval_node(state)
         state.update(update)
         state["approval_status"] = "approved"
 
-        # 6. Enrich — extract learnings from gate results
+        # 6. Enrich
         update = await enrich_node(state)
         state.update(update)
 
@@ -269,3 +295,53 @@ class GraphBuilder:
         state.update(update)
 
         return state  # type: ignore[return-value]
+
+    async def _run_sequential_agents(
+        self, state: dict, pipeline_order: list[str],
+    ) -> None:
+        """Run agents one-by-one with quality gate retry loops."""
+        for i, role in enumerate(pipeline_order):
+            state["current_agent_index"] = i
+            state["current_agent_role"] = role
+
+            update = await execute_agent_node(
+                state, self._llm_factory, self._cost_calculator,
+                stream_callback=self._stream_callback,
+            )
+            state.update(update)
+
+            update = await quality_check_node(state, self._quality_gates)
+            state.update(update)
+
+            gate_results = state.get("gate_results", {})
+            if not gate_results.get("passed", True):
+                retry_count = state.get("retry_count", 0)
+                max_retries = state.get("max_retries", 3)
+
+                while retry_count < max_retries and not gate_results.get("passed", True):
+                    update = await execute_agent_node(
+                        state, self._llm_factory, self._cost_calculator,
+                        stream_callback=self._stream_callback,
+                    )
+                    state.update(update)
+                    update = await quality_check_node(state, self._quality_gates)
+                    state.update(update)
+                    gate_results = state.get("gate_results", {})
+                    retry_count = state.get("retry_count", 0)
+
+                if not gate_results.get("passed", True):
+                    break
+
+    @staticmethod
+    def _split_pipeline(
+        pipeline_order: list[str],
+    ) -> tuple[list[str], list[str]]:
+        """Split pipeline into sequential (must run first) and parallel groups."""
+        sequential = []
+        parallel = []
+        for role in pipeline_order:
+            if role in PARALLELIZABLE_ROLES:
+                parallel.append(role)
+            else:
+                sequential.append(role)
+        return sequential, parallel

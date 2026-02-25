@@ -91,8 +91,9 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         assert output["tokens"] == 300
         assert output["cost"] == 0.10
         assert "agent_backend_complete" in result["status"]
-        assert len(result["events"]) == 1
-        assert result["events"][0]["type"] == "agent_complete"
+        assert len(result["events"]) == 2  # agent_started + agent_complete
+        assert result["events"][0]["type"] == "agent_started"
+        assert result["events"][1]["type"] == "agent_complete"
 
     async def test_execute_agent_node_with_previous_outputs(self):
         """Test execute_agent_node includes previous agent outputs in context."""
