@@ -1,0 +1,50 @@
+services:
+  cli:
+    build:
+      context: ./cli
+      dockerfile: Dockerfile
+    volumes:
+      - ./cli/src:/app/src
+      - ./cli/tests:/app/tests
+      - ./.env:/app/.env:ro
+    env_file:
+      - .env
+    entrypoint: ["rigovo"]
+    command: ["--help"]
+
+  test:
+    build:
+      context: ./cli
+      dockerfile: Dockerfile
+    volumes:
+      - ./cli/src:/app/src
+      - ./cli/tests:/app/tests
+    entrypoint: ["pytest"]
+    command: ["--tb=short", "-q"]
+
+  lint:
+    build:
+      context: ./cli
+      dockerfile: Dockerfile
+    volumes:
+      - ./cli/src:/app/src
+    entrypoint: ["ruff"]
+    command: ["check", "src/"]
+
+  rigour:
+    build:
+      context: ./cli
+      dockerfile: Dockerfile
+    volumes:
+      - ./cli:/app
+    entrypoint: ["npx"]
+    command: ["-y", "@rigour-labs/cli", "check"]
+
+  build:
+    build:
+      context: ./cli
+      dockerfile: Dockerfile
+    volumes:
+      - ./cli/dist:/app/dist
+    entrypoint: ["python"]
+    command: ["-m", "build"]

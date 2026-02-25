@@ -64,11 +64,14 @@ class RigourQualityGate(QualityGate):
 
     @staticmethod
     def _find_binary() -> str | None:
-        """Locate the rigour CLI binary."""
-        for name in ("rigour", "npx rigour"):
-            path = shutil.which(name)
-            if path:
-                return path
+        """Locate the rigour CLI binary. Falls back to npx if available."""
+        # Direct binary first
+        path = shutil.which("rigour")
+        if path:
+            return path
+        # npx is always available when Node.js is installed
+        if shutil.which("npx"):
+            return "npx"
         return None
 
     async def run(self, gate_input: GateInput) -> GateResult:
@@ -79,7 +82,10 @@ class RigourQualityGate(QualityGate):
 
     async def _run_rigour_cli(self, gate_input: GateInput) -> GateResult:
         """Execute rigour CLI and parse JSON output."""
-        cmd = [self._binary, "check", "--json"]
+        if self._binary == "npx":
+            cmd = ["npx", "-y", "@rigour-labs/cli", "check", "--json"]
+        else:
+            cmd = [self._binary, "check", "--json"]
 
         if gate_input.files_changed:
             for f in gate_input.files_changed:

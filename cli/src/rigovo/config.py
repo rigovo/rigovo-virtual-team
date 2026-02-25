@@ -28,6 +28,8 @@ class LLMConfig(BaseSettings):
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
 
+    model_config = {"extra": "ignore"}
+
     @property
     def provider(self) -> str:
         """Detect provider from model name."""
@@ -58,6 +60,8 @@ class CloudConfig(BaseSettings):
     api_key: str = Field(default="", alias="RIGOVO_API_KEY")
     enabled: bool = Field(default=True, alias="RIGOVO_CLOUD_ENABLED")
 
+    model_config = {"extra": "ignore"}
+
 
 class ApprovalConfig(BaseSettings):
     """Human-in-the-loop approval gates."""
@@ -66,6 +70,8 @@ class ApprovalConfig(BaseSettings):
     after_coding: bool = Field(default=False, alias="APPROVAL_AFTER_CODING")
     after_review: bool = Field(default=False, alias="APPROVAL_AFTER_REVIEW")
     before_commit: bool = Field(default=True, alias="APPROVAL_BEFORE_COMMIT")
+
+    model_config = {"extra": "ignore"}
 
 
 class AppConfig(BaseSettings):
@@ -97,7 +103,11 @@ class AppConfig(BaseSettings):
     # The parsed rigovo.yml (populated by load_config)
     yml: RigovoConfig = Field(default_factory=RigovoConfig)
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
 
     @property
     def local_db_full_path(self) -> Path:
@@ -118,7 +128,12 @@ def load_config(project_root: Path | None = None) -> AppConfig:
     yml = load_rigovo_yml(root)
 
     # 2. Apply YAML overrides to env-based config
-    app_config = AppConfig(project_root=root)
+    #    Read .env from the project root, not from cwd
+    env_file = root / ".env" if (root / ".env").exists() else None
+    app_config = AppConfig(
+        project_root=root,
+        _env_file=str(env_file) if env_file else None,
+    )
     app_config.yml = yml
 
     # 3. Merge YAML orchestration into app config

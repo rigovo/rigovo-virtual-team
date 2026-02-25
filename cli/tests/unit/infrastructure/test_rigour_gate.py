@@ -16,7 +16,10 @@ from rigovo.infrastructure.quality.rigour_gate import (
 
 @pytest.fixture
 def gate() -> RigourQualityGate:
-    return RigourQualityGate(rigour_binary=None)
+    # Force builtin checks — pass a sentinel that _find_binary won't override
+    g = RigourQualityGate(rigour_binary=None)
+    g._binary = None  # Ensure we skip CLI and use builtin checks
+    return g
 
 
 @pytest.fixture
