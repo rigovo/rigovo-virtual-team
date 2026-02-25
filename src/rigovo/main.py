@@ -91,7 +91,13 @@ def run(
         console.print("  Or run: [bold]rigovo init[/bold]")
         raise typer.Exit(1)
 
-    # --- Terminal UI setup ---
+    # --- Read parallel setting from config ---
+    enable_parallel = parallel or container.config.yml.orchestration.parallel_agents
+
+    # ╔═══════════════════════════════════════════════════════════════╗
+    # ║  Rich Live / plain / CI path — original flow                ║
+    # ╚═══════════════════════════════════════════════════════════════╝
+
     ui = None
     approval_handler = None
 
@@ -118,15 +124,21 @@ def run(
 
         ui.start(description=description, team=team)
 
-        # --- Item 4: Interactive approval handler ---
+        # --- Interactive approval handler ---
         if approve:
             def approval_handler(state):
-                checkpoint = state.get("current_checkpoint", "plan")
-                details = ""
-                if checkpoint == "plan":
+                status = state.get("status", "")
+                if "plan" in status:
+                    checkpoint = "plan_ready"
                     tc = state.get("team_config", {})
                     roles = tc.get("pipeline_order", [])
-                    details = f"Pipeline: {' → '.join(roles)}"
+                    arrow = " \u2192 "
+                    details = f"Pipeline: {arrow.join(roles)}"
+                else:
+                    checkpoint = "commit_ready"
+                    agent_outputs = state.get("agent_outputs", {})
+                    agents_done = list(agent_outputs.keys()) if isinstance(agent_outputs, dict) else []
+                    details = f"Agents completed: {', '.join(agents_done)}" if agents_done else ""
                 approved = ui.prompt_approval(checkpoint, details)
                 return {
                     "approval_status": "approved" if approved else "rejected",
@@ -142,9 +154,6 @@ def run(
         if parallel:
             console.print("  [dim]Parallel execution:[/dim] enabled")
         console.print()
-
-    # --- Read parallel setting from config ---
-    enable_parallel = parallel or container.config.yml.orchestration.parallel_agents
 
     try:
         cmd = container.build_run_task_command(

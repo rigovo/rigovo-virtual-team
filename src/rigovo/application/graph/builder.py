@@ -15,6 +15,7 @@ Features:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Callable
@@ -130,6 +131,7 @@ class GraphBuilder:
         gates = self._quality_gates
         agents = self._agents
         auto_approve = self._auto_approve
+        approval_handler = self._approval_handler
         stream_cb = self._stream_callback
 
         # --- Node wrappers (bind injected deps) ---
@@ -147,6 +149,11 @@ class GraphBuilder:
             result = await plan_approval_node(state)
             if auto_approve:
                 result["approval_status"] = "approved"
+            elif approval_handler:
+                # Call the approval handler (blocking I/O) in a thread
+                handler_result = await asyncio.to_thread(approval_handler, {**state, **result})
+                result["approval_status"] = handler_result.get("approval_status", "approved")
+                result["approval_feedback"] = handler_result.get("approval_feedback", "")
             return result
 
         async def _execute_agent(state: TaskState) -> dict:
@@ -164,6 +171,10 @@ class GraphBuilder:
             result = await commit_approval_node(state)
             if auto_approve:
                 result["approval_status"] = "approved"
+            elif approval_handler:
+                handler_result = await asyncio.to_thread(approval_handler, {**state, **result})
+                result["approval_status"] = handler_result.get("approval_status", "approved")
+                result["approval_feedback"] = handler_result.get("approval_feedback", "")
             return result
 
         async def _enrich(state: TaskState) -> dict:
@@ -256,10 +267,23 @@ class GraphBuilder:
         update = await assemble_node(state, resolved_agents)
         state.update(update)
 
-        # 3. Plan approval (auto-approve in sequential mode)
+        # 3. Plan approval
         update = await plan_approval_node(state)
         state.update(update)
-        state["approval_status"] = "approved"
+        if self._auto_approve:
+            state["approval_status"] = "approved"
+        elif self._approval_handler:
+            handler_result = await asyncio.to_thread(self._approval_handler, state)
+            state["approval_status"] = handler_result.get("approval_status", "approved")
+            state["approval_feedback"] = handler_result.get("approval_feedback", "")
+        else:
+            state["approval_status"] = "approved"
+
+        if state["approval_status"] == "rejected":
+            state["status"] = "rejected"
+            update = await finalize_node(state)
+            state.update(update)
+            return state
 
         # 4. Execute agents
         pipeline_order = state.get("team_config", {}).get("pipeline_order", [])
@@ -277,10 +301,23 @@ class GraphBuilder:
         else:
             await self._run_sequential_agents(state, pipeline_order)
 
-        # 5. Commit approval (auto-approve in sequential mode)
+        # 5. Commit approval
         update = await commit_approval_node(state)
         state.update(update)
-        state["approval_status"] = "approved"
+        if self._auto_approve:
+            state["approval_status"] = "approved"
+        elif self._approval_handler:
+            handler_result = await asyncio.to_thread(self._approval_handler, state)
+            state["approval_status"] = handler_result.get("approval_status", "approved")
+            state["approval_feedback"] = handler_result.get("approval_feedback", "")
+        else:
+            state["approval_status"] = "approved"
+
+        if state["approval_status"] == "rejected":
+            state["status"] = "rejected"
+            update = await finalize_node(state)
+            state.update(update)
+            return state
 
         # 6. Enrich
         update = await enrich_node(state)

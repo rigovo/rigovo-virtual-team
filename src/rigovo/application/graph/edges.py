@@ -8,12 +8,10 @@ from rigovo.application.graph.state import TaskState
 def check_approval(state: TaskState) -> str:
     """Route based on user approval status."""
     status = state.get("approval_status", "pending")
-    if status == "approved":
-        return "approved"
     if status == "rejected":
         return "rejected"
-    # If still pending, stay at approval (shouldn't happen with interrupt)
-    return "approved"  # Default to approved for non-interactive mode
+    # approved or pending (pending = auto-approved, handler already ran)
+    return "approved"
 
 
 def check_gates_and_route(state: TaskState) -> str:
