@@ -155,6 +155,7 @@ class Container:
             db=self.get_db(),
             approval_handler=approval_handler,
             max_retries=self.config.max_retries,
+            consultation_policy=self.config.yml.orchestration.consultation.model_dump(),
             offline=offline,
             enable_streaming=enable_streaming,
             enable_parallel=enable_parallel,

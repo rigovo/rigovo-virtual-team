@@ -87,6 +87,7 @@ class AgentContext:
     memory_section: str = ""
     enrichment_section: str = ""
     pipeline_section: str = ""
+    message_section: str = ""
     quality_contract: str = ""
 
     def to_full_context(self) -> str:
@@ -109,6 +110,9 @@ class AgentContext:
 
         if self.pipeline_section:
             sections.append(self.pipeline_section)
+
+        if self.message_section:
+            sections.append(self.message_section)
 
         full = "\n\n".join(sections)
 
@@ -138,6 +142,7 @@ class ContextBuilder:
         memories: RetrievedMemories | None = None,
         enrichment_text: str = "",
         previous_outputs: dict[str, dict[str, Any]] | None = None,
+        agent_messages: list[dict[str, Any]] | None = None,
     ) -> AgentContext:
         """Build complete context for an agent.
 
@@ -178,6 +183,10 @@ class ContextBuilder:
             ctx.pipeline_section = self._build_pipeline_section(
                 previous_outputs, role,
             )
+
+        # 6. Message context — direct consults and responses between agents
+        if agent_messages:
+            ctx.message_section = self._build_message_section(agent_messages, role)
 
         return ctx
 
@@ -237,3 +246,37 @@ class ContextBuilder:
         if len(text) <= max_chars:
             return text
         return text[:max_chars] + "\n... (truncated for context budget)"
+
+    def _build_message_section(
+        self,
+        messages: list[dict[str, Any]],
+        current_role: str,
+    ) -> str:
+        """Build consultation context for the current role from message thread."""
+        if not messages:
+            return ""
+
+        relevant: list[dict[str, Any]] = [
+            m
+            for m in messages
+            if m.get("to_role") == current_role or m.get("from_role") == current_role
+        ]
+        if not relevant:
+            return ""
+
+        # Keep only the latest messages to bound prompt size.
+        relevant = relevant[-8:]
+        parts = ["--- AGENT CONSULT THREAD ---"]
+        for msg in relevant:
+            msg_type = msg.get("type", "message")
+            from_role = msg.get("from_role", "?")
+            to_role = msg.get("to_role", "?")
+            status = msg.get("status", "unknown")
+            content = str(msg.get("content", ""))
+            if len(content) > 700:
+                content = content[:700] + "..."
+            parts.append(
+                f"[{msg_type}] {from_role} -> {to_role} ({status})\n{content}"
+            )
+
+        return self._budget_text("\n\n".join(parts), MAX_PIPELINE_CONTEXT_CHARS)

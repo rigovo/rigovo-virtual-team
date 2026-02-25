@@ -178,5 +178,51 @@ class TestStatus:
         assert "Not initialized" in result.output or result.exit_code == 0
 
 
+class TestConsultation:
+    """Test `rigovo consultation` command."""
+
+    def test_consultation_shows_policy(self, initialized_project):
+        result = runner.invoke(app, ["consultation", "--project", str(initialized_project)])
+        assert result.exit_code == 0
+        assert "Consultation Policy" in result.output or "Allowed Consultation Targets" in result.output
+
+    def test_consultation_set_targets_for_role(self, initialized_project):
+        set_result = runner.invoke(
+            app,
+            [
+                "consultation", "coder",
+                "--set-targets", "reviewer,qa,devops",
+                "--project", str(initialized_project),
+            ],
+        )
+        assert set_result.exit_code == 0
+        assert "Updated consultation policy" in set_result.output
+
+        get_result = runner.invoke(
+            app,
+            [
+                "config",
+                "orchestration.consultation.allowed_targets.coder",
+                "--project", str(initialized_project),
+            ],
+        )
+        assert get_result.exit_code == 0
+        assert "devops" in get_result.output
+
+    def test_consultation_disable_global(self, initialized_project):
+        set_result = runner.invoke(
+            app,
+            ["consultation", "--disabled", "--project", str(initialized_project)],
+        )
+        assert set_result.exit_code == 0
+
+        get_result = runner.invoke(
+            app,
+            ["config", "orchestration.consultation.enabled", "--project", str(initialized_project)],
+        )
+        assert get_result.exit_code == 0
+        assert "False" in get_result.output
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -54,6 +54,7 @@ async def assemble_node(
         "current_agent_index": 0,
         "current_agent_role": pipeline_order[0] if pipeline_order else "",
         "agent_outputs": {},
+        "agent_messages": state.get("agent_messages", []),
         "retry_count": 0,
         "status": "assembled",
         "events": state.get("events", []) + [

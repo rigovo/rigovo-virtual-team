@@ -18,17 +18,17 @@ def get_engineering_tools(role_id: str) -> list[dict[str, Any]]:
 
 # Which tools each role has access to
 TOOLS_BY_ROLE: dict[str, list[str]] = {
-    "planner": ["read_file", "list_directory", "search_codebase", "read_dependencies"],
+    "planner": ["read_file", "list_directory", "search_codebase", "read_dependencies", "consult_agent"],
     "coder": [
         "read_file", "write_file", "list_directory", "search_codebase",
-        "run_command", "read_dependencies", "spawn_subtask",
+        "run_command", "read_dependencies", "spawn_subtask", "consult_agent",
     ],
-    "reviewer": ["read_file", "list_directory", "search_codebase"],
-    "security": ["read_file", "search_codebase", "run_command"],
-    "qa": ["read_file", "write_file", "list_directory", "search_codebase", "run_command"],
-    "devops": ["read_file", "write_file", "list_directory", "run_command"],
-    "sre": ["read_file", "write_file", "list_directory", "run_command"],
-    "lead": ["read_file", "list_directory", "search_codebase"],
+    "reviewer": ["read_file", "list_directory", "search_codebase", "consult_agent"],
+    "security": ["read_file", "search_codebase", "run_command", "consult_agent"],
+    "qa": ["read_file", "write_file", "list_directory", "search_codebase", "run_command", "consult_agent"],
+    "devops": ["read_file", "write_file", "list_directory", "run_command", "consult_agent"],
+    "sre": ["read_file", "write_file", "list_directory", "run_command", "consult_agent"],
+    "lead": ["read_file", "list_directory", "search_codebase", "consult_agent"],
 }
 
 # Tool definitions for LLM function calling
@@ -155,6 +155,29 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 },
             },
             "required": ["description"],
+        },
+    },
+    "consult_agent": {
+        "name": "consult_agent",
+        "description": (
+            "Request targeted input from another agent role in the same task thread. "
+            "If that role already produced output, returns it immediately. "
+            "Otherwise queues a pending consult request that is auto-answered "
+            "when the target role executes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to_role": {
+                    "type": "string",
+                    "description": "Target role to consult (e.g. reviewer, security, devops).",
+                },
+                "question": {
+                    "type": "string",
+                    "description": "Specific question for that role.",
+                },
+            },
+            "required": ["to_role", "question"],
         },
     },
 }

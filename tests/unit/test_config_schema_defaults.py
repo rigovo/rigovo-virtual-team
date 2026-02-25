@@ -3,6 +3,7 @@
 import pytest
 
 from rigovo.config_schema import (
+    ConsultationSchema,
     RigovoConfig,
     ProjectSchema,
     TeamSchema,
@@ -72,3 +73,21 @@ class TestRigovoConfigDefaults:
         assert config.approval.after_coding is False
         assert config.approval.after_review is False
         assert config.approval.before_commit is True
+
+    def test_consultation_schema_defaults(self):
+        """Consultation policy defaults should be present and sane."""
+        consult = ConsultationSchema()
+
+        assert consult.enabled is True
+        assert consult.max_question_chars == 1200
+        assert consult.max_response_chars == 1200
+        assert "reviewer" in consult.allowed_targets
+        assert "security" in consult.allowed_targets["coder"]
+
+    def test_consultation_policy_from_root_config(self):
+        """Root config should include orchestration consultation defaults."""
+        config = RigovoConfig()
+        consult = config.orchestration.consultation
+
+        assert consult.enabled is True
+        assert "reviewer" in consult.allowed_targets

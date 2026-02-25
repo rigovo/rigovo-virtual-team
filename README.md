@@ -122,14 +122,14 @@ Rigovo — Agents
 ┏━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━┓
 ┃ Role ID  ┃ Name                      ┃ Model              ┃ Code ┃ Rules ┃ Tools ┃
 ┡━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━┩
-│ planner  │ Technical Planner         │ Claude Sonnet 4.6  │  —   │     — │     4 │
-│ coder    │ Software Engineer         │ Claude Opus 4.6    │  ✓   │     7 │     7 │
-│ reviewer │ Code Reviewer             │ Claude Sonnet 4.6  │  —   │     3 │     3 │
-│ security │ Security Expert           │ Claude Haiku 4.5   │  —   │     — │     3 │
-│ qa       │ QA Engineer               │ Claude Haiku 4.5   │  ✓   │     — │     5 │
-│ devops   │ DevOps Engineer           │ Claude Haiku 4.5   │  ✓   │     — │     4 │
-│ sre      │ Site Reliability Engineer │ Claude Haiku 4.5   │  ✓   │     — │     4 │
-│ lead     │ Tech Lead                 │ Claude Opus 4.6    │  —   │     — │     3 │
+│ planner  │ Technical Planner         │ Claude Sonnet 4.6  │  —   │     — │     5 │
+│ coder    │ Software Engineer         │ Claude Opus 4.6    │  ✓   │     7 │     8 │
+│ reviewer │ Code Reviewer             │ Claude Sonnet 4.6  │  —   │     3 │     4 │
+│ security │ Security Expert           │ Claude Haiku 4.5   │  —   │     — │     4 │
+│ qa       │ QA Engineer               │ Claude Haiku 4.5   │  ✓   │     — │     6 │
+│ devops   │ DevOps Engineer           │ Claude Haiku 4.5   │  ✓   │     — │     5 │
+│ sre      │ Site Reliability Engineer │ Claude Haiku 4.5   │  ✓   │     — │     5 │
+│ lead     │ Tech Lead                 │ Claude Opus 4.6    │  —   │     — │     4 │
 └──────────┴───────────────────────────┴────────────────────┴──────┴───────┴───────┘
 ```
 
@@ -147,7 +147,7 @@ Rigovo — Agents
   Produces code:  Yes
   Pipeline order: 1
   Tools:          read_file, write_file, list_directory, search_codebase,
-                  run_command, read_dependencies, spawn_subtask
+                  run_command, read_dependencies, spawn_subtask, consult_agent
 
   Custom rules (7):
     • Use type hints on all function signatures
@@ -195,7 +195,7 @@ graph TB
     end
 
     subgraph PLUGINS["Domain Plugins"]
-        ENG[Engineering Domain<br/>8 roles · 7 tools · AST gates]
+        ENG[Engineering Domain<br/>8 roles · 8 tools · AST gates]
         FUTURE[Future Domains<br/>LLM Training · Data Science · ...]
     end
 
@@ -231,7 +231,7 @@ rigovo/
 │   ├── embeddings/       # Embedding models for memory similarity search
 │   └── terminal/         # Rich console output with streaming
 ├── domains/              # Pluggable domain definitions
-│   └── engineering/      # 8 agent roles, 7 tools, engineering-specific gates
+│   └── engineering/      # 8 agent roles, 8 tools, engineering-specific gates
 ├── config.py             # Layered config: built-in → YAML → .env → env vars → CLI
 └── container.py          # Dependency injection (Composition Root)
 ```
@@ -268,6 +268,8 @@ flowchart TD
 
     subgraph EXECUTE_LOOP["Phase 4: Agent Execution Loop"]
         EXECUTE[⚡ execute_agent<br/>Run current agent with<br/>context engineering]
+        EXECUTE -.-> CONSULT[💬 consult_agent<br/>Advisory-only role-to-role<br/>consultation (policy-gated)]
+        CONSULT -.-> EXECUTE
         EXECUTE --> QUALITY[🛡️ quality_check<br/>Run Rigour AST gates<br/>on files changed]
         QUALITY --> GATE_ROUTE{Gates passed?}
         GATE_ROUTE -->|fail + retries left| EXECUTE
@@ -341,6 +343,7 @@ classDiagram
         +int current_agent_index
         +str current_agent_role
         +dict agent_outputs
+        +list agent_messages
         +dict gate_results
         +list fix_packets
         +int retry_count
@@ -379,9 +382,20 @@ classDiagram
         +int duration_ms
     }
 
+    class AgentMessage {
+        +str id
+        +str type
+        +str from_role
+        +str to_role
+        +str status
+        +str linked_to
+        +str content
+    }
+
     TaskState --> ClassificationData
     TaskState --> TeamConfig
     TaskState --> AgentOutput
+    TaskState --> AgentMessage
 ```
 
 ---
@@ -404,13 +418,48 @@ flowchart LR
     subgraph LOOP["Agentic Tool Loop"]
         direction TB
         LLM[LLM Invocation<br/>System prompt +<br/>assembled context]
-        LLM -->|tool_calls| TOOLS[Tool Executor<br/>read_file, write_file,<br/>search, run_command,<br/>spawn_subtask]
+        LLM -->|tool_calls| TOOLS[Tool Executor<br/>read_file, write_file,<br/>search, run_command,<br/>spawn_subtask, consult_agent]
         TOOLS -->|results| LLM
         LLM -->|end_turn| DONE[Agent Output<br/>summary, files_changed,<br/>tokens, cost]
     end
 
     CONTEXT --> LOOP
 ```
+
+## Inter-Agent Consultation (Advisory Channel)
+
+Agents can request targeted advice from other roles during execution via `consult_agent`. This is advisory-only and never replaces the target role's pipeline step.
+
+```mermaid
+flowchart LR
+    A[Requesting Agent<br/>e.g. reviewer] -->|consult_agent(to_role, question)| P{Policy Gate<br/>allowed_targets}
+    P -->|blocked| ERR[Tool Error<br/>policy violation]
+    P -->|allowed| READY{Target role<br/>already has output?}
+    READY -->|yes| IMM[Immediate Advisory Response<br/>from target summary]
+    READY -->|no| Q[Queue Pending Consult Request]
+    Q --> TGT[Target Role executes later<br/>normal pipeline step]
+    TGT --> AUTO[Auto-fulfill pending consult<br/>as advisory response]
+    IMM --> THREAD[agent_messages thread]
+    AUTO --> THREAD
+```
+
+### Consultation Policy via `rigovo.yml`
+
+```yaml
+orchestration:
+  consultation:
+    enabled: true
+    max_question_chars: 1200
+    max_response_chars: 1200
+    allowed_targets:
+      planner: [lead, security, devops]
+      coder: [reviewer, security, qa]
+      reviewer: [planner, coder, security, qa, devops, sre, lead]
+      qa: [coder, reviewer]
+```
+
+- `consultation.allowed_targets` overrides the default matrix.
+- Consultation responses are tagged advisory-only and do not count as task completion for the consulted role.
 
 ### Context Budget
 

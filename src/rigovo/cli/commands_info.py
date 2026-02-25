@@ -153,6 +153,126 @@ def register(app: typer.Typer) -> None:
             console.print(yaml_str)
 
     @app.command()
+    def consultation(
+        role: str | None = typer.Argument(
+            None, help="Role to inspect/update (e.g., reviewer, coder)",
+        ),
+        set_targets: str | None = typer.Option(
+            None, "--set-targets", help="Comma-separated target roles for the given role",
+        ),
+        add_target: list[str] = typer.Option(
+            [], "--add-target", help="Add one allowed target role (repeatable)",
+        ),
+        remove_target: list[str] = typer.Option(
+            [], "--remove-target", help="Remove one allowed target role (repeatable)",
+        ),
+        enabled: bool | None = typer.Option(
+            None, "--enabled/--disabled", help="Enable or disable consultation globally",
+        ),
+        max_question_chars: int | None = typer.Option(
+            None, "--max-question-chars", help="Max chars allowed per consult question",
+        ),
+        max_response_chars: int | None = typer.Option(
+            None, "--max-response-chars", help="Max chars allowed per consult response",
+        ),
+        reset: bool = typer.Option(
+            False, "--reset", help="Reset consultation policy to defaults",
+        ),
+        project_dir: str | None = typer.Option(
+            None, "--project", "-p", help="Project directory",
+        ),
+    ) -> None:
+        """View or update inter-agent consultation policy in rigovo.yml."""
+        root = Path(project_dir) if project_dir else Path.cwd()
+        yml_path = root / "rigovo.yml"
+        if not yml_path.is_file():
+            console.print(
+                "[yellow]No rigovo.yml found.[/yellow] Run: [bold]rigovo init[/bold]",
+            )
+            raise typer.Exit(1)
+
+        from rigovo.config_schema import load_rigovo_yml, save_rigovo_yml, ConsultationSchema
+
+        yml = load_rigovo_yml(root)
+        policy = yml.orchestration.consultation
+        changed = False
+
+        if reset:
+            defaults = ConsultationSchema()
+            if role:
+                policy.allowed_targets[role] = list(defaults.allowed_targets.get(role, []))
+            else:
+                yml.orchestration.consultation = defaults
+                policy = yml.orchestration.consultation
+            changed = True
+
+        if enabled is not None:
+            policy.enabled = enabled
+            changed = True
+        if max_question_chars is not None:
+            policy.max_question_chars = max_question_chars
+            changed = True
+        if max_response_chars is not None:
+            policy.max_response_chars = max_response_chars
+            changed = True
+
+        if set_targets is not None:
+            if not role:
+                raise typer.BadParameter("--set-targets requires a role argument")
+            parsed = [t.strip() for t in set_targets.split(",") if t.strip()]
+            policy.allowed_targets[role] = parsed
+            changed = True
+
+        if add_target:
+            if not role:
+                raise typer.BadParameter("--add-target requires a role argument")
+            targets = list(policy.allowed_targets.get(role, []))
+            for target in add_target:
+                if target not in targets:
+                    targets.append(target)
+            policy.allowed_targets[role] = targets
+            changed = True
+
+        if remove_target:
+            if not role:
+                raise typer.BadParameter("--remove-target requires a role argument")
+            blocked = set(remove_target)
+            policy.allowed_targets[role] = [
+                target for target in policy.allowed_targets.get(role, [])
+                if target not in blocked
+            ]
+            changed = True
+
+        if changed:
+            save_rigovo_yml(yml, root)
+            console.print("  [green]✓[/green] Updated consultation policy in rigovo.yml")
+            if role:
+                targets = ", ".join(policy.allowed_targets.get(role, [])) or "(none)"
+                console.print(f"  {role} -> {targets}")
+            return
+
+        console.print("[bold blue]Rigovo[/bold blue] — Consultation Policy\n")
+        console.print(f"  [bold]Enabled:[/bold]           {policy.enabled}")
+        console.print(f"  [bold]Max question chars:[/bold] {policy.max_question_chars}")
+        console.print(f"  [bold]Max response chars:[/bold] {policy.max_response_chars}")
+        console.print()
+
+        if role:
+            targets = policy.allowed_targets.get(role, [])
+            target_text = ", ".join(targets) if targets else "(none)"
+            console.print(f"  [bold]{role}[/bold] -> {target_text}")
+            return
+
+        table = Table(title="Allowed Consultation Targets")
+        table.add_column("From Role", style="cyan")
+        table.add_column("Allowed Targets")
+        for from_role in sorted(policy.allowed_targets.keys()):
+            targets = ", ".join(policy.allowed_targets[from_role]) or "(none)"
+            table.add_row(from_role, targets)
+        console.print(table)
+        console.print("\n  [dim]Update example: rigovo consultation coder --set-targets reviewer,qa[/dim]\n")
+
+    @app.command()
     def status(
         project_dir: str | None = typer.Option(
             None, "--project", "-p", help="Project directory",

@@ -55,6 +55,53 @@ ROLE_MAX_TOKENS: dict[str, int] = {
     "docs": 4096,
 }
 
+CONSULT_MAX_QUESTION_CHARS = 1200
+CONSULT_MAX_RESPONSE_CHARS = 1200
+
+# Role-to-role consultation policy. Advisory-only, never full step completion.
+CONSULT_ALLOWED_TARGETS: dict[str, set[str]] = {
+    "planner": {"lead", "security", "devops"},
+    "coder": {"reviewer", "security", "qa"},
+    "reviewer": {"planner", "coder", "security", "qa", "devops", "sre", "lead"},
+    "security": {"coder", "reviewer", "devops", "sre", "lead"},
+    "qa": {"coder", "reviewer"},
+    "devops": {"security", "sre", "reviewer", "lead"},
+    "sre": {"devops", "security", "reviewer", "lead"},
+    "lead": {"planner", "coder", "reviewer", "security", "qa", "devops", "sre"},
+}
+
+
+def _resolve_consult_policy(state: TaskState | None) -> tuple[bool, int, int, dict[str, set[str]]]:
+    """Resolve consultation policy from state with safe defaults."""
+    enabled = True
+    max_question_chars = CONSULT_MAX_QUESTION_CHARS
+    max_response_chars = CONSULT_MAX_RESPONSE_CHARS
+    allowed_targets = {k: set(v) for k, v in CONSULT_ALLOWED_TARGETS.items()}
+
+    if not state:
+        return enabled, max_question_chars, max_response_chars, allowed_targets
+
+    raw_policy = state.get("consultation_policy", {}) or {}
+    if isinstance(raw_policy, dict):
+        enabled = bool(raw_policy.get("enabled", enabled))
+        q_chars = raw_policy.get("max_question_chars", max_question_chars)
+        r_chars = raw_policy.get("max_response_chars", max_response_chars)
+        if isinstance(q_chars, int) and q_chars > 100:
+            max_question_chars = q_chars
+        if isinstance(r_chars, int) and r_chars > 100:
+            max_response_chars = r_chars
+
+        raw_targets = raw_policy.get("allowed_targets", {})
+        if isinstance(raw_targets, dict):
+            parsed: dict[str, set[str]] = {}
+            for src_role, targets in raw_targets.items():
+                if isinstance(src_role, str) and isinstance(targets, list):
+                    parsed[src_role] = {str(t) for t in targets if str(t).strip()}
+            if parsed:
+                allowed_targets = parsed
+
+    return enabled, max_question_chars, max_response_chars, allowed_targets
+
 
 class BudgetExceededError(Exception):
     """Raised when the task's cost budget has been exceeded."""
@@ -88,6 +135,7 @@ def _build_agent_messages(
         project_snapshot=state.get("project_snapshot"),
         enrichment_text=agent_config.get("enrichment_context", ""),
         previous_outputs=state.get("agent_outputs"),
+        agent_messages=state.get("agent_messages"),
     )
     full_context = agent_context.to_full_context()
     if full_context:
@@ -147,6 +195,156 @@ def _resolve_tool_definitions(agent_config: dict[str, Any], current_role: str) -
     if not tool_names:
         return []
     return get_engineering_tools(current_role)
+
+
+def _new_message_id(agent_messages: list[dict[str, Any]]) -> str:
+    """Generate a stable message id for inter-agent consult records."""
+    return f"msg-{int(time.time() * 1000)}-{len(agent_messages) + 1}"
+
+
+def _handle_consult_agent(
+    state: TaskState,
+    from_role: str,
+    tool_input: dict[str, Any],
+    agent_messages: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+) -> str:
+    """
+    Handle an inter-agent consultation request.
+
+    The consultation is asynchronous by design:
+    - If the target role already has output, return it immediately.
+    - Otherwise enqueue a pending request that the target role will see
+      in its context and auto-fulfill when it completes.
+    """
+    enabled, max_question_chars, max_response_chars, policy_targets = _resolve_consult_policy(state)
+    if not enabled:
+        return json.dumps({"status": "error", "error": "Consultation is disabled by policy"})
+
+    team_agents = state.get("team_config", {}).get("agents", {})
+    to_role = str(tool_input.get("to_role", "")).strip()
+    question = str(tool_input.get("question", "")).strip()
+
+    if not to_role:
+        return json.dumps({"status": "error", "error": "Missing required field: to_role"})
+    if to_role not in team_agents:
+        return json.dumps({"status": "error", "error": f"Unknown role: {to_role}"})
+    if not question:
+        return json.dumps({"status": "error", "error": "Missing required field: question"})
+    allowed_targets = policy_targets.get(from_role, set())
+    if to_role not in allowed_targets:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": (
+                    f"Consultation from '{from_role}' to '{to_role}' is not allowed by policy"
+                ),
+            }
+        )
+    if len(question) > max_question_chars:
+        question = question[:max_question_chars] + "..."
+
+    request_id = _new_message_id(agent_messages)
+    request = {
+        "id": request_id,
+        "type": "consult_request",
+        "from_role": from_role,
+        "to_role": to_role,
+        "content": question,
+        "status": "pending",
+        "created_at": time.time(),
+    }
+    agent_messages.append(request)
+    events.append({
+        "type": "agent_consult_requested",
+        "from_role": from_role,
+        "to_role": to_role,
+        "message_id": request_id,
+    })
+
+    existing_output = state.get("agent_outputs", {}).get(to_role, {})
+    existing_summary = existing_output.get("summary", "")
+    if existing_summary:
+        answer = existing_summary[:max_response_chars]
+        request["status"] = "answered"
+
+        response_id = _new_message_id(agent_messages)
+        agent_messages.append({
+            "id": response_id,
+            "type": "consult_response",
+            "from_role": to_role,
+            "to_role": from_role,
+            "content": answer,
+            "status": "answered",
+            "linked_to": request_id,
+            "created_at": time.time(),
+        })
+        events.append({
+            "type": "agent_consult_completed",
+            "from_role": from_role,
+            "to_role": to_role,
+            "message_id": request_id,
+        })
+        return json.dumps(
+            {
+                "status": "answered",
+                "to_role": to_role,
+                "message_id": request_id,
+                "response": f"[ADVISORY] {answer}",
+                "advisory_only": True,
+            }
+        )
+
+    return json.dumps(
+        {
+            "status": "pending",
+            "to_role": to_role,
+            "message_id": request_id,
+            "note": (
+                f"Consult request queued for '{to_role}'. "
+                "Response will be attached when that role completes."
+            ),
+            "advisory_only": True,
+        }
+    )
+
+
+def _fulfill_pending_consults(
+    current_role: str,
+    final_text: str,
+    state: TaskState,
+    agent_messages: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+) -> None:
+    """Auto-respond to pending consult requests addressed to the current role."""
+    enabled, _, max_response_chars, _ = _resolve_consult_policy(state)
+    if not enabled:
+        return
+    answer = final_text[:max_response_chars] if final_text else "Completed work. No summary provided."
+    for msg in agent_messages:
+        if (
+            msg.get("type") == "consult_request"
+            and msg.get("to_role") == current_role
+            and msg.get("status") == "pending"
+        ):
+            msg["status"] = "answered"
+            response_id = _new_message_id(agent_messages)
+            agent_messages.append({
+                "id": response_id,
+                "type": "consult_response",
+                "from_role": current_role,
+                "to_role": msg.get("from_role", ""),
+                "content": f"[ADVISORY] {answer}",
+                "status": "answered",
+                "linked_to": msg.get("id", ""),
+                "created_at": time.time(),
+            })
+            events.append({
+                "type": "agent_consult_completed",
+                "from_role": msg.get("from_role", ""),
+                "to_role": current_role,
+                "message_id": msg.get("id", ""),
+            })
 
 
 async def _run_subtask(
@@ -226,6 +424,9 @@ async def _run_agentic_loop(
     tool_executor: ToolExecutor,
     agent_config: dict[str, Any],
     role: str,
+    state: TaskState | None = None,
+    agent_messages: list[dict[str, Any]] | None = None,
+    events: list[dict[str, Any]] | None = None,
     stream_callback: Any | None = None,
     batch_timeout: int = DEFAULT_BATCH_TIMEOUT,
     max_rounds: int = MAX_TOOL_ROUNDS,
@@ -239,6 +440,8 @@ async def _run_agentic_loop(
     total_input_tokens = 0
     total_output_tokens = 0
     all_text_parts: list[str] = []
+    agent_messages = agent_messages if agent_messages is not None else []
+    events = events if events is not None else []
     temperature = agent_config.get("temperature", DEFAULT_TEMPERATURE)
     # Use per-role max_tokens for smarter token allocation
     max_tokens = agent_config.get("max_tokens") or ROLE_MAX_TOKENS.get(role, DEFAULT_MAX_TOKENS)
@@ -318,6 +521,19 @@ async def _run_agentic_loop(
                     batch_timeout=batch_timeout,
                 )
                 result_str = json.dumps(sub_result, default=str)
+            elif tc["name"] == "consult_agent":
+                if state is None:
+                    result_str = json.dumps(
+                        {"status": "error", "error": "consult_agent unavailable without state"}
+                    )
+                else:
+                    result_str = _handle_consult_agent(
+                        state=state,
+                        from_role=role,
+                        tool_input=tc.get("input", {}),
+                        agent_messages=agent_messages,
+                        events=events,
+                    )
             else:
                 result_str = await tool_executor.execute(tc["name"], tc["input"])
             return tc, result_str
@@ -464,6 +680,7 @@ async def execute_agent_node(
 
     # Emit agent_started event
     events = list(state.get("events", []))
+    agent_messages_log = list(state.get("agent_messages", []))
     events.append({
         "type": "agent_started",
         "role": current_role,
@@ -484,6 +701,9 @@ async def execute_agent_node(
                 tool_executor=tool_executor,
                 agent_config=agent_config,
                 role=current_role,
+                state=state,
+                agent_messages=agent_messages_log,
+                events=events,
                 stream_callback=stream_callback,
                 batch_timeout=batch_timeout,
             )
@@ -546,6 +766,15 @@ async def execute_agent_node(
 
     duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)
 
+    # If this role had pending consultations, auto-respond with latest summary.
+    _fulfill_pending_consults(
+        current_role=current_role,
+        final_text=final_text,
+        state=state,
+        agent_messages=agent_messages_log,
+        events=events,
+    )
+
     # --- Build output ---
     agent_output: AgentOutput = {
         "summary": final_text,
@@ -578,6 +807,7 @@ async def execute_agent_node(
             },
         },
         "status": f"agent_{current_role}_complete",
+        "agent_messages": agent_messages_log,
         "events": events,
     }
 

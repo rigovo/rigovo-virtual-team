@@ -74,6 +74,7 @@ class RunTaskCommand:
         db: LocalDatabase | None = None,
         approval_handler: Callable | None = None,
         max_retries: int = 5,
+        consultation_policy: dict[str, Any] | None = None,
         offline: bool = False,
         enable_streaming: bool = True,
         enable_parallel: bool = False,
@@ -91,6 +92,7 @@ class RunTaskCommand:
         self._db = db
         self._approval_handler = approval_handler
         self._max_retries = max_retries
+        self._consultation_policy = consultation_policy or {}
         self._offline = offline
         self._enable_streaming = enable_streaming
         self._enable_parallel = enable_parallel
@@ -163,9 +165,11 @@ class RunTaskCommand:
             "current_agent_index": 0,
             "current_agent_role": None,
             "agent_outputs": {},
+            "agent_messages": [],
             "gate_results": {},
             "retry_count": 0,
             "max_retries": self._max_retries,
+            "consultation_policy": self._consultation_policy,
             "fix_packet": None,
             "approval_status": None,
             "approval_feedback": None,
@@ -428,4 +432,3 @@ class RunTaskCommand:
                         files.append(f)
                         seen.add(f)
         return files
-

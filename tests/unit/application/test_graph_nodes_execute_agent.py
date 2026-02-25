@@ -245,6 +245,306 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         assert "agent-1" in result["cost_accumulator"]
         assert result["cost_accumulator"]["agent-1"]["tokens"] == 150
 
+    async def test_consult_agent_returns_existing_output_immediately(self):
+        """consult_agent returns immediate answer when target output already exists."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Finish implementation",
+            "team_config": {
+                "agents": {
+                    "coder": {
+                        "id": "agent-coder",
+                        "name": "Coder",
+                        "role": "coder",
+                        "system_prompt": "You are a coder.",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": ["consult_agent"],
+                    },
+                    "security": {
+                        "id": "agent-security",
+                        "name": "Security",
+                        "role": "security",
+                        "system_prompt": "You are security.",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": [],
+                    },
+                }
+            },
+            "current_agent_role": "coder",
+            "agent_outputs": {
+                "security": {"summary": "PASS: No high-severity findings."},
+            },
+            "agent_messages": [],
+            "events": [],
+        }
+
+        mock_llm = AsyncMock()
+        mock_llm.invoke.side_effect = [
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=100, output_tokens=50),
+                model="claude-sonnet-4-6",
+                tool_calls=[{
+                    "id": "toolu_consult_1",
+                    "name": "consult_agent",
+                    "input": {
+                        "to_role": "security",
+                        "question": "Any blockers?",
+                    },
+                }],
+            ),
+            LLMResponse(
+                content="Proceeding with implementation.",
+                usage=LLMUsage(input_tokens=80, output_tokens=40),
+                model="claude-sonnet-4-6",
+            ),
+        ]
+
+        def llm_factory(model: str):
+            return mock_llm
+
+        cost_calc = MagicMock()
+        cost_calc.calculate.return_value = 0.10
+
+        result = await execute_agent_node(state, llm_factory, cost_calc)
+
+        messages = result.get("agent_messages", [])
+        assert len(messages) >= 2
+        assert messages[0]["type"] == "consult_request"
+        assert messages[0]["status"] == "answered"
+        assert messages[1]["type"] == "consult_response"
+        assert messages[1]["from_role"] == "security"
+        assert any(e.get("type") == "agent_consult_completed" for e in result["events"])
+
+    async def test_pending_consult_is_fulfilled_when_target_role_completes(self):
+        """Pending consults are auto-answered when the target role finishes."""
+        coder_state: TaskState = {
+            "task_id": "task-2",
+            "description": "Implement and ask security",
+            "team_config": {
+                "agents": {
+                    "coder": {
+                        "id": "agent-coder",
+                        "name": "Coder",
+                        "role": "coder",
+                        "system_prompt": "You are a coder.",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": ["consult_agent"],
+                    },
+                    "security": {
+                        "id": "agent-security",
+                        "name": "Security",
+                        "role": "security",
+                        "system_prompt": "You are security.",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": [],
+                    },
+                }
+            },
+            "current_agent_role": "coder",
+            "agent_outputs": {},
+            "agent_messages": [],
+            "events": [],
+        }
+
+        coder_llm = AsyncMock()
+        coder_llm.invoke.side_effect = [
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=100, output_tokens=30),
+                model="claude-sonnet-4-6",
+                tool_calls=[{
+                    "id": "toolu_consult_2",
+                    "name": "consult_agent",
+                    "input": {
+                        "to_role": "security",
+                        "question": "Please review auth flow.",
+                    },
+                }],
+            ),
+            LLMResponse(
+                content="Coder completed core changes.",
+                usage=LLMUsage(input_tokens=60, output_tokens=40),
+                model="claude-sonnet-4-6",
+            ),
+        ]
+
+        def coder_factory(model: str):
+            return coder_llm
+
+        cost_calc = MagicMock()
+        cost_calc.calculate.return_value = 0.09
+        coder_result = await execute_agent_node(coder_state, coder_factory, cost_calc)
+
+        pending = [
+            m for m in coder_result.get("agent_messages", [])
+            if m.get("type") == "consult_request"
+        ]
+        assert pending and pending[0]["status"] == "pending"
+
+        security_state: TaskState = {
+            **coder_state,
+            "current_agent_role": "security",
+            "agent_outputs": coder_result.get("agent_outputs", {}),
+            "agent_messages": coder_result.get("agent_messages", []),
+            "events": coder_result.get("events", []),
+        }
+
+        security_llm = AsyncMock()
+        security_llm.invoke.return_value = LLMResponse(
+            content="Security review complete: no blockers.",
+            usage=LLMUsage(input_tokens=70, output_tokens=30),
+            model="claude-sonnet-4-6",
+        )
+
+        def security_factory(model: str):
+            return security_llm
+
+        security_result = await execute_agent_node(security_state, security_factory, cost_calc)
+        consult_messages = security_result.get("agent_messages", [])
+
+        requests = [m for m in consult_messages if m.get("type") == "consult_request"]
+        responses = [m for m in consult_messages if m.get("type") == "consult_response"]
+        assert requests and requests[0]["status"] == "answered"
+        assert responses
+        assert responses[-1]["from_role"] == "security"
+        assert responses[-1]["to_role"] == "coder"
+
+    async def test_consult_agent_blocks_disallowed_target_by_policy(self):
+        """Consultation policy blocks invalid role-to-role requests."""
+        state: TaskState = {
+            "task_id": "task-3",
+            "description": "Implement and consult devops",
+            "team_config": {
+                "agents": {
+                    "coder": {
+                        "id": "agent-coder",
+                        "name": "Coder",
+                        "role": "coder",
+                        "system_prompt": "You are a coder.",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": ["consult_agent"],
+                    },
+                    "devops": {
+                        "id": "agent-devops",
+                        "name": "DevOps",
+                        "role": "devops",
+                        "system_prompt": "You are devops.",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": [],
+                    },
+                }
+            },
+            "current_agent_role": "coder",
+            "agent_outputs": {},
+            "agent_messages": [],
+            "events": [],
+        }
+
+        mock_llm = AsyncMock()
+        mock_llm.invoke.side_effect = [
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=100, output_tokens=20),
+                model="claude-sonnet-4-6",
+                tool_calls=[{
+                    "id": "toolu_consult_3",
+                    "name": "consult_agent",
+                    "input": {
+                        "to_role": "devops",  # blocked for coder by policy
+                        "question": "Can you validate deployment now?",
+                    },
+                }],
+            ),
+            LLMResponse(
+                content="Continuing without external consult.",
+                usage=LLMUsage(input_tokens=60, output_tokens=40),
+                model="claude-sonnet-4-6",
+            ),
+        ]
+
+        def llm_factory(model: str):
+            return mock_llm
+
+        cost_calc = MagicMock()
+        cost_calc.calculate.return_value = 0.08
+        result = await execute_agent_node(state, llm_factory, cost_calc)
+
+        assert result.get("agent_messages", []) == []
+        assert not any(e.get("type") == "agent_consult_requested" for e in result["events"])
+
+    async def test_consult_agent_respects_state_policy_override(self):
+        """State consultation_policy can override allowed target matrix."""
+        state: TaskState = {
+            "task_id": "task-4",
+            "description": "Custom consultation policy",
+            "team_config": {
+                "agents": {
+                    "coder": {
+                        "id": "agent-coder",
+                        "name": "Coder",
+                        "role": "coder",
+                        "system_prompt": "You are a coder.",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": ["consult_agent"],
+                    },
+                    "devops": {
+                        "id": "agent-devops",
+                        "name": "DevOps",
+                        "role": "devops",
+                        "system_prompt": "You are devops.",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": [],
+                    },
+                }
+            },
+            "current_agent_role": "coder",
+            "agent_outputs": {"devops": {"summary": "Deployment constraints documented."}},
+            "agent_messages": [],
+            "consultation_policy": {
+                "enabled": True,
+                "max_question_chars": 500,
+                "max_response_chars": 500,
+                "allowed_targets": {
+                    "coder": ["devops"],
+                },
+            },
+            "events": [],
+        }
+
+        mock_llm = AsyncMock()
+        mock_llm.invoke.side_effect = [
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=90, output_tokens=20),
+                model="claude-sonnet-4-6",
+                tool_calls=[{
+                    "id": "toolu_consult_4",
+                    "name": "consult_agent",
+                    "input": {
+                        "to_role": "devops",
+                        "question": "Any release gating concerns?",
+                    },
+                }],
+            ),
+            LLMResponse(
+                content="Proceeding with devops advisory.",
+                usage=LLMUsage(input_tokens=50, output_tokens=30),
+                model="claude-sonnet-4-6",
+            ),
+        ]
+
+        def llm_factory(model: str):
+            return mock_llm
+
+        cost_calc = MagicMock()
+        cost_calc.calculate.return_value = 0.07
+        result = await execute_agent_node(state, llm_factory, cost_calc)
+
+        consult_messages = result.get("agent_messages", [])
+        assert consult_messages
+        assert consult_messages[0]["to_role"] == "devops"
+
 
 if __name__ == "__main__":
     unittest.main()

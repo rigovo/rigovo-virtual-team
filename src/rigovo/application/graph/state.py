@@ -15,6 +15,19 @@ class AgentOutput(TypedDict, total=False):
     duration_ms: int
 
 
+class AgentMessage(TypedDict, total=False):
+    """Structured inter-agent message for consultation and handoff."""
+
+    id: str
+    type: str  # consult_request | consult_response
+    from_role: str
+    to_role: str
+    content: str
+    status: str  # pending | answered
+    linked_to: str  # Request message id for responses
+    created_at: float  # epoch seconds
+
+
 class ClassificationData(TypedDict, total=False):
     """Master Agent's classification of a task."""
 
@@ -57,6 +70,7 @@ class TaskState(TypedDict, total=False):
     current_agent_index: int            # Index into pipeline_order
     current_agent_role: str             # Current agent's role ID
     agent_outputs: dict[str, AgentOutput]  # {role: output}
+    agent_messages: list[AgentMessage]  # Inter-agent consultation thread
 
     # --- Quality gates ---
     gate_results: dict[str, Any]        # Latest gate check result
@@ -72,6 +86,7 @@ class TaskState(TypedDict, total=False):
     cost_accumulator: dict[str, dict[str, float]]  # {agent_id: {tokens, cost}}
     budget_max_cost_per_task: float
     budget_max_tokens_per_task: int
+    consultation_policy: dict[str, Any]  # Runtime consultation policy from rigovo.yml
 
     # --- Context engineering ---
     project_snapshot: Any               # ProjectSnapshot from scanner (set at task start)

@@ -156,8 +156,27 @@ class OrchestrationSchema(BaseModel):
     timeout_per_agent: int = 900          # 15 min batch ceiling (streaming uses idle)
     idle_timeout: int = 120               # 2 min idle = abort (no tokens received)
     parallel_agents: bool = False
+    consultation: "ConsultationSchema" = Field(default_factory=lambda: ConsultationSchema())
 
     budget: BudgetSchema = Field(default_factory=BudgetSchema)
+
+
+class ConsultationSchema(BaseModel):
+    """Inter-agent consultation policy (advisory-only messaging)."""
+
+    enabled: bool = True
+    max_question_chars: int = 1200
+    max_response_chars: int = 1200
+    allowed_targets: dict[str, list[str]] = Field(default_factory=lambda: {
+        "planner": ["lead", "security", "devops"],
+        "coder": ["reviewer", "security", "qa"],
+        "reviewer": ["planner", "coder", "security", "qa", "devops", "sre", "lead"],
+        "security": ["coder", "reviewer", "devops", "sre", "lead"],
+        "qa": ["coder", "reviewer"],
+        "devops": ["security", "sre", "reviewer", "lead"],
+        "sre": ["devops", "security", "reviewer", "lead"],
+        "lead": ["planner", "coder", "reviewer", "security", "qa", "devops", "sre"],
+    })
 
 
 class CloudSchema(BaseModel):
