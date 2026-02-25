@@ -368,43 +368,20 @@ classify → route_team → assemble → [approval] → execute_agent → qualit
 
 ## CI/CD
 
-GitHub Actions workflows included. CI runs tests, lint, and Rigour gates. Publishing happens only after CI passes — no duplicate work.
-
-```bash
-# CI triggers on push to main/develop (cli/** paths only)
-# Publish triggers via workflow_run AFTER CI succeeds
-# Uses PyPI Trusted Publishing (OIDC) — no API keys in secrets
-```
-
-Versioning uses [python-semantic-release](https://python-semantic-release.readthedocs.io/) with [Conventional Commits](https://www.conventionalcommits.org/):
-
-```bash
-feat: add new agent role       # → minor bump (0.1.0 → 0.2.0)
-fix: correct budget overflow   # → patch bump (0.1.0 → 0.1.1)
-feat!: redesign pipeline API   # → major bump (0.1.0 → 1.0.0)
-```
+GitHub Actions with PyPI Trusted Publishing (OIDC). CI runs tests + lint + Rigour gates. Versioning via [python-semantic-release](https://python-semantic-release.readthedocs.io/) with [Conventional Commits](https://www.conventionalcommits.org/).
 
 ---
 
 ## Development
 
 ```bash
-git clone https://github.com/rigovo/rigovo-virtual-team.git
-cd rigovo-virtual-team/cli
+git clone https://github.com/rigovo/rigovo-virtual-team.git && cd rigovo-virtual-team
 pip install -e ".[dev]"
-
 pytest                                    # 261 tests
-ruff check src/                           # Lint
 npx @rigour-labs/cli check               # Rigour gates
 ```
 
----
-
-## Requirements
-
-- Python 3.10+
-- Node.js 18+ (for Rigour CLI via `npx`)
-- API key for at least one LLM provider (Anthropic recommended)
+Requires Python 3.10+, Node.js 18+ (for Rigour CLI), and an API key for at least one LLM provider.
 
 ## License
 

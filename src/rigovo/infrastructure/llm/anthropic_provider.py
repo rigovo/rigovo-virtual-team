@@ -117,9 +117,12 @@ class AnthropicProvider(LLMProvider):
         if system_msg:
             kwargs["system"] = system_msg
 
-        async with client.messages.stream(**kwargs) as stream:
+        stream = await client.messages.stream(**kwargs).__aenter__()
+        try:
             async for text in stream.text_stream:
                 yield text
+        finally:
+            await stream.__aexit__(None, None, None)
 
     @staticmethod
     def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

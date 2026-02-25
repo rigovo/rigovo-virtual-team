@@ -15,7 +15,7 @@ class AgentOutput(TypedDict, total=False):
     duration_ms: int
 
 
-class ClassificationResult(TypedDict, total=False):
+class ClassificationData(TypedDict, total=False):
     """Master Agent's classification of a task."""
 
     task_type: str       # feature, bug, refactor, etc.
@@ -48,7 +48,7 @@ class TaskState(TypedDict, total=False):
     project_root: str
 
     # --- Classification (set by classify node) ---
-    classification: ClassificationResult
+    classification: ClassificationData
 
     # --- Team routing (set by route_team node) ---
     team_config: TeamConfig
@@ -70,6 +70,12 @@ class TaskState(TypedDict, total=False):
 
     # --- Cost tracking ---
     cost_accumulator: dict[str, dict[str, float]]  # {agent_id: {tokens, cost}}
+    budget_max_cost_per_task: float
+    budget_max_tokens_per_task: int
+
+    # --- Context engineering ---
+    project_snapshot: Any               # ProjectSnapshot from scanner (set at task start)
+    enrichment_updates: list[dict[str, Any]]  # Learnings extracted post-pipeline
 
     # --- Memory ---
     memories_to_store: list[str]        # Memory text to persist post-task

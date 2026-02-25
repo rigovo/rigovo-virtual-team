@@ -1,10 +1,14 @@
-"""Execute agent node — runs the current agent with isolated context.
+"""Execute agent node — runs the current agent with context engineering.
 
-Includes:
-- Context isolation (agents only see output summaries, not reasoning)
-- Budget enforcement (hard stop if task cost exceeds limit)
-- Per-agent timeout with graceful handling
-- Tool call processing for file operations
+Each agent execution follows the INTELLIGENT AGENT pattern:
+1. PERCEIVE — project snapshot injected (scanned at task start)
+2. REMEMBER — relevant memories from past tasks injected
+3. REASON — system prompt + enrichment + quality contract
+4. ACT — LLM generates response with tool access
+5. VERIFY — Rigour gates check output (separate node)
+
+This is NOT a chatbot. The agent sees the codebase, remembers past
+mistakes, knows what quality gates will check, and self-corrects.
 """
 
 from __future__ import annotations
@@ -14,11 +18,19 @@ import logging
 import time
 from typing import Any
 
+from rigovo.application.context.context_builder import ContextBuilder
 from rigovo.application.graph.state import TaskState, AgentOutput
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 from rigovo.domain.services.cost_calculator import CostCalculator
 
 logger = logging.getLogger(__name__)
+
+# --- Named constants for agent execution defaults ---
+DEFAULT_LLM_MODEL = "claude-sonnet-4-5-20250929"
+DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_TEMPERATURE = 0.0
+DEFAULT_MAX_TOKENS = 8192
+MS_PER_SECOND = 1000
 
 
 class BudgetExceededError(Exception):
@@ -90,24 +102,26 @@ async def execute_agent_node(
             }],
         }
 
-    # 1. Build system prompt with enrichment
+    # 1. Build system prompt with FULL context engineering
     system_prompt = agent_config["system_prompt"]
-    enrichment = agent_config.get("enrichment_context", "")
-    if enrichment:
-        system_prompt += f"\n\n--- ENRICHMENT (from Master Agent) ---\n{enrichment}"
 
-    # 2. Build messages — isolated context
+    # Context engineering: assemble rich per-agent context
+    context_builder = ContextBuilder()
+    agent_context = context_builder.build(
+        role=current_role,
+        project_snapshot=state.get("project_snapshot"),
+        enrichment_text=agent_config.get("enrichment_context", ""),
+        previous_outputs=state.get("agent_outputs"),
+    )
+    full_context = agent_context.to_full_context()
+    if full_context:
+        system_prompt += f"\n\n{full_context}"
+
+    # 2. Build messages — intelligent agent context
     messages: list[dict[str, str]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"Task: {state['description']}"},
     ]
-
-    # Add previous agent outputs (summaries only, no reasoning)
-    for role, output in state.get("agent_outputs", {}).items():
-        messages.append({
-            "role": "user",
-            "content": f"[{role.upper()} output]: {output.get('summary', '')}",
-        })
 
     # Add fix packet if retrying
     fix_packets = state.get("fix_packets", [])
@@ -118,9 +132,9 @@ async def execute_agent_node(
         })
 
     # 3. Call LLM with timeout
-    llm_model = agent_config.get("llm_model", "claude-sonnet-4-5-20250929")
+    llm_model = agent_config.get("llm_model", DEFAULT_LLM_MODEL)
     llm: LLMProvider = llm_factory(llm_model)
-    timeout_seconds = agent_config.get("timeout_seconds", 300)
+    timeout_seconds = agent_config.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
 
     start_time = time.monotonic()
 
@@ -128,13 +142,13 @@ async def execute_agent_node(
         response = await asyncio.wait_for(
             llm.invoke(
                 messages=messages,
-                temperature=agent_config.get("temperature", 0.0),
-                max_tokens=agent_config.get("max_tokens", 8192),
+                temperature=agent_config.get("temperature", DEFAULT_TEMPERATURE),
+                max_tokens=agent_config.get("max_tokens", DEFAULT_MAX_TOKENS),
             ),
             timeout=timeout_seconds,
         )
     except asyncio.TimeoutError:
-        duration_ms = int((time.monotonic() - start_time) * 1000)
+        duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)
         logger.warning("Agent %s timed out after %ds", current_role, timeout_seconds)
         return {
             "status": f"agent_{current_role}_timeout",
@@ -147,7 +161,7 @@ async def execute_agent_node(
             }],
         }
 
-    duration_ms = int((time.monotonic() - start_time) * 1000)
+    duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)
 
     # 4. Calculate cost
     cost = cost_calculator.calculate(

@@ -19,11 +19,13 @@ from rigovo.application.graph.edges import (
     check_pipeline_complete,
     advance_to_next_agent,
 )
+from rigovo.application.graph.nodes.scan_project import scan_project_node
 from rigovo.application.graph.nodes.classify import classify_node
 from rigovo.application.graph.nodes.assemble import assemble_node
 from rigovo.application.graph.nodes.execute_agent import execute_agent_node
 from rigovo.application.graph.nodes.quality_check import quality_check_node
 from rigovo.application.graph.nodes.approval import plan_approval_node, commit_approval_node
+from rigovo.application.graph.nodes.enrich import enrich_node
 from rigovo.application.graph.nodes.store_memory import store_memory_node
 from rigovo.application.graph.nodes.finalize import finalize_node
 from rigovo.domain.entities.agent import Agent
@@ -77,6 +79,9 @@ class GraphBuilder:
         cost_calc = self._cost_calculator
         gates = self._quality_gates
 
+        async def _scan_project(state: TaskState) -> dict:
+            return await scan_project_node(state)
+
         async def _classify(state: TaskState) -> dict:
             return await classify_node(state, master_llm)
 
@@ -99,13 +104,17 @@ class GraphBuilder:
         async def _commit_approval(state: TaskState) -> dict:
             return await commit_approval_node(state)
 
+        async def _enrich(state: TaskState) -> dict:
+            return await enrich_node(state)
+
         async def _store_memory(state: TaskState) -> dict:
             return await store_memory_node(state, master_llm)
 
         async def _finalize(state: TaskState) -> dict:
             return await finalize_node(state)
 
-        # Add nodes
+        # Add nodes — the intelligent agent pipeline
+        graph.add_node("scan_project", _scan_project)
         graph.add_node("classify", _classify)
         graph.add_node("assemble", _assemble)
         graph.add_node("plan_approval", _plan_approval)
@@ -113,11 +122,13 @@ class GraphBuilder:
         graph.add_node("quality_check", _quality_check)
         graph.add_node("route_next", _route_next)
         graph.add_node("commit_approval", _commit_approval)
+        graph.add_node("enrich", _enrich)
         graph.add_node("store_memory", _store_memory)
         graph.add_node("finalize", _finalize)
 
-        # Edges
-        graph.add_edge(START, "classify")
+        # Edges — scan_project → classify → assemble → ...
+        graph.add_edge(START, "scan_project")
+        graph.add_edge("scan_project", "classify")
         graph.add_edge("classify", "assemble")
         graph.add_edge("assemble", "plan_approval")
 
@@ -140,10 +151,12 @@ class GraphBuilder:
         })
 
         graph.add_conditional_edges("commit_approval", check_approval, {
-            "approved": "store_memory",
+            "approved": "enrich",
             "rejected": "finalize",
         })
 
+        # enrich → store_memory → finalize (the learning pipeline)
+        graph.add_edge("enrich", "store_memory")
         graph.add_edge("store_memory", "finalize")
         graph.add_edge("finalize", END)
 
@@ -166,7 +179,11 @@ class GraphBuilder:
         """
         state = dict(initial_state)
 
-        # 1. Classify
+        # 0. Scan project — perception BEFORE reasoning
+        update = await scan_project_node(state)
+        state.update(update)
+
+        # 1. Classify (with project context available)
         update = await classify_node(state, self._master_llm)
         state.update(update)
 
@@ -218,11 +235,15 @@ class GraphBuilder:
         state.update(update)
         state["approval_status"] = "approved"
 
-        # 6. Store memory
+        # 6. Enrich — extract learnings from gate results
+        update = await enrich_node(state)
+        state.update(update)
+
+        # 7. Store memory
         update = await store_memory_node(state, self._master_llm)
         state.update(update)
 
-        # 7. Finalize
+        # 8. Finalize
         update = await finalize_node(state)
         state.update(update)
 

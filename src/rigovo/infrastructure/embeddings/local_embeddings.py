@@ -7,6 +7,7 @@ but local needs to work offline with zero external dependencies.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
 import re
@@ -49,10 +50,12 @@ class LocalEmbeddingProvider(EmbeddingProvider):
 
     async def embed(self, text: str) -> list[float]:
         """Generate a fixed-dimension embedding for text."""
+        await asyncio.sleep(0)  # Yield to event loop
         return self._hash_embed(text)
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for multiple texts."""
+        await asyncio.sleep(0)  # Yield to event loop
         return [self._hash_embed(t) for t in texts]
 
     def _hash_embed(self, text: str) -> list[float]:

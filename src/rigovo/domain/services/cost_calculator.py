@@ -4,6 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# --- Named constants for pricing defaults and estimation ---
+DEFAULT_INPUT_PRICE_PER_M = 5.00   # Conservative default for unknown models
+DEFAULT_OUTPUT_PRICE_PER_M = 15.00
+TOKENS_PER_MILLION = 1_000_000
+COST_PRECISION = 6                 # Decimal places for cost rounding
+ESTIMATE_PRECISION = 4
+DEFAULT_AVG_TOKENS_PER_AGENT = 4000
+INPUT_TOKEN_RATIO = 0.7            # 70% input, 30% output estimate
+OUTPUT_TOKEN_RATIO = 0.3
+
 
 @dataclass
 class ModelPricing:
@@ -33,8 +43,8 @@ class ModelPricing:
     })
 
     # Default pricing for unknown models (conservative estimate)
-    default_input: float = 5.00
-    default_output: float = 15.00
+    default_input: float = DEFAULT_INPUT_PRICE_PER_M
+    default_output: float = DEFAULT_OUTPUT_PRICE_PER_M
 
     def get_pricing(self, model: str) -> tuple[float, float]:
         """Return (input_price_per_M, output_price_per_M) for a model."""
@@ -72,23 +82,22 @@ class CostCalculator:
             Cost in USD, rounded to 6 decimal places.
         """
         input_price, output_price = self._pricing.get_pricing(model)
-        input_cost = (input_tokens / 1_000_000) * input_price
-        output_cost = (output_tokens / 1_000_000) * output_price
-        return round(input_cost + output_cost, 6)
+        input_cost = (input_tokens / TOKENS_PER_MILLION) * input_price
+        output_cost = (output_tokens / TOKENS_PER_MILLION) * output_price
+        return round(input_cost + output_cost, COST_PRECISION)
 
     def estimate_task_cost(
         self,
         model: str,
         agent_count: int,
-        avg_tokens_per_agent: int = 4000,
+        avg_tokens_per_agent: int = DEFAULT_AVG_TOKENS_PER_AGENT,
     ) -> float:
         """
         Rough cost estimate for a task before execution.
 
         Used in approval gates: "This task will cost ~$X. Approve?"
         """
-        # Assume 70% input, 30% output ratio
-        input_tokens = int(avg_tokens_per_agent * 0.7)
-        output_tokens = int(avg_tokens_per_agent * 0.3)
+        input_tokens = int(avg_tokens_per_agent * INPUT_TOKEN_RATIO)
+        output_tokens = int(avg_tokens_per_agent * OUTPUT_TOKEN_RATIO)
         per_agent = self.calculate(model, input_tokens, output_tokens)
-        return round(per_agent * agent_count, 4)
+        return round(per_agent * agent_count, ESTIMATE_PRECISION)

@@ -6,7 +6,12 @@ from rigovo.domain.interfaces.domain_plugin import AgentRoleDefinition
 
 
 def get_engineering_roles() -> list[AgentRoleDefinition]:
-    """All available agent roles in the engineering domain."""
+    """All available agent roles in the engineering domain.
+
+    Roles are provider-neutral. Each specifies a preferred_tier (budget,
+    standard, premium) instead of a hardcoded model. The model catalog
+    resolves the actual model based on the user's configured provider.
+    """
     return [
         AgentRoleDefinition(
             role_id="planner",
@@ -14,7 +19,7 @@ def get_engineering_roles() -> list[AgentRoleDefinition]:
             description="Breaks down tasks into implementable steps with file-level specificity.",
             default_system_prompt=PLANNER_PROMPT,
             default_tools=["read_file", "list_directory", "search_codebase", "read_dependencies"],
-            default_llm_model="claude-sonnet-4-5-20250929",
+            preferred_tier="standard",
             pipeline_order=0,
             produces_code=False,
         ),
@@ -27,7 +32,7 @@ def get_engineering_roles() -> list[AgentRoleDefinition]:
                 "read_file", "write_file", "list_directory", "search_codebase",
                 "run_command", "read_dependencies",
             ],
-            default_llm_model="claude-sonnet-4-5-20250929",
+            preferred_tier="standard",
             pipeline_order=1,
             produces_code=True,
         ),
@@ -37,7 +42,7 @@ def get_engineering_roles() -> list[AgentRoleDefinition]:
             description="Reviews code changes for correctness, patterns, and maintainability.",
             default_system_prompt=REVIEWER_PROMPT,
             default_tools=["read_file", "list_directory", "search_codebase"],
-            default_llm_model="claude-sonnet-4-5-20250929",
+            preferred_tier="standard",
             pipeline_order=2,
             produces_code=False,
         ),
@@ -47,7 +52,7 @@ def get_engineering_roles() -> list[AgentRoleDefinition]:
             description="Audits code for security vulnerabilities, injection risks, and compliance.",
             default_system_prompt=SECURITY_PROMPT,
             default_tools=["read_file", "search_codebase", "run_command"],
-            default_llm_model="claude-sonnet-4-5-20250929",
+            preferred_tier="standard",
             pipeline_order=3,
             produces_code=False,
         ),
@@ -60,7 +65,7 @@ def get_engineering_roles() -> list[AgentRoleDefinition]:
                 "read_file", "write_file", "list_directory", "search_codebase",
                 "run_command",
             ],
-            default_llm_model="claude-sonnet-4-5-20250929",
+            preferred_tier="standard",
             pipeline_order=4,
             produces_code=True,
         ),
@@ -72,7 +77,7 @@ def get_engineering_roles() -> list[AgentRoleDefinition]:
             default_tools=[
                 "read_file", "write_file", "list_directory", "run_command",
             ],
-            default_llm_model="claude-sonnet-4-5-20250929",
+            preferred_tier="budget",
             pipeline_order=5,
             produces_code=True,
         ),
@@ -82,7 +87,7 @@ def get_engineering_roles() -> list[AgentRoleDefinition]:
             description="Focuses on observability, error budgets, runbooks, and incident response.",
             default_system_prompt=SRE_PROMPT,
             default_tools=["read_file", "write_file", "list_directory", "run_command"],
-            default_llm_model="claude-sonnet-4-5-20250929",
+            preferred_tier="budget",
             pipeline_order=6,
             produces_code=True,
         ),
@@ -92,7 +97,7 @@ def get_engineering_roles() -> list[AgentRoleDefinition]:
             description="High-level architecture review. Ensures decisions align with system design.",
             default_system_prompt=LEAD_PROMPT,
             default_tools=["read_file", "list_directory", "search_codebase"],
-            default_llm_model="claude-sonnet-4-5-20250929",
+            preferred_tier="premium",
             pipeline_order=-1,  # Lead goes first when included
             produces_code=False,
         ),

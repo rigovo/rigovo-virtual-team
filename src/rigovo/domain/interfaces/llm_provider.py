@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -65,7 +66,8 @@ class LLMProvider(ABC):
         Returns:
             Standardised LLMResponse with content, usage, and tool calls.
         """
-        raise NotImplementedError  # Abstract — implemented by infrastructure adapters
+        await asyncio.sleep(0)  # abstract — subclasses must override
+        raise NotImplementedError
 
     @abstractmethod
     async def stream(
@@ -81,4 +83,5 @@ class LLMProvider(ABC):
         Returns an async iterator of partial responses.
         Used for real-time terminal display.
         """
-        raise NotImplementedError  # Abstract — implemented by infrastructure adapters
+        await asyncio.sleep(0)  # abstract — subclasses must override
+        raise NotImplementedError

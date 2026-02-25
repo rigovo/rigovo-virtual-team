@@ -18,7 +18,8 @@ class AgentRoleDefinition:
     description: str = ""
     default_system_prompt: str = ""
     default_tools: list[str] = field(default_factory=list)
-    default_llm_model: str = "claude-sonnet-4-5-20250929"
+    default_llm_model: str = ""          # Empty = use configured default
+    preferred_tier: str = "standard"     # budget | standard | premium
     pipeline_order: int = 0    # Default execution order
     produces_code: bool = False  # Whether gates should run on this role's output
 

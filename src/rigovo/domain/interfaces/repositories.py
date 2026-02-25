@@ -9,6 +9,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from uuid import UUID
 
+# --- Default pagination limits ---
+DEFAULT_PAGE_SIZE = 50
+DEFAULT_MEMORY_SEARCH_LIMIT = 10
+DEFAULT_AUDIT_PAGE_SIZE = 100
+
 from rigovo.domain.entities.workspace import Workspace
 from rigovo.domain.entities.team import Team
 from rigovo.domain.entities.agent import Agent, EnrichmentContext
@@ -93,13 +98,13 @@ class TaskRepository(ABC):
 
     @abstractmethod
     async def list_by_workspace(
-        self, workspace_id: UUID, limit: int = 50,
+        self, workspace_id: UUID, limit: int = DEFAULT_PAGE_SIZE,
     ) -> list[Task]:
         raise NotImplementedError
 
     @abstractmethod
     async def list_by_team(
-        self, team_id: UUID, limit: int = 50,
+        self, team_id: UUID, limit: int = DEFAULT_PAGE_SIZE,
     ) -> list[Task]:
         raise NotImplementedError
 
@@ -124,14 +129,14 @@ class MemoryRepository(ABC):
         self,
         workspace_id: UUID,
         query_embedding: list[float],
-        limit: int = 10,
+        limit: int = DEFAULT_MEMORY_SEARCH_LIMIT,
         memory_types: list[MemoryType] | None = None,
     ) -> list[Memory]:
         raise NotImplementedError
 
     @abstractmethod
     async def list_by_workspace(
-        self, workspace_id: UUID, limit: int = 50,
+        self, workspace_id: UUID, limit: int = DEFAULT_PAGE_SIZE,
     ) -> list[Memory]:
         raise NotImplementedError
 
@@ -177,7 +182,7 @@ class AuditRepository(ABC):
 
     @abstractmethod
     async def list_by_workspace(
-        self, workspace_id: UUID, limit: int = 100,
+        self, workspace_id: UUID, limit: int = DEFAULT_AUDIT_PAGE_SIZE,
     ) -> list[AuditEntry]:
         raise NotImplementedError
 

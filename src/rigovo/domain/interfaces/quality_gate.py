@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -55,4 +56,5 @@ class QualityGate(ABC):
         Returns a deterministic GateResult. No LLM opinions.
         Same input ALWAYS produces the same output.
         """
-        raise NotImplementedError  # Abstract — implemented by domain plugins
+        await asyncio.sleep(0)  # abstract — subclasses must override
+        raise NotImplementedError
