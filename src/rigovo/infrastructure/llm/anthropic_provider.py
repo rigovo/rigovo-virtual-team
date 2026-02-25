@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 from rigovo.domain.interfaces.llm_provider import LLMProvider, LLMResponse, LLMUsage
+
+logger = logging.getLogger(__name__)
+
+# Retry config for transient API errors (429, 529, 500, etc.)
+_MAX_RETRIES = 5
+_BASE_DELAY = 1.0   # seconds — doubles each attempt (1, 2, 4, 8, 16)
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 529}
 
 
 class AnthropicProvider(LLMProvider):
@@ -13,6 +22,9 @@ class AnthropicProvider(LLMProvider):
 
     Uses the anthropic SDK directly — not langchain. This gives us
     full control over the API call and response parsing.
+
+    Includes automatic retry with exponential backoff for transient
+    API errors (429 rate limit, 529 overloaded, 5xx server errors).
     """
 
     def __init__(self, api_key: str, model: str = "claude-sonnet-4-6") -> None:
@@ -73,7 +85,7 @@ class AnthropicProvider(LLMProvider):
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
 
-        response = await client.messages.create(**kwargs)
+        response = await self._invoke_with_retry(client, kwargs)
 
         # Extract content
         content = ""
@@ -140,6 +152,36 @@ class AnthropicProvider(LLMProvider):
                 yield text
         finally:
             await stream.__aexit__(None, None, None)
+
+    @staticmethod
+    async def _invoke_with_retry(client: Any, kwargs: dict[str, Any]) -> Any:
+        """Invoke the Anthropic API with exponential backoff retry.
+
+        Retries on transient errors: 429 (rate limit), 529 (overloaded),
+        500/502/503 (server errors). Non-retryable errors raise immediately.
+        """
+        last_error: Exception | None = None
+
+        for attempt in range(_MAX_RETRIES):
+            try:
+                return await client.messages.create(**kwargs)
+            except Exception as exc:
+                # Extract HTTP status code from Anthropic SDK exceptions
+                status_code = getattr(exc, "status_code", None)
+
+                if status_code not in _RETRYABLE_STATUS_CODES:
+                    raise  # Not retryable — propagate immediately
+
+                last_error = exc
+                delay = _BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    "Anthropic API returned %s (attempt %d/%d), retrying in %.1fs: %s",
+                    status_code, attempt + 1, _MAX_RETRIES, delay, exc,
+                )
+                await asyncio.sleep(delay)
+
+        # All retries exhausted — raise the last error
+        raise last_error  # type: ignore[misc]
 
     @staticmethod
     def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

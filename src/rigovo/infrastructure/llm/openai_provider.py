@@ -6,9 +6,18 @@ DeepSeek, Ollama, etc.) by passing a custom base_url.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Retry config for transient API errors (429, 500, 502, 503, 529)
+_MAX_RETRIES = 5
+_BASE_DELAY = 1.0   # seconds — doubles each attempt (1, 2, 4, 8, 16)
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 529}
 
 from rigovo.domain.interfaces.llm_provider import LLMProvider, LLMResponse, LLMUsage
 
@@ -88,7 +97,7 @@ class OpenAIProvider(LLMProvider):
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
 
-        response = await client.chat.completions.create(**kwargs)
+        response = await self._invoke_with_retry(client, kwargs)
         choice = response.choices[0]
 
         # Extract tool calls
@@ -144,6 +153,35 @@ class OpenAIProvider(LLMProvider):
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
+
+    @staticmethod
+    async def _invoke_with_retry(client: Any, kwargs: dict[str, Any]) -> Any:
+        """Invoke the OpenAI API with exponential backoff retry.
+
+        Retries on transient errors: 429 (rate limit), 529 (overloaded),
+        500/502/503 (server errors). Non-retryable errors raise immediately.
+        """
+        last_error: Exception | None = None
+
+        for attempt in range(_MAX_RETRIES):
+            try:
+                return await client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                status_code = getattr(exc, "status_code", None)
+
+                if status_code not in _RETRYABLE_STATUS_CODES:
+                    raise  # Not retryable — propagate immediately
+
+                last_error = exc
+                delay = _BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    "OpenAI API returned %s (attempt %d/%d), retrying in %.1fs: %s",
+                    status_code, attempt + 1, _MAX_RETRIES, delay, exc,
+                )
+                await asyncio.sleep(delay)
+
+        # All retries exhausted — raise the last error
+        raise last_error  # type: ignore[misc]
 
     @staticmethod
     def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
