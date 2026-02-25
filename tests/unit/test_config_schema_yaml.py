@@ -87,6 +87,29 @@ class TestYAMLIO:
         assert reloaded.project.language == original.project.language
         assert reloaded.quality.rigour_enabled == original.quality.rigour_enabled
 
+    def test_save_rigovo_yml_includes_full_orchestration_defaults(self, tmp_path):
+        """Generated rigovo.yml should include all orchestration defaults."""
+        config = RigovoConfig()
+        saved_path = save_rigovo_yml(config, tmp_path)
+        reloaded = yaml.safe_load(saved_path.read_text(encoding="utf-8"))
+
+        orchestration = reloaded["orchestration"]
+        assert "max_retries" in orchestration
+        assert "max_agents_per_task" in orchestration
+        assert "timeout_per_agent" in orchestration
+        assert "idle_timeout" in orchestration
+        assert "parallel_agents" in orchestration
+        assert "deep_mode" in orchestration
+        assert "deep_pro" in orchestration
+        assert "budget" in orchestration
+        assert "consultation" in orchestration
+
+        consultation = orchestration["consultation"]
+        assert "enabled" in consultation
+        assert "max_question_chars" in consultation
+        assert "max_response_chars" in consultation
+        assert "allowed_targets" in consultation
+
 
 # Import ProjectSchema for empty file test
 from rigovo.config_schema import ProjectSchema

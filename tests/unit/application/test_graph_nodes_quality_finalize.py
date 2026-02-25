@@ -187,6 +187,76 @@ class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
         assert result["gate_results"]["violation_count"] == 2
         assert result["retry_count"] == 2
 
+    async def test_quality_check_deep_mode_always_sets_gate_input_flags(self):
+        """deep_mode=always should enable deep and pro flags in GateInput."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "current_agent_role": "coder",
+            "team_config": {
+                "agents": {},
+                "gates_after": ["coder"],
+                "pipeline_order": ["coder", "reviewer"],
+            },
+            "agent_outputs": {
+                "coder": {"summary": "Changes", "files_changed": ["src/file.py"]}
+            },
+            "project_root": "/project",
+            "deep_mode": "always",
+            "deep_pro": True,
+            "events": [],
+        }
+
+        gate = AsyncMock()
+        gate.run.return_value = GateResult(
+            status=GateStatus.PASSED,
+            gates_run=1,
+            gates_passed=1,
+            violations=[],
+        )
+
+        await quality_check_node(state, [gate])
+        gate_input = gate.run.call_args.args[0]
+        assert gate_input.deep is True
+        assert gate_input.pro is True
+
+    async def test_quality_check_deep_mode_final_only_on_last_gated_role(self):
+        """deep_mode=final should run deep only for the last role in gates_after order."""
+        state: TaskState = {
+            "task_id": "task-2",
+            "current_agent_role": "coder",
+            "team_config": {
+                "agents": {},
+                "gates_after": ["coder", "qa"],
+                "pipeline_order": ["planner", "coder", "reviewer", "qa"],
+            },
+            "agent_outputs": {
+                "coder": {"summary": "Changes", "files_changed": ["src/file.py"]}
+            },
+            "project_root": "/project",
+            "deep_mode": "final",
+            "deep_pro": False,
+            "events": [],
+        }
+
+        gate = AsyncMock()
+        gate.run.return_value = GateResult(
+            status=GateStatus.PASSED,
+            gates_run=1,
+            gates_passed=1,
+            violations=[],
+        )
+
+        await quality_check_node(state, [gate])
+        gate_input = gate.run.call_args.args[0]
+        assert gate_input.deep is False
+
+        # Now simulate the final gated role (qa) in the same pipeline.
+        state["current_agent_role"] = "qa"
+        state["agent_outputs"]["qa"] = {"summary": "Tests", "files_changed": ["tests/test_file.py"]}
+        await quality_check_node(state, [gate])
+        gate_input = gate.run.call_args.args[0]
+        assert gate_input.deep is True
+
 
 class TestFinalizeNode(unittest.IsolatedAsyncioTestCase):
     """Test the finalize_node function."""

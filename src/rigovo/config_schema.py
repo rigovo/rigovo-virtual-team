@@ -156,6 +156,8 @@ class OrchestrationSchema(BaseModel):
     timeout_per_agent: int = 900          # 15 min batch ceiling (streaming uses idle)
     idle_timeout: int = 120               # 2 min idle = abort (no tokens received)
     parallel_agents: bool = False
+    deep_mode: str = "final"              # never|final|ci|always|critical_only
+    deep_pro: bool = False                # Use larger deep model when deep is enabled
     consultation: "ConsultationSchema" = Field(default_factory=lambda: ConsultationSchema())
 
     budget: BudgetSchema = Field(default_factory=BudgetSchema)

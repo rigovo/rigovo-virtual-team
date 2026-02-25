@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -183,6 +184,11 @@ class RigourQualityGate(QualityGate):
         else:
             cmd = [self._binary, "check", "--json"]
 
+        if gate_input.deep:
+            cmd.append("--deep")
+        if gate_input.pro:
+            cmd.append("--pro")
+
         if gate_input.files_changed:
             for f in gate_input.files_changed:
                 cmd.extend(["--file", f])
@@ -249,6 +255,8 @@ class RigourQualityGate(QualityGate):
         """Parse rigour CLI JSON output into GateResult."""
         violations: list[Violation] = []
         score = 100.0
+        gates_run = 0
+        gates_passed = 0
 
         try:
             data = json.loads(stdout) if stdout.strip() else {}
@@ -260,7 +268,7 @@ class RigourQualityGate(QualityGate):
                 violations=[],
             )
 
-        # Parse gate results
+        # Parse legacy gate results shape: {"gates":[...]}
         gates = data.get("gates", [])
         for gate in gates:
             gate_id = gate.get("id", "unknown")
@@ -290,14 +298,63 @@ class RigourQualityGate(QualityGate):
                 if gate_score < score:
                     score = gate_score
 
+        # Parse modern/deep shape: {"failures":[...], "summary": {...}}
+        failures = data.get("failures", [])
+        for failure in failures:
+            gate_id = str(failure.get("id", "unknown"))
+            config = self._configs.get(gate_id)
+            if config and not config.enabled:
+                continue
+
+            severity = (
+                config.severity if config else self._map_rigour_severity(failure.get("severity"))
+            )
+            parsed_issues = self._extract_failure_issues(failure)
+            if not parsed_issues:
+                violations.append(
+                    Violation(
+                        gate_id=gate_id,
+                        message=str(failure.get("details") or failure.get("title") or "Gate failed"),
+                        severity=severity,
+                        suggestion=str(failure.get("hint") or ""),
+                    )
+                )
+                continue
+
+            hint = str(failure.get("hint") or "")
+            for issue in parsed_issues:
+                violations.append(
+                    Violation(
+                        gate_id=gate_id,
+                        message=issue["message"],
+                        file_path=issue["file_path"],
+                        line=issue["line"],
+                        severity=severity,
+                        suggestion=hint,
+                    )
+                )
+
+        summary = data.get("summary")
+        if isinstance(summary, dict):
+            gates_run = len(summary)
+            gates_passed = sum(
+                1 for status in summary.values() if str(status).upper() in {"PASS", "PASSED"}
+            )
+        elif gates:
+            gates_run = len(gates)
+            gates_passed = sum(
+                1 for gate in gates if str(gate.get("status", "")).upper() in {"PASS", "PASSED"}
+            )
+
         # Parse overall status
         overall = data.get("status", "PASS" if return_code == 0 else "FAIL")
         if data.get("score") is not None:
             score = data["score"]
 
-        status = GateStatus.PASSED if overall == "PASS" else GateStatus.FAILED
         has_blockers = any(v.severity == ViolationSeverity.ERROR for v in violations)
-        if has_blockers:
+        status = GateStatus.FAILED if has_blockers else GateStatus.PASSED
+        if not violations and (overall != "PASS" or return_code != 0):
+            # Unknown failure shape: fail closed.
             status = GateStatus.FAILED
 
         fix_packet = None
@@ -322,7 +379,85 @@ class RigourQualityGate(QualityGate):
             status=status,
             score=score,
             violations=violations,
+            gates_run=gates_run,
+            gates_passed=gates_passed,
         )
+
+    @staticmethod
+    def _map_rigour_severity(severity: object) -> ViolationSeverity:
+        value = str(severity or "").strip().lower()
+        if value in {"critical", "high", "error"}:
+            return ViolationSeverity.ERROR
+        if value in {"medium", "low", "warning", "warn"}:
+            return ViolationSeverity.WARNING
+        return ViolationSeverity.INFO
+
+    @staticmethod
+    def _normalize_file_path(raw: object) -> str | None:
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        if not text:
+            return None
+        # Some rigour failures format entries as "path/to/file.py (123 lines)".
+        return re.sub(r"\s+\(\d+\s+lines\)\s*$", "", text)
+
+    def _extract_failure_issues(self, failure: dict[str, object]) -> list[dict[str, object]]:
+        issues: list[dict[str, object]] = []
+        gate_id = str(failure.get("id", "unknown"))
+
+        for raw in failure.get("issues", []) if isinstance(failure.get("issues"), list) else []:
+            if not isinstance(raw, dict):
+                continue
+            issues.append(
+                {
+                    "file_path": self._normalize_file_path(raw.get("file")),
+                    "line": raw.get("line") if isinstance(raw.get("line"), int) else None,
+                    "message": str(raw.get("message") or failure.get("details") or gate_id),
+                }
+            )
+
+        if issues:
+            return issues
+
+        files = failure.get("files")
+        file_paths = (
+            [self._normalize_file_path(f) for f in files if self._normalize_file_path(f)]
+            if isinstance(files, list)
+            else []
+        )
+        details = str(failure.get("details") or "")
+
+        line_items: list[tuple[int | None, str]] = []
+        for raw_line in details.splitlines():
+            line = raw_line.strip()
+            m = re.match(r"^L(\d+):\s*(.+)$", line)
+            if m:
+                line_items.append((int(m.group(1)), m.group(2).strip()))
+
+        if line_items:
+            target_file = file_paths[0] if len(file_paths) == 1 else None
+            for line_no, message in line_items:
+                issues.append(
+                    {
+                        "file_path": target_file,
+                        "line": line_no,
+                        "message": message,
+                    }
+                )
+            return issues
+
+        if file_paths:
+            for file_path in file_paths:
+                issues.append(
+                    {
+                        "file_path": file_path,
+                        "line": None,
+                        "message": details or str(failure.get("title") or gate_id),
+                    }
+                )
+
+        return issues
 
     def _run_builtin_checks(self, gate_input: GateInput) -> GateResult:
         """

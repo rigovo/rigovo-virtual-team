@@ -75,6 +75,9 @@ class RunTaskCommand:
         approval_handler: Callable | None = None,
         max_retries: int = 5,
         consultation_policy: dict[str, Any] | None = None,
+        deep_mode: str = "final",
+        deep_pro: bool = False,
+        ci_mode: bool = False,
         offline: bool = False,
         enable_streaming: bool = True,
         enable_parallel: bool = False,
@@ -93,6 +96,9 @@ class RunTaskCommand:
         self._approval_handler = approval_handler
         self._max_retries = max_retries
         self._consultation_policy = consultation_policy or {}
+        self._deep_mode = deep_mode
+        self._deep_pro = deep_pro
+        self._ci_mode = ci_mode
         self._offline = offline
         self._enable_streaming = enable_streaming
         self._enable_parallel = enable_parallel
@@ -170,6 +176,9 @@ class RunTaskCommand:
             "retry_count": 0,
             "max_retries": self._max_retries,
             "consultation_policy": self._consultation_policy,
+            "deep_mode": self._deep_mode,
+            "deep_pro": self._deep_pro,
+            "ci_mode": self._ci_mode,
             "fix_packet": None,
             "approval_status": None,
             "approval_feedback": None,

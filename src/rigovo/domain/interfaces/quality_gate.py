@@ -21,6 +21,8 @@ class GateInput:
     project_root: str
     files_changed: list[str]
     agent_role: str
+    deep: bool = False
+    pro: bool = False
 
 
 class QualityGate(ABC):

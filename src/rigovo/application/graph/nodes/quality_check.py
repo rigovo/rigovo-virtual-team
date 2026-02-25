@@ -9,6 +9,40 @@ from rigovo.domain.interfaces.quality_gate import QualityGate, GateInput
 from rigovo.domain.entities.quality import GateStatus, FixPacket, FixItem, Violation, ViolationSeverity
 
 
+def _resolve_deep_mode(state: TaskState, current_role: str) -> tuple[bool, bool]:
+    """
+    Decide whether to enable Rigour deep analysis for this gate run.
+
+    Modes:
+    - never: disable always
+    - always: enable on every gated agent step
+    - ci: enable only when task is launched in CI mode
+    - critical_only: enable only for critical tasks
+    - final (default): enable only for the final gated role in the pipeline
+    """
+    mode = str(state.get("deep_mode", "final")).strip().lower()
+    use_pro = bool(state.get("deep_pro", False))
+
+    if mode == "never":
+        return False, use_pro
+    if mode == "always":
+        return True, use_pro
+    if mode == "ci":
+        return bool(state.get("ci_mode", False)), use_pro
+    if mode == "critical_only":
+        classification = state.get("classification", {})
+        return classification.get("complexity") == "critical", use_pro
+
+    # final (default): run deep only on the last code-gated role.
+    team_config = state.get("team_config", {})
+    pipeline_order = team_config.get("pipeline_order", [])
+    gates_after = set(team_config.get("gates_after", []))
+    gated_in_order = [r for r in pipeline_order if r in gates_after]
+    if not gated_in_order:
+        return False, use_pro
+    return current_role == gated_in_order[-1], use_pro
+
+
 async def quality_check_node(
     state: TaskState,
     quality_gates: list[QualityGate],
@@ -85,10 +119,13 @@ async def quality_check_node(
             }],
         }
 
+    run_deep, run_pro = _resolve_deep_mode(state, current_role)
     gate_input = GateInput(
         project_root=state.get("project_root", "."),
         files_changed=files_changed,
         agent_role=current_role,
+        deep=run_deep,
+        pro=run_pro,
     )
 
     # Run all quality gates
@@ -119,6 +156,8 @@ async def quality_check_node(
         "events": state.get("events", []) + [{
             "type": "gate_results",
             "role": current_role,
+            "deep": run_deep,
+            "pro": run_pro,
             "passed": all_passed,
             "gates_run": total_gates_run,
             "violations": len(all_violations),

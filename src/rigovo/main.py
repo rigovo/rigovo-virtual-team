@@ -162,6 +162,7 @@ def run(
             enable_streaming=not plain and not ci,
             enable_parallel=enable_parallel,
             auto_approve=not approve,
+            ci_mode=ci,
         )
         result = asyncio.run(
             cmd.execute(

@@ -112,6 +112,51 @@ class TestRigourOutputParsing:
         result = gate._parse_rigour_output("not json", 1)
         assert result.status == GateStatus.FAILED
 
+    def test_parse_failures_array_from_deep_mode(self, gate):
+        stdout = json.dumps({
+            "status": "FAIL",
+            "score": 28,
+            "summary": {"promise-safety": "FAIL", "structure-check": "PASS"},
+            "failures": [{
+                "id": "promise-safety",
+                "severity": "high",
+                "details": (
+                    "Unsafe async/error patterns in src/app.py:\n"
+                    "  L42: [bare-except] Bare except with pass"
+                ),
+                "files": ["src/app.py"],
+                "hint": "Fix exception handling.",
+            }],
+        })
+        result = gate._parse_rigour_output(stdout, 1)
+        assert result.status == GateStatus.FAILED
+        assert result.gates_run == 2
+        assert result.gates_passed == 1
+        assert len(result.violations) == 1
+        violation = result.violations[0]
+        assert violation.gate_id == "promise-safety"
+        assert violation.file_path == "src/app.py"
+        assert violation.line == 42
+        assert violation.severity == ViolationSeverity.ERROR
+        assert "bare-except" in violation.message
+
+    def test_warning_only_failures_do_not_block(self, gate):
+        stdout = json.dumps({
+            "status": "FAIL",
+            "summary": {"file-size": "FAIL"},
+            "failures": [{
+                "id": "file-size",
+                "severity": "low",
+                "details": "Files exceed limit.",
+                "files": ["src/huge.py (501 lines)"],
+            }],
+        })
+        result = gate._parse_rigour_output(stdout, 1)
+        assert result.status == GateStatus.PASSED
+        assert len(result.violations) == 1
+        assert result.violations[0].severity == ViolationSeverity.WARNING
+        assert result.violations[0].file_path == "src/huge.py"
+
 
 class TestGateConfig:
 

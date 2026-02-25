@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from rigovo.main import app
@@ -133,6 +134,23 @@ class TestInit:
         assert result3.exit_code == 0
         second_content = yml_path.read_text()
         assert second_content != "# modified content"
+
+    def test_init_writes_full_orchestration_fields(self, tmp_project_dir):
+        """init should generate orchestration deep + consultation defaults."""
+        result = runner.invoke(app, ["init", "--project", str(tmp_project_dir)])
+        assert result.exit_code == 0
+
+        yml_path = tmp_project_dir / "rigovo.yml"
+        data = yaml.safe_load(yml_path.read_text(encoding="utf-8"))
+
+        orchestration = data["orchestration"]
+        assert "deep_mode" in orchestration
+        assert "deep_pro" in orchestration
+        assert "consultation" in orchestration
+
+        consultation = orchestration["consultation"]
+        assert "enabled" in consultation
+        assert "allowed_targets" in consultation
 
     def test_init_creates_gitignore(self, tmp_project_dir):
         """Test that init creates or updates .gitignore."""

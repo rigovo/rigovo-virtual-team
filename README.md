@@ -529,13 +529,33 @@ Every line of agent-generated code passes through [Rigour](https://github.com/ri
 
 ```mermaid
 flowchart LR
-    CODE[Agent writes code] --> RIGOUR[Rigour CLI<br/>rigour check --json]
+    CODE[Agent writes code] --> RIGOUR[Rigour CLI<br/>rigour check --json<br/>+ auto --deep by policy]
     RIGOUR --> PASS{Passed?}
     PASS -->|yes| NEXT[Next agent]
     PASS -->|no| FP[Fix Packet<br/>Machine-readable<br/>diagnostics]
     FP --> RETRY[Agent retries<br/>with fix packet context]
     RETRY --> RIGOUR
 ```
+
+### Automatic Deep Analysis Policy (Default)
+
+Rigovo does not rely on manual user flags for deep analysis. By default:
+
+- `orchestration.deep_mode: final`
+- Deep analysis runs automatically on the **final gated role** in the pipeline.
+- Earlier gated roles use fast deterministic checks for speed.
+
+Available modes:
+
+- `never` — disable deep analysis
+- `final` — deep on final gated role (default)
+- `ci` — deep only when running `rigovo run --ci ...`
+- `always` — deep on every gated role
+- `critical_only` — deep only for `critical` complexity tasks
+
+Use `orchestration.deep_pro: true` to run deep in pro tier.
+
+Deep/pro output is parsed into the same violation model as standard gates, so agents receive fix packets and auto-correct without user intervention.
 
 ### What Rigour Catches
 
@@ -1033,6 +1053,8 @@ Built-in defaults → rigovo.yml → rigour.yml → .env → env vars → CLI fl
 
 ### Quick Config Examples
 
+`rigovo init` writes a complete `rigovo.yml` with all schema fields and defaults. The examples below show common overrides.
+
 **Override agent model:**
 ```yaml
 # rigovo.yml
@@ -1054,6 +1076,24 @@ orchestration:
     max_tokens_per_task: 200000
     monthly_budget: 100.00        # USD per month
     alert_at_percent: 0.80        # Alert at 80%
+```
+
+**Deep analysis policy (automatic by default):**
+```yaml
+orchestration:
+  deep_mode: final                # never|final|ci|always|critical_only
+  deep_pro: false                 # true = use pro deep tier
+```
+
+**Inter-agent consultation policy:**
+```yaml
+orchestration:
+  consultation:
+    enabled: true
+    max_question_chars: 1200
+    max_response_chars: 1200
+    allowed_targets:
+      reviewer: [planner, coder, security, qa, devops, sre, lead]
 ```
 
 **Add custom rules per agent:**

@@ -87,6 +87,9 @@ class TaskState(TypedDict, total=False):
     budget_max_cost_per_task: float
     budget_max_tokens_per_task: int
     consultation_policy: dict[str, Any]  # Runtime consultation policy from rigovo.yml
+    deep_mode: str                      # never|final|ci|always|critical_only
+    deep_pro: bool                      # Run deep in pro tier when deep enabled
+    ci_mode: bool                       # Task was launched in CI mode
 
     # --- Context engineering ---
     project_snapshot: Any               # ProjectSnapshot from scanner (set at task start)

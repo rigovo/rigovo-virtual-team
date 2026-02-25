@@ -132,6 +132,7 @@ class Container:
         enable_streaming: bool = True,
         enable_parallel: bool = False,
         auto_approve: bool = True,
+        ci_mode: bool = False,
     ):
         """Build a fully-wired RunTaskCommand."""
         from rigovo.application.commands.run_task import RunTaskCommand
@@ -156,6 +157,9 @@ class Container:
             approval_handler=approval_handler,
             max_retries=self.config.max_retries,
             consultation_policy=self.config.yml.orchestration.consultation.model_dump(),
+            deep_mode=self.config.yml.orchestration.deep_mode,
+            deep_pro=self.config.yml.orchestration.deep_pro,
+            ci_mode=ci_mode,
             offline=offline,
             enable_streaming=enable_streaming,
             enable_parallel=enable_parallel,
