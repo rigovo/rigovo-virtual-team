@@ -1,67 +1,52 @@
-# Dependencies
-node_modules/
-.pnpm-store/
-
-# Build outputs
-dist/
-.next/
-out/
-
-# Prisma generated
-node_modules/.prisma/
-
-# Environment
-.env
-.env.local
-.env.*.local
-.env.production
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-.DS_Store
-
-# Logs
-*.log
-npm-debug.log*
-
-# Test & Coverage
-coverage/
-
-# Rigour artifacts
-rigour-report.json
-rigour-fix-packet.json
-.rigour/
-
-# TypeScript
-*.tsbuildinfo
-
-# Generated config
-rigovo.yml
-
 # Python
-*.pyc
-**/__pycache__/
-*.pyo
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
 *.egg-info/
 *.egg
-cli/src/*.egg-info/
-cli/.pytest_cache/
-cli/.mypy_cache/
-cli/.ruff_cache/
-cli/htmlcov/
+dist/
+build/
+*.whl
+.eggs/
 
-# Python virtual environments
+# Virtual environments
 .venv/
 venv/
 env/
 
-# Python build
-build/
-sdist/
-wheels/
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
 
-# Rigovo CLI local data
-.rigovo/
+# Type checking
+.mypy_cache/
+.pytype/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Rigour artifacts (regenerated on every run)
+rigour-report.json
+rigour-fix-packet.json
+.rigour/
+
+# Node (for Rigour CLI)
+node_modules/
+package-lock.json

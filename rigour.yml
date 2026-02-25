@@ -94,7 +94,7 @@ gates:
     min_body_lines: 5
   hallucinated_imports:
     enabled: true
-    check_relative: false
+    check_relative: true
     check_packages: true
     ignore_patterns:
       - \.css$
@@ -107,7 +107,6 @@ gates:
       - \.wasm$
       - \.graphql$
       - \.gql$
-      - \.js$
   inconsistent_error_handling:
     enabled: true
     max_strategies_per_type: 2
@@ -187,9 +186,7 @@ planned: []
 ignore:
   - .git/**
   - node_modules/**
-  - "**/node_modules/**"
   - dist/**
-  - "**/dist/**"
   - venv/**
   - .venv/**
   - __pycache__/**
