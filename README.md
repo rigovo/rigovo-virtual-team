@@ -1078,6 +1078,15 @@ orchestration:
     alert_at_percent: 0.80        # Alert at 80%
 ```
 
+**Select database backend (company mode):**
+```yaml
+database:
+  backend: postgres               # sqlite|postgres
+  local_path: .rigovo/local.db    # used when backend=sqlite
+```
+
+Set `RIGOVO_DB_URL` in `.env` when using `postgres`.
+
 **Deep analysis policy (automatic by default):**
 ```yaml
 orchestration:

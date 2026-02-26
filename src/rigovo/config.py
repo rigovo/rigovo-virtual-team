@@ -89,6 +89,8 @@ class AppConfig(BaseSettings):
     workspace_id: str = Field(default="", alias="RIGOVO_WORKSPACE_ID")
 
     # Database
+    db_backend: str = Field(default="sqlite", alias="RIGOVO_DB_BACKEND")  # sqlite|postgres
+    db_url: str = Field(default="", alias="RIGOVO_DB_URL")                 # Postgres DSN
     local_db_path: str = Field(default=".rigovo/local.db", alias="RIGOVO_LOCAL_DB")
 
     # Sub-configs (from .env)
@@ -139,6 +141,10 @@ def load_config(project_root: Path | None = None) -> AppConfig:
     # 3. Merge YAML orchestration into app config
     app_config.max_retries = yml.orchestration.max_retries
     app_config.max_agents_per_task = yml.orchestration.max_agents_per_task
+
+    # 3b. Merge YAML database defaults (secrets still come from env vars)
+    app_config.db_backend = yml.database.backend
+    app_config.local_db_path = yml.database.local_path
 
     # 4. Merge YAML approval into app config
     app_config.approval.after_planning = yml.approval.after_planning

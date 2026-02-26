@@ -25,6 +25,8 @@ class TestRigovoConfigDefaults:
         assert isinstance(config.quality, QualitySchema)
         assert config.quality.rigour_enabled is True
         assert config.quality.rigour_timeout == 120
+        assert config.database.backend == "sqlite"
+        assert config.database.local_path == ".rigovo/local.db"
 
     def test_project_schema_defaults(self):
         """ProjectSchema should have defaults."""

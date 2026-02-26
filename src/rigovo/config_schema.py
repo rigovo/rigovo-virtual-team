@@ -208,6 +208,13 @@ class LoggingSchema(BaseModel):
     file: str = ".rigovo/rigovo.log"
 
 
+class DatabaseSchema(BaseModel):
+    """Database backend configuration."""
+
+    backend: str = "sqlite"             # sqlite|postgres
+    local_path: str = ".rigovo/local.db"
+
+
 # ---------------------------------------------------------------------------
 # Root schema
 # ---------------------------------------------------------------------------
@@ -232,6 +239,7 @@ class RigovoConfig(BaseModel):
     cloud: CloudSchema = Field(default_factory=CloudSchema)
     ci: CISchema = Field(default_factory=CISchema)
     logging: LoggingSchema = Field(default_factory=LoggingSchema)
+    database: DatabaseSchema = Field(default_factory=DatabaseSchema)
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +290,7 @@ def save_rigovo_yml(config: RigovoConfig, project_root: Path) -> Path:
         "cloud:": "\n# ─── Cloud Sync ──────────────────────────────────",
         "ci:": "\n# ─── CI/CD Integration ───────────────────────────",
         "logging:": "\n# ─── Logging ─────────────────────────────────────",
+        "database:": "\n# ─── Database ───────────────────────────────────",
     }
 
     for yaml_line in yaml_str.splitlines():

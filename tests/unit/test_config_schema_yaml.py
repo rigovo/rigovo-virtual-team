@@ -110,6 +110,11 @@ class TestYAMLIO:
         assert "max_response_chars" in consultation
         assert "allowed_targets" in consultation
 
+        assert "database" in reloaded
+        database = reloaded["database"]
+        assert database["backend"] == "sqlite"
+        assert database["local_path"] == ".rigovo/local.db"
+
 
 # Import ProjectSchema for empty file test
 from rigovo.config_schema import ProjectSchema

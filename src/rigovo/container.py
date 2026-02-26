@@ -57,12 +57,22 @@ class Container:
     def get_db(self):
         """Get or create the local SQLite database."""
         if self._db is None:
-            from rigovo.infrastructure.persistence.sqlite_local import (
-                LocalDatabase,
-            )
-            db_path = self.config.local_db_full_path
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._db = LocalDatabase(str(db_path))
+            backend = str(self.config.db_backend).strip().lower()
+
+            if backend == "postgres":
+                from rigovo.infrastructure.persistence.postgres_local import (
+                    PostgresDatabase,
+                )
+
+                self._db = PostgresDatabase(self.config.db_url)
+            else:
+                from rigovo.infrastructure.persistence.sqlite_local import (
+                    LocalDatabase,
+                )
+
+                db_path = self.config.local_db_full_path
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                self._db = LocalDatabase(str(db_path))
         return self._db
 
     def get_event_emitter(self) -> EventEmitter:

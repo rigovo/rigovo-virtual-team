@@ -57,7 +57,7 @@ def doctor(
     ok(f"Platform: {platform.system()} {platform.machine()}")
 
     _check_config(root, ok, fail, warn)
-    _check_packages(ok, fail, warn)
+    _check_packages(root, ok, fail, warn)
     _check_tools(ok, warn)
     _check_api_keys(root, ok, fail, warn)
     _check_disk(root, ok, warn)
@@ -104,17 +104,33 @@ def _check_config(root: Path, ok, fail, warn) -> None:
 
     if (root / ".rigovo").is_dir():
         ok(".rigovo/ directory exists")
-        db_path = root / ".rigovo" / "local.db"
-        if db_path.is_file():
-            size_kb = db_path.stat().st_size / 1024
-            ok(f"Local database exists ({size_kb:.1f} KB)")
-        else:
-            warn("Local database not initialized — run `rigovo init`")
     else:
         warn(".rigovo/ not found — run `rigovo init`")
 
+    # DB backend diagnostics
+    try:
+        from rigovo.config import load_config
 
-def _check_packages(ok, fail, warn) -> None:
+        cfg = load_config(root)
+        backend = str(cfg.db_backend).strip().lower()
+        ok(f"Database backend: {backend}")
+        if backend == "postgres":
+            if cfg.db_url:
+                ok("RIGOVO_DB_URL configured")
+            else:
+                fail("RIGOVO_DB_URL missing for postgres backend")
+        else:
+            db_path = root / ".rigovo" / "local.db"
+            if db_path.is_file():
+                size_kb = db_path.stat().st_size / 1024
+                ok(f"Local database exists ({size_kb:.1f} KB)")
+            else:
+                warn("Local database not initialized — run `rigovo init`")
+    except Exception as e:
+        fail(f"Database config check failed: {e}")
+
+
+def _check_packages(root: Path, ok, fail, warn) -> None:
     """Check required and optional packages."""
     for pkg_name, desc in [
         ("typer", "CLI framework"), ("rich", "Terminal UI"),
@@ -136,6 +152,19 @@ def _check_packages(ok, fail, warn) -> None:
             ok(f"{pkg_name} installed ({desc})")
         except ImportError:
             warn(f"{pkg_name} not installed ({desc})")
+
+    try:
+        from rigovo.config import load_config
+        cfg = load_config(root)
+        if str(cfg.db_backend).strip().lower() == "postgres":
+            try:
+                __import__("psycopg")
+                ok("psycopg installed (Postgres driver)")
+            except ImportError:
+                fail("psycopg not installed (required for postgres backend)")
+    except Exception:
+        # Keep doctor resilient; backend check already runs in _check_config.
+        pass
 
 
 def _check_tools(ok, warn) -> None:

@@ -86,6 +86,9 @@ embeddings = [
 groq = [
     "langchain-groq>=0.2,<1.0",
 ]
+postgres = [
+    "psycopg[binary]>=3.2,<4.0",
+]
 
 [project.urls]
 Homepage = "https://rigovo.com"
