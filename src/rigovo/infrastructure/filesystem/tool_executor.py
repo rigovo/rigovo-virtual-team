@@ -37,10 +37,23 @@ class ToolExecutor:
     This is the bridge between LLM function calling and actual I/O.
     """
 
-    def __init__(self, project_root: Path) -> None:
+    TRUST_LEVEL_ORDER = {
+        "community": 0,
+        "verified": 1,
+        "internal": 2,
+    }
+
+    def __init__(
+        self,
+        project_root: Path,
+        integration_catalog: dict[str, Any] | None = None,
+        integration_policy: dict[str, Any] | None = None,
+    ) -> None:
         self._reader = ProjectReader(project_root)
         self._writer = CodeWriter(project_root)
         self._runner = CommandRunner(project_root)
+        self._integration_catalog = integration_catalog or {}
+        self._integration_policy = integration_policy or {}
 
         self._handlers: dict[str, Any] = {
             "read_file": self._handle_read_file,
@@ -49,6 +62,7 @@ class ToolExecutor:
             "search_codebase": self._handle_search_codebase,
             "run_command": self._handle_run_command,
             "read_dependencies": self._handle_read_dependencies,
+            "invoke_integration": self._handle_invoke_integration,
         }
 
     async def execute(self, tool_name: str, tool_input: dict[str, Any]) -> str:
@@ -152,3 +166,82 @@ class ToolExecutor:
 
     def _handle_read_dependencies(self, inputs: dict[str, Any]) -> dict[str, Any]:
         return self._reader.read_dependencies()
+
+    def _handle_invoke_integration(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Invoke a plugin capability after enforcing trust/policy gates."""
+        kind = str(inputs.get("kind", "")).strip().lower()
+        plugin_id = str(inputs.get("plugin_id", "")).strip()
+        target_id = str(inputs.get("target_id", "")).strip()
+        operation = str(inputs.get("operation", "")).strip()
+        payload = inputs.get("payload", {})
+
+        policy_error = self._validate_integration_policy(kind, plugin_id, target_id)
+        if policy_error:
+            return {
+                "error": policy_error,
+                "blocked": True,
+                "kind": kind,
+                "plugin_id": plugin_id,
+                "target_id": target_id,
+                "operation": operation,
+            }
+
+        # Runtime currently keeps integrations side-effect free in CLI mode.
+        # The control-plane can replace this with actual connector/MCP routing.
+        return {
+            "status": "accepted",
+            "blocked": False,
+            "dry_run": bool(self._integration_policy.get("dry_run", True)),
+            "kind": kind,
+            "plugin_id": plugin_id,
+            "target_id": target_id,
+            "operation": operation,
+            "payload": payload,
+            "message": "Integration request accepted by policy gate.",
+        }
+
+    def _validate_integration_policy(self, kind: str, plugin_id: str, target_id: str) -> str | None:
+        if kind not in {"connector", "mcp", "action"}:
+            return "Invalid integration kind; expected connector|mcp|action"
+        if not plugin_id:
+            return "Missing required field: plugin_id"
+        if not target_id:
+            return "Missing required field: target_id"
+
+        policy_flag_by_kind = {
+            "connector": "enable_connector_tools",
+            "mcp": "enable_mcp_tools",
+            "action": "enable_action_tools",
+        }
+        if not bool(self._integration_policy.get(policy_flag_by_kind[kind], False)):
+            return f"{kind} tools are disabled by policy"
+
+        allowed_plugins = set(self._integration_policy.get("allowed_plugin_ids", []) or [])
+        if allowed_plugins and plugin_id not in allowed_plugins:
+            return f"Plugin '{plugin_id}' is not allow-listed"
+
+        plugin = self._integration_catalog.get(plugin_id)
+        if not isinstance(plugin, dict):
+            return f"Plugin '{plugin_id}' not found in integration catalog"
+        if not bool(plugin.get("enabled", True)):
+            return f"Plugin '{plugin_id}' is disabled"
+
+        min_trust = str(self._integration_policy.get("min_trust_level", "verified")).lower()
+        plugin_trust = str(plugin.get("trust_level", "community")).lower()
+        min_rank = self.TRUST_LEVEL_ORDER.get(min_trust, 1)
+        plugin_rank = self.TRUST_LEVEL_ORDER.get(plugin_trust, 0)
+        if plugin_rank < min_rank:
+            return (
+                f"Plugin '{plugin_id}' trust '{plugin_trust}' below required '{min_trust}'"
+            )
+
+        targets_by_kind = {
+            "connector": set(plugin.get("connectors", []) or []),
+            "mcp": set(plugin.get("mcp_servers", []) or []),
+            "action": set(plugin.get("actions", []) or []),
+        }
+        if target_id not in targets_by_kind[kind]:
+            return (
+                f"Target '{target_id}' not exposed by plugin '{plugin_id}' for kind '{kind}'"
+            )
+        return None

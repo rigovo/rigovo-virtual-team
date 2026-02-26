@@ -50,6 +50,9 @@ class AgentOverride(BaseModel):
     approval_required: bool = False              # Require human approval
     max_retries: int = 5
     timeout_seconds: int = 600
+    depends_on: list[str] = Field(default_factory=list)   # DAG dependencies by role
+    input_contract: dict[str, Any] = Field(default_factory=dict)   # JSON-schema-like
+    output_contract: dict[str, Any] = Field(default_factory=dict)  # JSON-schema-like
 
 
 class CustomAgentSchema(BaseModel):
@@ -80,6 +83,9 @@ class CustomAgentSchema(BaseModel):
     tools: list[str] = Field(default_factory=list)
     timeout_seconds: int = 600
     parallel: bool = False                       # Can run in parallel group
+    depends_on: list[str] = Field(default_factory=list)
+    input_contract: dict[str, Any] = Field(default_factory=dict)
+    output_contract: dict[str, Any] = Field(default_factory=dict)
 
 
 class TeamSchema(BaseModel):
@@ -147,6 +153,16 @@ class BudgetSchema(BaseModel):
     hard_stop_at_percent: float = 1.0     # Stop at 100%
 
 
+class ReplanSchema(BaseModel):
+    """Policy-driven mid-run replanning controls."""
+
+    enabled: bool = False
+    max_replans_per_task: int = 1
+    trigger_retry_count: int = 3
+    trigger_gate_violation_count: int = 5
+    trigger_contract_failures: bool = True
+
+
 class OrchestrationSchema(BaseModel):
     """Pipeline and execution configuration."""
 
@@ -158,6 +174,7 @@ class OrchestrationSchema(BaseModel):
     deep_mode: str = "final"              # never|final|ci|always|critical_only
     deep_pro: bool = False                # Use larger deep model when deep is enabled
     consultation: ConsultationSchema = Field(default_factory=lambda: ConsultationSchema())
+    replan: ReplanSchema = Field(default_factory=lambda: ReplanSchema())
 
     budget: BudgetSchema = Field(default_factory=BudgetSchema)
 
@@ -221,6 +238,12 @@ class PluginsSchema(BaseModel):
     paths: list[str] = Field(default_factory=lambda: [".rigovo/plugins"])
     enabled_plugins: list[str] = Field(default_factory=list)
     allow_unsigned: bool = False
+    enable_connector_tools: bool = False
+    enable_mcp_tools: bool = False
+    enable_action_tools: bool = False
+    min_trust_level: str = "verified"  # community|verified|internal
+    allowed_plugin_ids: list[str] = Field(default_factory=list)
+    dry_run: bool = True
 
 
 class IdentitySchema(BaseModel):

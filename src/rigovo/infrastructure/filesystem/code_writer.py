@@ -44,7 +44,9 @@ class CodeWriter:
     def _safe_path(self, relative_path: str) -> Path:
         """Resolve and validate a path is within the project root."""
         resolved = (self._root / relative_path).resolve()
-        if not str(resolved).startswith(str(self._root)):
+        try:
+            resolved.relative_to(self._root)
+        except ValueError:
             raise PermissionError(
                 f"Path traversal detected: {relative_path} escapes project root"
             )

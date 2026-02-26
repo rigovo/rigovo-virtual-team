@@ -24,9 +24,10 @@ from rigovo.application.graph.state import TaskState
 from rigovo.application.graph.edges import (
     check_approval,
     check_gates_and_route,
+    check_replan_result,
     check_pipeline_complete,
+    check_parallel_postprocess,
     advance_to_next_agent,
-    check_debate_needed,
     prepare_debate_round,
 )
 from rigovo.application.graph.nodes.scan_project import scan_project_node
@@ -40,11 +41,19 @@ from rigovo.application.graph.nodes.execute_agent import (
 from rigovo.application.graph.nodes.quality_check import quality_check_node
 from rigovo.application.graph.nodes.approval import plan_approval_node, commit_approval_node
 from rigovo.application.graph.nodes.enrich import enrich_node
+from rigovo.application.graph.nodes.replan import replan_node
 from rigovo.application.graph.nodes.store_memory import store_memory_node
+from rigovo.application.context.memory_retriever import MemoryRetriever
+from rigovo.application.master.classifier import TaskClassifier
+from rigovo.application.master.router import TeamRouter
+from rigovo.application.master.enricher import ContextEnricher
+from rigovo.application.master.evaluator import AgentEvaluator
 from rigovo.application.graph.nodes.finalize import finalize_node
 from rigovo.domain.entities.agent import Agent
+from rigovo.domain.interfaces.embedding_provider import EmbeddingProvider
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 from rigovo.domain.interfaces.quality_gate import QualityGate
+from rigovo.domain.interfaces.repositories import MemoryRepository
 from rigovo.domain.services.cost_calculator import CostCalculator
 
 logger = logging.getLogger(__name__)
@@ -75,6 +84,13 @@ class GraphBuilder:
         auto_approve: bool = True,
         enable_parallel: bool = True,   # ON by default — the magic
         stream_callback: Any | None = None,
+        memory_repo: MemoryRepository | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
+        memory_retriever: MemoryRetriever | None = None,
+        classifier: TaskClassifier | None = None,
+        router: TeamRouter | None = None,
+        enricher: ContextEnricher | None = None,
+        evaluator: AgentEvaluator | None = None,
     ) -> None:
         self._llm_factory = llm_factory
         self._master_llm = master_llm
@@ -87,6 +103,13 @@ class GraphBuilder:
         self._auto_approve = auto_approve
         self._enable_parallel = enable_parallel
         self._stream_callback = stream_callback
+        self._memory_repo = memory_repo
+        self._embedding_provider = embedding_provider
+        self._memory_retriever = memory_retriever
+        self._classifier = classifier
+        self._router = router
+        self._enricher = enricher
+        self._evaluator = evaluator
 
     # ------------------------------------------------------------------
     # Checkpointer factory (item 3)
@@ -142,6 +165,13 @@ class GraphBuilder:
         auto_approve = self._auto_approve
         approval_handler = self._approval_handler
         stream_cb = self._stream_callback
+        memory_repo = self._memory_repo
+        embedding_provider = self._embedding_provider
+        memory_retriever = self._memory_retriever
+        classifier = self._classifier
+        router = self._router
+        enricher = self._enricher
+        evaluator = self._evaluator
 
         # --- Node wrappers (bind injected deps) ---
 
@@ -149,7 +179,7 @@ class GraphBuilder:
             return await scan_project_node(state)
 
         async def _classify(state: TaskState) -> dict:
-            return await classify_node(state, master_llm)
+            return await classify_node(state, master_llm, classifier=classifier)
 
         async def _route_team(state: TaskState) -> dict:
             if not available_teams:
@@ -161,7 +191,7 @@ class GraphBuilder:
                         "reasoning": "No team config provided; using default engineering team.",
                     }],
                 }
-            return await route_team_node(state, master_llm, available_teams)
+            return await route_team_node(state, master_llm, available_teams, router=router)
 
         async def _assemble(state: TaskState) -> dict:
             selected_team_id = str(state.get("team_config", {}).get("team_id", "")).strip()
@@ -181,7 +211,13 @@ class GraphBuilder:
 
         async def _execute_agent(state: TaskState) -> dict:
             return await execute_agent_node(
-                state, llm_factory, cost_calc, stream_callback=stream_cb,
+                state,
+                llm_factory,
+                cost_calc,
+                stream_callback=stream_cb,
+                memory_repo=memory_repo,
+                embedding_provider=embedding_provider,
+                memory_retriever=memory_retriever,
             )
 
         async def _quality_check(state: TaskState) -> dict:
@@ -201,20 +237,32 @@ class GraphBuilder:
             return result
 
         async def _enrich(state: TaskState) -> dict:
-            return await enrich_node(state)
+            return await enrich_node(state, enricher=enricher, evaluator=evaluator)
+
+        async def _replan(state: TaskState) -> dict:
+            return await replan_node(state, master_llm)
 
         async def _store_memory(state: TaskState) -> dict:
-            return await store_memory_node(state, master_llm)
+            return await store_memory_node(
+                state,
+                master_llm,
+                memory_repo=memory_repo,
+                embedding_provider=embedding_provider,
+            )
 
         async def _finalize(state: TaskState) -> dict:
             return await finalize_node(state)
 
         async def _parallel_fan_out(state: TaskState) -> dict:
-            """Execute all remaining parallelizable agents simultaneously."""
+            """Execute all currently ready parallelizable agents simultaneously."""
             team_config = state.get("team_config", {})
             pipeline_order = team_config.get("pipeline_order", [])
-            current_index = state.get("current_agent_index", 0)
-            remaining_roles = pipeline_order[current_index + 1:]
+            ready_roles = state.get("ready_roles", [])
+            if ready_roles:
+                remaining_roles = list(ready_roles)
+            else:
+                current_index = state.get("current_agent_index", 0)
+                remaining_roles = pipeline_order[current_index + 1:]
 
             # Emit parallel_started event
             events = list(state.get("events", []))
@@ -229,13 +277,29 @@ class GraphBuilder:
                 llm_factory,
                 cost_calc,
                 stream_cb,
+                memory_repo=memory_repo,
+                embedding_provider=embedding_provider,
+                memory_retriever=memory_retriever,
             )
 
             # Add parallel_complete event and advance index to end of pipeline
             result_events = list(result.get("events", []))
             result_events.append({"type": "parallel_complete"})
             result["events"] = result_events
-            result["current_agent_index"] = len(pipeline_order) - 1
+            completed_roles = set(state.get("completed_roles", []))
+            completed_roles.update(remaining_roles)
+            result["completed_roles"] = sorted(completed_roles)
+
+            # Recompute DAG-ready roles after this parallel wave.
+            next_update = advance_to_next_agent(
+                {
+                    **state,
+                    **result,
+                    "current_agent_role": "",
+                    "completed_roles": sorted(completed_roles),
+                }
+            )
+            result.update(next_update)
             return result
 
         async def _prepare_debate(state: TaskState) -> dict:
@@ -253,6 +317,7 @@ class GraphBuilder:
         graph.add_node("parallel_fan_out", _parallel_fan_out)
         graph.add_node("debate_check", _prepare_debate)  # Debate prep node
         graph.add_node("commit_approval", _commit_approval)
+        graph.add_node("replan", _replan)
         graph.add_node("enrich", _enrich)
         graph.add_node("store_memory", _store_memory)
         graph.add_node("finalize", _finalize)
@@ -276,20 +341,31 @@ class GraphBuilder:
         graph.add_conditional_edges("quality_check", check_gates_and_route, {
             "pass_next_agent": "route_next",
             "fail_fix_loop": "execute_agent",
+            "trigger_replan": "replan",
             "fail_max_retries": "finalize",
         })
 
-        # After routing: sequential, parallel fan-out, or done
-        graph.add_conditional_edges("route_next", check_pipeline_complete, {
+        graph.add_conditional_edges("replan", check_replan_result, {
+            "replan_continue": "execute_agent",
+            "replan_failed": "finalize",
+        })
+
+        # After routing: sequential, parallel fan-out, debate loop, or done
+        graph.add_conditional_edges("route_next", check_parallel_postprocess, {
+            "more_agents": "execute_agent",
+            "parallel_fan_out": "parallel_fan_out",
+            "debate_needed": "debate_check",
+            "pipeline_done": "commit_approval",
+            "pipeline_failed": "finalize",
+        })
+
+        # After parallel fan-out: continue DAG scheduling, or trigger debate loop.
+        graph.add_conditional_edges("parallel_fan_out", check_parallel_postprocess, {
             "more_agents": "execute_agent",
             "parallel_fan_out": "parallel_fan_out",
             "pipeline_done": "commit_approval",
-        })
-
-        # After parallel fan-out: check if reviewer wants debate
-        graph.add_conditional_edges("parallel_fan_out", check_debate_needed, {
+            "pipeline_failed": "finalize",
             "debate_needed": "debate_check",
-            "debate_done": "commit_approval",
         })
 
         # Debate check preps coder re-execution with reviewer feedback
@@ -332,13 +408,21 @@ class GraphBuilder:
         state.update(update)
 
         # 1. Classify (with project context available)
-        update = await classify_node(state, self._master_llm)
+        if self._classifier is not None:
+            update = await classify_node(state, self._master_llm, classifier=self._classifier)
+        else:
+            update = await classify_node(state, self._master_llm)
         state.update(update)
 
         # 2. Route team
         available_teams = available_teams if available_teams is not None else self._available_teams
         if available_teams:
-            update = await route_team_node(state, self._master_llm, available_teams)
+            update = await route_team_node(
+                state,
+                self._master_llm,
+                available_teams,
+                router=self._router,
+            )
             state.update(update)
 
         # 3. Assemble pipeline
@@ -376,6 +460,9 @@ class GraphBuilder:
                 update = await execute_agents_parallel(
                     state, parallel, self._llm_factory,
                     self._cost_calculator, self._stream_callback,
+                    memory_repo=self._memory_repo,
+                    embedding_provider=self._embedding_provider,
+                    memory_retriever=self._memory_retriever,
                 )
                 state.update(update)
         else:
@@ -400,11 +487,16 @@ class GraphBuilder:
             return state
 
         # 6. Enrich
-        update = await enrich_node(state)
+        update = await enrich_node(state, enricher=self._enricher, evaluator=self._evaluator)
         state.update(update)
 
         # 7. Store memory
-        update = await store_memory_node(state, self._master_llm)
+        update = await store_memory_node(
+            state,
+            self._master_llm,
+            memory_repo=self._memory_repo,
+            embedding_provider=self._embedding_provider,
+        )
         state.update(update)
 
         # 8. Finalize
@@ -424,6 +516,9 @@ class GraphBuilder:
             update = await execute_agent_node(
                 state, self._llm_factory, self._cost_calculator,
                 stream_callback=self._stream_callback,
+                memory_repo=self._memory_repo,
+                embedding_provider=self._embedding_provider,
+                memory_retriever=self._memory_retriever,
             )
             state.update(update)
 
@@ -439,6 +534,9 @@ class GraphBuilder:
                     update = await execute_agent_node(
                         state, self._llm_factory, self._cost_calculator,
                         stream_callback=self._stream_callback,
+                        memory_repo=self._memory_repo,
+                        embedding_provider=self._embedding_provider,
+                        memory_retriever=self._memory_retriever,
                     )
                     state.update(update)
                     update = await quality_check_node(state, self._quality_gates)

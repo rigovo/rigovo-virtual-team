@@ -593,6 +593,41 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/v1/runtime/capabilities")
+    def runtime_capabilities() -> dict[str, Any]:
+        """Expose runtime guardrails/capabilities for desktop visibility."""
+        orchestration = config.yml.orchestration
+        plugins = config.yml.plugins
+        return {
+            "orchestration": {
+                "parallel_agents": bool(orchestration.parallel_agents),
+                "max_retries": int(orchestration.max_retries),
+                "consultation_enabled": bool(orchestration.consultation.enabled),
+                "replan": {
+                    "enabled": bool(orchestration.replan.enabled),
+                    "max_replans_per_task": int(orchestration.replan.max_replans_per_task),
+                    "trigger_retry_count": int(orchestration.replan.trigger_retry_count),
+                },
+            },
+            "plugins": {
+                "enabled": bool(plugins.enabled),
+                "enable_connector_tools": bool(plugins.enable_connector_tools),
+                "enable_mcp_tools": bool(plugins.enable_mcp_tools),
+                "enable_action_tools": bool(plugins.enable_action_tools),
+                "min_trust_level": str(plugins.min_trust_level),
+                "dry_run": bool(plugins.dry_run),
+            },
+            "runtime": {
+                "filesystem_sandbox": "project_root",
+                "worktree_mode": str(os.environ.get("RIGOVO_WORKTREE_MODE", "project")),
+                "worktree_root": str(os.environ.get("RIGOVO_WORKTREE_ROOT", "")),
+                "debate_enabled": True,
+                "debate_max_rounds": 2,
+                "quality_gate_enabled": True,
+                "memory_learning_enabled": True,
+            },
+        }
+
     @app.get("/v1/control/state")
     def get_control_state() -> dict[str, Any]:
         return _read_state().model_dump()

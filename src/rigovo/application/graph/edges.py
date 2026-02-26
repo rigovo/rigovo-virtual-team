@@ -30,10 +30,48 @@ def check_gates_and_route(state: TaskState) -> str:
     if gate_results.get("passed", True) or gate_results.get("status") == "skipped":
         return "pass_next_agent"
 
+    if _should_trigger_replan(state):
+        return "trigger_replan"
+
     if retry_count < max_retries:
         return "fail_fix_loop"
 
     return "fail_max_retries"
+
+
+def _should_trigger_replan(state: TaskState) -> bool:
+    """Policy gate for when a failed step should trigger global replanning."""
+    policy = state.get("replan_policy", {}) or {}
+    if not isinstance(policy, dict) or not policy.get("enabled", False):
+        return False
+
+    replan_count = int(state.get("replan_count", 0) or 0)
+    max_replans = int(policy.get("max_replans_per_task", 1) or 1)
+    if replan_count >= max_replans:
+        return False
+
+    gate_results = state.get("gate_results", {}) or {}
+
+    if bool(policy.get("trigger_contract_failures", True)):
+        if gate_results.get("reason") == "contract_failed" or bool(state.get("contract_stage")):
+            return True
+
+    retry_threshold = int(policy.get("trigger_retry_count", 3) or 3)
+    if int(state.get("retry_count", 0) or 0) >= retry_threshold:
+        return True
+
+    violation_threshold = int(policy.get("trigger_gate_violation_count", 5) or 5)
+    if int(gate_results.get("violation_count", 0) or 0) >= violation_threshold:
+        return True
+
+    return False
+
+
+def check_replan_result(state: TaskState) -> str:
+    """Route after replanning step."""
+    if state.get("status") == "replan_failed":
+        return "replan_failed"
+    return "replan_continue"
 
 
 # Roles that can run in parallel (no inter-dependency)
@@ -45,19 +83,65 @@ def check_pipeline_complete(state: TaskState) -> str:
     Route after completing an agent — check if remaining agents can run
     in parallel, sequentially, or if the pipeline is done.
     """
+    if state.get("status") == "pipeline_failed_dependency":
+        return "pipeline_failed"
+
+    # DAG-aware path
+    if "ready_roles" in state:
+        ready_roles = state.get("ready_roles", [])
+        if not ready_roles:
+            return "pipeline_done"
+
+        if len(ready_roles) >= 2 and all(r in _PARALLELIZABLE_ROLES for r in ready_roles):
+            return "parallel_fan_out"
+
+        return "more_agents"
+
+    # Backward-compatible linear path
     team_config = state.get("team_config", {})
     pipeline_order = team_config.get("pipeline_order", [])
     current_index = state.get("current_agent_index", 0)
-
     if current_index + 1 >= len(pipeline_order):
         return "pipeline_done"
-
-    # Check if ALL remaining agents are parallelizable
     remaining_roles = pipeline_order[current_index + 1:]
     if len(remaining_roles) >= 2 and all(r in _PARALLELIZABLE_ROLES for r in remaining_roles):
         return "parallel_fan_out"
 
     return "more_agents"
+
+
+def check_parallel_postprocess(state: TaskState) -> str:
+    """
+    Route after a parallel wave.
+
+    Keep DAG scheduling semantics first; only trigger debate when the
+    pipeline is otherwise done and reviewer requested changes.
+    """
+    pipeline_route = check_pipeline_complete(state)
+    if pipeline_route != "pipeline_done":
+        return pipeline_route
+    if check_debate_needed(state) == "debate_needed":
+        return "debate_needed"
+    return "pipeline_done"
+
+
+def _compute_blocked_roles(
+    execution_dag: dict[str, list[str]],
+    completed: set[str],
+    blocked: set[str],
+) -> set[str]:
+    """Compute blocked roles caused by unsatisfied blocked dependencies."""
+    blocked_out = set(blocked)
+    changed = True
+    while changed:
+        changed = False
+        for role, deps in execution_dag.items():
+            if role in completed or role in blocked_out:
+                continue
+            if any(dep in blocked_out for dep in deps):
+                blocked_out.add(role)
+                changed = True
+    return blocked_out
 
 
 def advance_to_next_agent(state: TaskState) -> dict:
@@ -68,15 +152,95 @@ def advance_to_next_agent(state: TaskState) -> dict:
     """
     team_config = state.get("team_config", {})
     pipeline_order = team_config.get("pipeline_order", [])
-    next_index = state.get("current_agent_index", 0) + 1
+    execution_dag = team_config.get("execution_dag", {})
 
-    next_role = pipeline_order[next_index] if next_index < len(pipeline_order) else ""
+    # Fallback compatibility: no DAG configured, use linear progression.
+    if not execution_dag:
+        next_index = state.get("current_agent_index", 0) + 1
+        next_role = pipeline_order[next_index] if next_index < len(pipeline_order) else ""
+        return {
+            "current_agent_index": next_index,
+            "current_agent_role": next_role,
+            "fix_packets": [],  # Clear fix packets for new agent
+            "retry_count": 0,   # Reset retries for new agent
+        }
+
+    current_role = state.get("current_agent_role", "")
+    completed_roles = set(state.get("completed_roles", []))
+    blocked_roles = set(state.get("blocked_roles", []))
+    if current_role and current_role not in blocked_roles:
+        completed_roles.add(current_role)
+
+    # Debate mode: after coder retry, force reviewer re-validation before commit.
+    debate_target_role = str(state.get("debate_target_role", "") or "").strip()
+    if debate_target_role and current_role == "coder" and debate_target_role in pipeline_order:
+        next_index = pipeline_order.index(debate_target_role)
+        events = list(state.get("events", []))
+        events.append(
+            {
+                "type": "debate_reviewer_rerun",
+                "target_role": debate_target_role,
+            }
+        )
+        return {
+            "current_agent_index": next_index,
+            "current_agent_role": debate_target_role,
+            "ready_roles": [debate_target_role],
+            "completed_roles": sorted(completed_roles),
+            "blocked_roles": sorted(blocked_roles),
+            "fix_packets": [],
+            "retry_count": 0,
+            "status": "routing_next_agent",
+            "error": "",
+            "events": events,
+        }
+
+    blocked_roles = _compute_blocked_roles(execution_dag, completed_roles, blocked_roles)
+
+    ready_roles: list[str] = []
+    for role in pipeline_order:
+        if role in completed_roles or role in blocked_roles:
+            continue
+        deps = execution_dag.get(role, [])
+        if all(dep in completed_roles for dep in deps):
+            ready_roles.append(role)
+
+    events = list(state.get("events", []))
+    status = "routing_next_agent"
+    error = ""
+    remaining = [
+        r for r in pipeline_order if r not in completed_roles and r not in blocked_roles
+    ]
+    if remaining and not ready_roles:
+        status = "pipeline_failed_dependency"
+        error = (
+            "No executable DAG nodes remain; unresolved dependencies for roles: "
+            + ", ".join(remaining)
+        )
+        events.append(
+            {
+                "type": "dag_blocked",
+                "remaining_roles": remaining,
+                "completed_roles": sorted(completed_roles),
+                "blocked_roles": sorted(blocked_roles),
+            }
+        )
+
+    next_role = ready_roles[0] if ready_roles else ""
+    next_index = pipeline_order.index(next_role) if next_role in pipeline_order else len(pipeline_order)
 
     return {
         "current_agent_index": next_index,
         "current_agent_role": next_role,
-        "fix_packets": [],  # Clear fix packets for new agent
-        "retry_count": 0,   # Reset retries for new agent
+        "ready_roles": ready_roles,
+        "completed_roles": sorted(completed_roles),
+        "blocked_roles": sorted(blocked_roles),
+        "debate_target_role": "" if current_role == debate_target_role else debate_target_role,
+        "fix_packets": [],
+        "retry_count": 0,
+        "status": status,
+        "error": error,
+        "events": events,
     }
 
 
@@ -141,6 +305,12 @@ def prepare_debate_round(state: TaskState) -> dict:
             coder_index = i
             break
 
+    completed_roles = [r for r in state.get("completed_roles", []) if r != "reviewer"]
+    ready_roles = [r for r in state.get("ready_roles", []) if r != "reviewer"]
+    agent_outputs = dict(state.get("agent_outputs", {}))
+    # Reviewer output must be regenerated after coder updates.
+    agent_outputs.pop("reviewer", None)
+
     events = list(state.get("events", []))
     events.append({
         "type": "debate_round",
@@ -152,7 +322,11 @@ def prepare_debate_round(state: TaskState) -> dict:
         "current_agent_index": coder_index,
         "current_agent_role": "coder",
         "debate_round": debate_round,
+        "debate_target_role": "reviewer",
         "reviewer_feedback": reviewer_summary,
+        "completed_roles": completed_roles,
+        "ready_roles": ready_roles,
+        "agent_outputs": agent_outputs,
         # Inject reviewer feedback as a fix packet so coder sees it
         "fix_packets": [
             f"[REVIEWER FEEDBACK — Round {debate_round}]\n"

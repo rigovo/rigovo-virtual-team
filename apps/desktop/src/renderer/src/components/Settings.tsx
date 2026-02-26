@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, readJson } from "../api";
 import LogViewer from "./LogViewer";
+import type { EngineRuntimeConfig } from "../types";
 
 /* ---- Types (match backend response) ---- */
 interface ProviderInfo {
@@ -31,6 +32,36 @@ interface SettingsData {
   ollama_url: string;
   custom_base_url: string;
   yml_raw: string;
+}
+
+interface RuntimeCapabilities {
+  orchestration: {
+    parallel_agents: boolean;
+    max_retries: number;
+    consultation_enabled: boolean;
+    replan: {
+      enabled: boolean;
+      max_replans_per_task: number;
+      trigger_retry_count: number;
+    };
+  };
+  plugins: {
+    enabled: boolean;
+    enable_connector_tools: boolean;
+    enable_mcp_tools: boolean;
+    enable_action_tools: boolean;
+    min_trust_level: string;
+    dry_run: boolean;
+  };
+  runtime: {
+    filesystem_sandbox: string;
+    worktree_mode: string;
+    worktree_root: string;
+    debate_enabled: boolean;
+    debate_max_rounds: number;
+    quality_gate_enabled: boolean;
+    memory_learning_enabled: boolean;
+  };
 }
 
 interface SettingsProps {
@@ -66,6 +97,8 @@ export default function Settings({ onBack }: SettingsProps) {
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
   const [tab, setTab] = useState<"keys" | "agents" | "config" | "logs">("keys");
+  const [runtimeCaps, setRuntimeCaps] = useState<RuntimeCapabilities | null>(null);
+  const [engineRuntime, setEngineRuntime] = useState<EngineRuntimeConfig | null>(null);
 
   /* Editable state — keys */
   const [keys, setKeys] = useState<Record<string, string>>({});
@@ -98,6 +131,21 @@ export default function Settings({ onBack }: SettingsProps) {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    void (async () => {
+      const caps = await readJson<RuntimeCapabilities>(`${API_BASE}/v1/runtime/capabilities`);
+      if (caps) setRuntimeCaps(caps);
+      if (window.electronAPI?.engineRuntimeConfig) {
+        try {
+          const cfg = await window.electronAPI.engineRuntimeConfig();
+          setEngineRuntime(cfg);
+        } catch {
+          // ignore when running in browser-only mode
+        }
+      }
+    })();
+  }, []);
 
   /* ---- Save helper ---- */
   const showToast = (msg: string, type: "success" | "error") => {
@@ -411,6 +459,36 @@ export default function Settings({ onBack }: SettingsProps) {
       {/* ──────────── Tab: Config (rigovo.yml) ──────────── */}
       {tab === "config" && (
         <div className="space-y-4">
+          <div className="card p-4">
+            <p className="text-xs font-semibold text-slate-300 mb-2 uppercase tracking-wider">Runtime Guardrails</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+              <div className="rounded-lg bg-white/5 px-3 py-2 text-slate-400">
+                Electron sandbox: <span className="text-slate-200">{engineRuntime?.electronSandbox ? "enabled" : "disabled"}</span>
+              </div>
+              <div className="rounded-lg bg-white/5 px-3 py-2 text-slate-400">
+                Worktree mode: <span className="text-slate-200">{engineRuntime?.worktreeMode ?? runtimeCaps?.runtime.worktree_mode ?? "project"}</span>
+              </div>
+              <div className="rounded-lg bg-white/5 px-3 py-2 text-slate-400">
+                File sandbox: <span className="text-slate-200">{runtimeCaps?.runtime.filesystem_sandbox ?? "project_root"}</span>
+              </div>
+              <div className="rounded-lg bg-white/5 px-3 py-2 text-slate-400">
+                Plugin trust floor: <span className="text-slate-200">{runtimeCaps?.plugins.min_trust_level ?? "verified"}</span>
+              </div>
+              <div className="rounded-lg bg-white/5 px-3 py-2 text-slate-400">
+                Parallel agents: <span className="text-slate-200">{runtimeCaps?.orchestration.parallel_agents ? "on" : "off"}</span>
+              </div>
+              <div className="rounded-lg bg-white/5 px-3 py-2 text-slate-400">
+                Consultation: <span className="text-slate-200">{runtimeCaps?.orchestration.consultation_enabled ? "on" : "off"}</span>
+              </div>
+              <div className="rounded-lg bg-white/5 px-3 py-2 text-slate-400">
+                Replan policy: <span className="text-slate-200">{runtimeCaps?.orchestration.replan.enabled ? "enabled" : "disabled"}</span>
+              </div>
+              <div className="rounded-lg bg-white/5 px-3 py-2 text-slate-400">
+                Debate loop: <span className="text-slate-200">{runtimeCaps?.runtime.debate_enabled ? `on (max ${runtimeCaps.runtime.debate_max_rounds})` : "off"}</span>
+              </div>
+            </div>
+          </div>
+
           <div className="flex items-center justify-between mb-2">
             <p className="text-sm text-slate-500">
               <code className="text-xs bg-white/5 rounded px-1.5 py-0.5">rigovo.yml</code> — override any section to customize your project.

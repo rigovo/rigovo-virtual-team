@@ -123,6 +123,9 @@ class Agent:
     llm_model: str = "claude-sonnet-4-6"
     tools: list[str] = field(default_factory=list)
     custom_rules: list[str] = field(default_factory=list)
+    depends_on: list[str] = field(default_factory=list)
+    input_contract: dict[str, Any] = field(default_factory=dict)
+    output_contract: dict[str, Any] = field(default_factory=dict)
 
     # Performance
     stats: AgentStats = field(default_factory=AgentStats)

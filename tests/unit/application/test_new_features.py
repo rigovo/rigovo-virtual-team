@@ -354,6 +354,30 @@ class TestParallelFanOut(unittest.IsolatedAsyncioTestCase):
         # At least one should have completed
         assert "agent_outputs" in result
 
+    async def test_parallel_merge_is_isolated_and_deterministic(self):
+        """Parallel merge preserves base state and avoids seed-event duplication."""
+        state = _make_multi_agent_state()
+        state["events"] = [{"type": "seed_event"}]
+        state["cost_accumulator"] = {"classifier": {"tokens": 42, "cost": 0.0}}
+
+        factory, _ = _mock_llm_factory()
+        cost_calc = _mock_cost_calc()
+
+        result = await execute_agents_parallel(
+            state, ["reviewer", "qa"], factory, cost_calc,
+        )
+
+        assert "reviewer" in result["agent_outputs"]
+        assert "qa" in result["agent_outputs"]
+        # Base accumulator entries should survive parallel merge.
+        assert "classifier" in result["cost_accumulator"]
+        # Parallel roles should each contribute their own cost entry.
+        assert "agent-reviewer" in result["cost_accumulator"]
+        assert "agent-qa" in result["cost_accumulator"]
+        # Seed events should not be duplicated by child merges.
+        seed_count = sum(1 for e in result["events"] if e.get("type") == "seed_event")
+        assert seed_count == 1
+
     def test_graph_builder_parallel_flag(self):
         """GraphBuilder accepts enable_parallel flag."""
         builder = GraphBuilder(

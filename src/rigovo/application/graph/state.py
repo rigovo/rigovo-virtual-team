@@ -44,6 +44,7 @@ class TeamConfig(TypedDict, total=False):
     domain: str
     agents: dict[str, dict[str, Any]]  # {role: agent_config}
     pipeline_order: list[str]          # Ordered role IDs
+    execution_dag: dict[str, list[str]]  # {role: [depends_on_roles]}
 
 
 class TaskState(TypedDict, total=False):
@@ -70,11 +71,15 @@ class TaskState(TypedDict, total=False):
     # --- Pipeline execution ---
     current_agent_index: int            # Index into pipeline_order
     current_agent_role: str             # Current agent's role ID
+    ready_roles: list[str]              # DAG roles ready to execute
+    completed_roles: list[str]          # DAG roles already completed
+    blocked_roles: list[str]            # DAG roles blocked by dependency failure
     agent_outputs: dict[str, AgentOutput]  # {role: output}
     agent_messages: list[AgentMessage]  # Inter-agent consultation thread
 
     # --- Quality gates ---
     gate_results: dict[str, Any]        # Latest gate check result
+    gate_history: list[dict[str, Any]]  # Per-role gate summaries across pipeline
     fix_packets: list[str]              # Accumulated fix packet prompts
     retry_count: int
     max_retries: int
@@ -88,6 +93,8 @@ class TaskState(TypedDict, total=False):
     budget_max_cost_per_task: float
     budget_max_tokens_per_task: int
     consultation_policy: dict[str, Any]  # Runtime consultation policy from rigovo.yml
+    replan_policy: dict[str, Any]       # Runtime replanning policy from rigovo.yml
+    replan_count: int                   # Replans already triggered in this task
     deep_mode: str                      # never|final|ci|always|critical_only
     deep_pro: bool                      # Run deep in pro tier when deep enabled
     ci_mode: bool                       # Task was launched in CI mode
@@ -100,9 +107,13 @@ class TaskState(TypedDict, total=False):
     debate_round: int                   # Current debate iteration (0 = first pass)
     max_debate_rounds: int              # Max coder↔reviewer iterations (default 2)
     reviewer_feedback: str              # Reviewer's CHANGES_REQUESTED feedback for coder
+    debate_target_role: str             # Role to force-run after coder in debate cycle
 
     # --- Memory ---
     memories_to_store: list[str]        # Memory text to persist post-task
+    memory_context_by_role: dict[str, str]  # Cached retrieved memory prompt section per role
+    integration_policy: dict[str, Any]  # Runtime policy for plugin/connector/MCP tooling
+    integration_catalog: dict[str, Any]  # Loaded plugin capability catalog
 
     # --- Status ---
     status: str                         # Current phase name

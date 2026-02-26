@@ -36,6 +36,28 @@ class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
         assert len(result["events"]) == 1
         assert result["events"][0]["status"] == "skipped"
 
+    async def test_quality_check_hard_fails_on_contract_failure(self):
+        """Contract failure from execute node should hard-fail and skip retries."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "current_agent_role": "backend",
+            "status": "contract_failed_backend",
+            "contract_violations": ["$.classification.task_type: required field missing"],
+            "team_config": {
+                "agents": {},
+                "gates_after": ["backend"],
+            },
+            "max_retries": 3,
+            "events": [],
+        }
+        mock_gate = AsyncMock()
+
+        result = await quality_check_node(state, [mock_gate])
+        assert result["gate_results"]["passed"] is False
+        assert result["retry_count"] == 3
+        assert result["status"] == "gate_failed_backend"
+        mock_gate.run.assert_not_called()
+
     async def test_quality_check_all_gates_passed(self):
         """Test quality_check_node when all gates pass."""
         state: TaskState = {
@@ -78,6 +100,8 @@ class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
         assert result["gate_results"]["gates_run"] == 2
         assert result["gate_results"]["gates_passed"] == 2
         assert result["gate_results"]["violation_count"] == 0
+        assert result["gate_results"]["violations"] == []
+        assert len(result["gate_history"]) == 1
         assert "gate_passed_backend" in result["status"]
         assert len(result["events"]) == 1
         assert result["events"][0]["passed"] is True
@@ -124,6 +148,9 @@ class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
 
         assert result["gate_results"]["passed"] is False
         assert result["gate_results"]["violation_count"] == 1
+        assert len(result["gate_results"]["violations"]) == 1
+        assert result["gate_results"]["violations"][0]["rule"] == "gate-1"
+        assert len(result["gate_history"]) == 1
         assert "gate_failed_backend" in result["status"]
         assert result["retry_count"] == 1
         assert "fix_packets" in result

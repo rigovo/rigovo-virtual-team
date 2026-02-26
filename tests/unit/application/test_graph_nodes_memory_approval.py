@@ -11,6 +11,7 @@ from typing import Any
 from rigovo.application.graph.nodes.store_memory import store_memory_node
 from rigovo.application.graph.nodes.approval import plan_approval_node, commit_approval_node
 from rigovo.application.graph.state import TaskState
+from rigovo.domain.entities.memory import MemoryType
 from rigovo.domain.interfaces.llm_provider import LLMResponse, LLMUsage
 
 
@@ -154,6 +155,71 @@ class TestStoreMemoryNode(unittest.IsolatedAsyncioTestCase):
 
         assert len(result["memories_to_store"]) == 1
         assert result["memories_to_store"][0] == "Valid memory"
+
+    async def test_store_memory_node_persists_with_embeddings(self):
+        """Extracted memories are persisted with type + embedding when deps are provided."""
+        memories = [
+            {"content": "Prefer idempotent retries for flaky APIs", "type": "pattern"},
+            {"content": "Use exponential backoff for 429", "type": "error_fix"},
+        ]
+        state: TaskState = {
+            "task_id": "8f4bc65d-1ecf-4f1f-98ce-7d421f46b4ea",
+            "workspace_id": "4e84545a-07ad-4ccc-aa1e-1e45ee724bda",
+            "description": "Stabilize retry policy",
+            "agent_outputs": {"sre": {"summary": "Added retry policy to clients"}},
+            "events": [],
+        }
+        mock_llm = MockLLMProvider(response_content=json.dumps(memories))
+        memory_repo = AsyncMock()
+        memory_repo.list_by_workspace.return_value = []
+        embedding_provider = AsyncMock()
+        embedding_provider.embed_batch.return_value = [[0.1, 0.2], [0.3, 0.4]]
+
+        result = await store_memory_node(
+            state,
+            mock_llm,
+            memory_repo=memory_repo,
+            embedding_provider=embedding_provider,
+        )
+
+        assert result["events"][0]["persisted_count"] == 2
+        assert memory_repo.save.await_count == 2
+        first_saved = memory_repo.save.await_args_list[0].args[0]
+        second_saved = memory_repo.save.await_args_list[1].args[0]
+        assert first_saved.memory_type == MemoryType.PATTERN
+        assert second_saved.memory_type == MemoryType.ERROR_FIX
+
+    async def test_store_memory_node_deduplicates_existing_memories(self):
+        memories = [
+            {"content": "Use retries with backoff", "type": "pattern"},
+            {"content": "New convention for auth logging", "type": "convention"},
+        ]
+        state: TaskState = {
+            "task_id": "8f4bc65d-1ecf-4f1f-98ce-7d421f46b4ea",
+            "workspace_id": "4e84545a-07ad-4ccc-aa1e-1e45ee724bda",
+            "project_root": "/tmp/project-a",
+            "description": "Stabilize retry policy",
+            "agent_outputs": {"sre": {"summary": "Added retry policy to clients"}},
+            "events": [],
+        }
+        mock_llm = MockLLMProvider(response_content=json.dumps(memories))
+        existing_memory = MagicMock()
+        existing_memory.content = "use retries with backoff"
+        memory_repo = AsyncMock()
+        memory_repo.list_by_workspace.return_value = [existing_memory]
+        embedding_provider = AsyncMock()
+        embedding_provider.embed_batch.return_value = [[0.1, 0.2]]
+
+        result = await store_memory_node(
+            state,
+            mock_llm,
+            memory_repo=memory_repo,
+            embedding_provider=embedding_provider,
+        )
+
+        assert result["events"][0]["dedup_skipped"] == 1
+        assert result["events"][0]["persisted_count"] == 1
+        assert len(result["memories_to_store"]) == 1
 
 
 class TestPlanApprovalNode(unittest.IsolatedAsyncioTestCase):

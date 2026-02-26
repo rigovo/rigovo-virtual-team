@@ -31,9 +31,11 @@ from rigovo.domain.entities.audit_entry import AuditAction, AuditEntry
 from rigovo.domain.entities.task import Task, TaskStatus, PipelineStep
 from rigovo.domain.entities.team import Team
 from rigovo.domain.interfaces.domain_plugin import DomainPlugin
+from rigovo.domain.interfaces.embedding_provider import EmbeddingProvider
 from rigovo.domain.interfaces.event_emitter import EventEmitter
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 from rigovo.domain.interfaces.quality_gate import QualityGate
+from rigovo.domain.interfaces.repositories import MemoryRepository
 from rigovo.domain.services.cost_calculator import CostCalculator
 from rigovo.domain.services.team_assembler import TeamAssemblerService
 from rigovo.infrastructure.llm.model_catalog import resolve_model_for_role
@@ -78,6 +80,11 @@ class RunTaskCommand:
         consultation_policy: dict[str, Any] | None = None,
         deep_mode: str = "final",
         deep_pro: bool = False,
+        replan_policy: dict[str, Any] | None = None,
+        memory_repo: MemoryRepository | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
+        plugin_registry: Any | None = None,
+        integration_policy: dict[str, Any] | None = None,
         ci_mode: bool = False,
         offline: bool = False,
         enable_streaming: bool = True,
@@ -100,6 +107,11 @@ class RunTaskCommand:
         self._consultation_policy = consultation_policy or {}
         self._deep_mode = deep_mode
         self._deep_pro = deep_pro
+        self._replan_policy = replan_policy or {}
+        self._memory_repo = memory_repo
+        self._embedding_provider = embedding_provider
+        self._plugin_registry = plugin_registry
+        self._integration_policy = integration_policy or {}
         self._ci_mode = ci_mode
         self._offline = offline
         self._enable_streaming = enable_streaming
@@ -204,12 +216,19 @@ class RunTaskCommand:
             "agent_outputs": {},
             "agent_messages": [],
             "gate_results": {},
+            "gate_history": [],
             "retry_count": 0,
             "max_retries": self._max_retries,
             "consultation_policy": self._consultation_policy,
             "deep_mode": self._deep_mode,
             "deep_pro": self._deep_pro,
+            "replan_policy": self._replan_policy,
+            "replan_count": 0,
             "ci_mode": self._ci_mode,
+            "debate_round": 0,
+            "max_debate_rounds": 2,
+            "reviewer_feedback": "",
+            "debate_target_role": "",
             "fix_packet": None,
             "approval_status": None,
             "approval_feedback": None,
@@ -219,6 +238,9 @@ class RunTaskCommand:
             "budget_max_cost_per_task": self._budget_max_cost,
             "budget_max_tokens_per_task": self._budget_max_tokens,
             "memories_to_store": [],
+            "memory_context_by_role": {},
+            "integration_policy": self._integration_policy,
+            "integration_catalog": self._build_integration_catalog(),
             "status": "running",
             "events": [],
         }
@@ -251,6 +273,12 @@ class RunTaskCommand:
             auto_approve=self._auto_approve,
             enable_parallel=self._enable_parallel,
             stream_callback=stream_callback,
+            memory_repo=self._memory_repo,
+            embedding_provider=self._embedding_provider,
+            classifier=self._classifier,
+            router=self._router,
+            enricher=self._enricher,
+            evaluator=self._evaluator,
         )
 
         try:
@@ -490,6 +518,29 @@ class RunTaskCommand:
 
         return available_teams, team_agents_by_id
 
+    def _build_integration_catalog(self) -> dict[str, Any]:
+        """Load enabled plugins and expose connector/MCP/action capabilities."""
+        if not self._plugin_registry:
+            return {}
+        try:
+            manifests = self._plugin_registry.load(include_disabled=False)
+        except Exception as exc:
+            logger.warning("Plugin registry load failed: %s", exc)
+            return {}
+
+        catalog: dict[str, Any] = {}
+        for manifest in manifests:
+            catalog[manifest.id] = {
+                "name": manifest.name,
+                "enabled": bool(getattr(manifest, "enabled", True)),
+                "trust_level": str(getattr(manifest, "trust_level", "community")),
+                "capabilities": list(getattr(manifest, "capabilities", [])),
+                "connectors": [c.id for c in getattr(manifest, "connectors", [])],
+                "mcp_servers": [m.id for m in getattr(manifest, "mcp_servers", [])],
+                "actions": [a.id for a in getattr(manifest, "actions", [])],
+            }
+        return catalog
+
     def _build_agents_for_team(
         self,
         team_key: str,
@@ -526,6 +577,21 @@ class RunTaskCommand:
                 if override and getattr(override, "rules", None)
                 else []
             )
+            input_contract = (
+                dict(override.input_contract)
+                if override and getattr(override, "input_contract", None)
+                else {}
+            )
+            output_contract = (
+                dict(override.output_contract)
+                if override and getattr(override, "output_contract", None)
+                else {}
+            )
+            depends_on = (
+                list(override.depends_on)
+                if override and getattr(override, "depends_on", None)
+                else []
+            )
             agent = Agent(
                 workspace_id=self._workspace_id,
                 team_id=stable_team_uuid,
@@ -535,6 +601,9 @@ class RunTaskCommand:
                 system_prompt=role_def.default_system_prompt,
                 tools=tools,
                 custom_rules=custom_rules,
+                depends_on=depends_on,
+                input_contract=input_contract,
+                output_contract=output_contract,
                 pipeline_order=getattr(role_def, "pipeline_order", 0),
             )
             agents.append(agent)

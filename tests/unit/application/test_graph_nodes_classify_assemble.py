@@ -7,10 +7,15 @@ import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Any
+from uuid import NAMESPACE_DNS, uuid4, uuid5
 
 from rigovo.application.graph.nodes.classify import classify_node
 from rigovo.application.graph.nodes.assemble import assemble_node
+from rigovo.application.graph.nodes.route_team import route_team_node
 from rigovo.application.graph.state import TaskState, AgentOutput
+from rigovo.application.master.classifier import ClassificationResult
+from rigovo.application.master.router import RoutingResult
+from rigovo.domain.entities.task import TaskType, TaskComplexity
 from rigovo.domain.interfaces.llm_provider import LLMResponse, LLMUsage
 
 
@@ -106,6 +111,60 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
         assert "classifier" in result["cost_accumulator"]
         assert result["cost_accumulator"]["previous"]["tokens"] == 50
 
+    async def test_classify_node_uses_master_classifier_when_provided(self):
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Fix login bug",
+            "events": [],
+        }
+        mock_llm = AsyncMock()
+        mock_classifier = AsyncMock()
+        mock_classifier.classify.return_value = ClassificationResult(
+            task_type=TaskType.BUG,
+            complexity=TaskComplexity.HIGH,
+            reasoning="Cross-cutting auth fixes",
+        )
+
+        result = await classify_node(state, mock_llm, classifier=mock_classifier)
+        assert result["classification"]["task_type"] == "bug"
+        assert result["classification"]["complexity"] == "high"
+        assert result["cost_accumulator"]["classifier"]["tokens"] == 0
+        mock_llm.invoke.assert_not_called()
+
+
+class TestRouteTeamNode(unittest.IsolatedAsyncioTestCase):
+    async def test_route_team_node_uses_master_router_when_provided(self):
+        state: TaskState = {
+            "task_id": "task-1",
+            "workspace_id": str(uuid4()),
+            "description": "Fix login issue",
+            "classification": {"task_type": "bug", "complexity": "medium"},
+            "events": [],
+        }
+        available_teams = [
+            {"id": "engineering", "name": "Engineering", "domain": "engineering", "agents": {}, "pipeline_order": []},
+            {"id": "content", "name": "Content", "domain": "content", "agents": {}, "pipeline_order": []},
+        ]
+        mock_llm = AsyncMock()
+        mock_router = AsyncMock()
+        engineering_uuid = uuid5(NAMESPACE_DNS, "engineering")
+        mock_router.route.return_value = RoutingResult(
+            team_id=engineering_uuid,
+            confidence=0.96,
+            reasoning="Engineering owns bug fixes",
+        )
+
+        result = await route_team_node(
+            state,
+            mock_llm,
+            available_teams,
+            router=mock_router,
+        )
+        assert result["team_config"]["team_id"] == "engineering"
+        assert result["events"][0]["type"] == "team_routed"
+        assert "confidence" in result["events"][0]
+        mock_llm.invoke.assert_not_called()
+
 
 class TestAssembleNode(unittest.IsolatedAsyncioTestCase):
     """Test the assemble_node function."""
@@ -158,6 +217,9 @@ class TestAssembleNode(unittest.IsolatedAsyncioTestCase):
 
         assert "team_config" in result
         assert result["team_config"]["pipeline_order"] == ["backend", "frontend"]
+        assert result["team_config"]["execution_dag"]["backend"] == []
+        assert result["team_config"]["execution_dag"]["frontend"] == ["backend"]
+        assert result["ready_roles"] == ["backend"]
         assert result["team_config"]["agents"]["backend"]["name"] == "Backend Engineer"
         assert result["team_config"]["agents"]["frontend"]["name"] == "Frontend Engineer"
         assert result["current_agent_index"] == 0
@@ -188,6 +250,8 @@ class TestAssembleNode(unittest.IsolatedAsyncioTestCase):
         result = await assemble_node(state, agents=[], assembler=mock_assembler)
 
         assert result["team_config"]["pipeline_order"] == []
+        assert result["team_config"]["execution_dag"] == {}
+        assert result["ready_roles"] == []
         assert result["current_agent_role"] == ""
 
 

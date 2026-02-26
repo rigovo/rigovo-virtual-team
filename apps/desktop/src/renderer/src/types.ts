@@ -106,6 +106,12 @@ export interface EngineStatus {
   apiUrl: string;
 }
 
+export interface EngineRuntimeConfig {
+  electronSandbox: boolean;
+  worktreeMode: "project" | "git_worktree";
+  worktreeRoot: string;
+}
+
 export interface IdentityStatus {
   provider: string;
   authMode: GovernancePolicy["authMode"];
@@ -173,6 +179,7 @@ export interface TaskDetail {
 /* ---------- Electron IPC bridge (exposed via preload) ---------- */
 export interface ElectronAPI {
   engineStatus: () => Promise<EngineStatus>;
+  engineRuntimeConfig: () => Promise<EngineRuntimeConfig>;
   startEngine: (args: {
     host?: string;
     port?: number;

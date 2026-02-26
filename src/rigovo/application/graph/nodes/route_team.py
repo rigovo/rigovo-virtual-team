@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from rigovo.application.graph.state import TaskState
+from rigovo.application.master.router import TeamRouter
+from rigovo.domain.entities.team import Team
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 
 
@@ -33,6 +36,7 @@ async def route_team_node(
     state: TaskState,
     llm: LLMProvider,
     available_teams: list[dict[str, Any]],
+    router: TeamRouter | None = None,
 ) -> dict[str, Any]:
     """Route the task to a team using the Master Agent's LLM."""
     classification = state.get("classification", {})
@@ -53,6 +57,40 @@ async def route_team_node(
                 "type": "team_routed",
                 "team_name": team["name"],
                 "reasoning": "Only one team available.",
+            }],
+        }
+
+    if router is not None:
+        workspace_id = _parse_uuid(state.get("workspace_id")) or UUID(int=0)
+        team_entities: list[Team] = []
+        uuid_to_team: dict[UUID, dict[str, Any]] = {}
+        for t in available_teams:
+            team_uuid = uuid5(NAMESPACE_DNS, str(t.get("id", "")))
+            team = Team(
+                id=team_uuid,
+                workspace_id=workspace_id,
+                name=str(t.get("name", t.get("id", "team"))),
+                domain=str(t.get("domain", "engineering")),
+            )
+            team_entities.append(team)
+            uuid_to_team[team_uuid] = t
+
+        routed = await router.route(state["description"], team_entities)
+        matched_team = uuid_to_team.get(routed.team_id, available_teams[0])
+        return {
+            "team_config": {
+                "team_id": matched_team["id"],
+                "team_name": matched_team["name"],
+                "domain": matched_team.get("domain", "engineering"),
+                "agents": matched_team.get("agents", {}),
+                "pipeline_order": matched_team.get("pipeline_order", []),
+            },
+            "status": "routed",
+            "events": state.get("events", []) + [{
+                "type": "team_routed",
+                "team_name": matched_team.get("name"),
+                "reasoning": routed.reasoning,
+                "confidence": routed.confidence,
             }],
         }
 
@@ -105,3 +143,12 @@ async def route_team_node(
             "reasoning": routing.get("reasoning"),
         }],
     }
+
+
+def _parse_uuid(value: Any) -> UUID | None:
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except (ValueError, TypeError):
+        return None

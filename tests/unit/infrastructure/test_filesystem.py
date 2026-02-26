@@ -38,6 +38,13 @@ class TestProjectReader:
         with pytest.raises(PermissionError, match="Path traversal"):
             ProjectReader(project_dir).read_file("../../etc/passwd")
 
+    def test_read_file_sibling_prefix_escape_blocked(self, project_dir):
+        sibling = project_dir.parent / f"{project_dir.name}-escape"
+        sibling.mkdir()
+        (sibling / "secret.txt").write_text("nope\n")
+        with pytest.raises(PermissionError, match="Path traversal"):
+            ProjectReader(project_dir).read_file(f"../{sibling.name}/secret.txt")
+
     def test_list_directory(self, project_dir):
         result = ProjectReader(project_dir).list_directory(".")
         assert "entries" in result
@@ -80,6 +87,12 @@ class TestCodeWriter:
         result = CodeWriter(project_dir).write_file("../../evil.py", "bad\n")
         assert "error" in result
 
+    def test_write_sibling_prefix_escape_blocked(self, project_dir):
+        sibling = project_dir.parent / f"{project_dir.name}-escape"
+        sibling.mkdir()
+        result = CodeWriter(project_dir).write_file(f"../{sibling.name}/evil.py", "bad\n")
+        assert "error" in result
+
     def test_write_protected_file_blocked(self, project_dir):
         (project_dir / ".env").write_text("SECRET=x\n")
         result = CodeWriter(project_dir).write_file(".env", "NEW=y\n")
@@ -110,6 +123,14 @@ class TestCommandRunner:
 
     def test_run_blocked_command(self, project_dir):
         result = CommandRunner(project_dir).run("rm -rf /")
+        assert "error" in result
+
+    def test_run_blocked_shell_operator(self, project_dir):
+        result = CommandRunner(project_dir).run("echo hello; uname -s")
+        assert "error" in result
+
+    def test_run_blocked_inline_exec_flag(self, project_dir):
+        result = CommandRunner(project_dir).run("python3 -c \"print('x')\"")
         assert "error" in result
 
     def test_run_timeout(self, project_dir):
@@ -160,3 +181,66 @@ class TestToolExecutor:
             {"tool": "write_file", "result": {"path": "b.py"}},
         ]
         assert ToolExecutor(project_dir).get_files_changed(results) == ["a.py", "b.py"]
+
+    def test_invoke_integration_blocks_untrusted_plugin(self, project_dir):
+        executor = ToolExecutor(
+            project_dir,
+            integration_catalog={
+                "acme-slack": {
+                    "enabled": True,
+                    "trust_level": "community",
+                    "connectors": ["slack"],
+                    "mcp_servers": [],
+                    "actions": [],
+                }
+            },
+            integration_policy={
+                "enable_connector_tools": True,
+                "enable_mcp_tools": False,
+                "enable_action_tools": False,
+                "min_trust_level": "verified",
+            },
+        )
+        result = executor._handle_invoke_integration(
+            {
+                "kind": "connector",
+                "plugin_id": "acme-slack",
+                "target_id": "slack",
+                "operation": "post_message",
+                "payload": {"channel": "alerts"},
+            }
+        )
+        assert result["blocked"] is True
+        assert "trust" in result["error"].lower()
+
+    def test_invoke_integration_allows_verified_plugin(self, project_dir):
+        executor = ToolExecutor(
+            project_dir,
+            integration_catalog={
+                "acme-slack": {
+                    "enabled": True,
+                    "trust_level": "verified",
+                    "connectors": ["slack"],
+                    "mcp_servers": [],
+                    "actions": [],
+                }
+            },
+            integration_policy={
+                "enable_connector_tools": True,
+                "enable_mcp_tools": False,
+                "enable_action_tools": False,
+                "min_trust_level": "verified",
+                "dry_run": True,
+            },
+        )
+        result = executor._handle_invoke_integration(
+            {
+                "kind": "connector",
+                "plugin_id": "acme-slack",
+                "target_id": "slack",
+                "operation": "post_message",
+                "payload": {"channel": "alerts"},
+            }
+        )
+        assert result["blocked"] is False
+        assert result["dry_run"] is True

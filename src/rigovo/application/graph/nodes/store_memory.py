@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import UUID, NAMESPACE_URL, uuid5
 
 from rigovo.application.graph.state import TaskState
+from rigovo.domain.entities.memory import Memory, MemoryType
+from rigovo.domain.interfaces.embedding_provider import EmbeddingProvider
 from rigovo.domain.interfaces.llm_provider import LLMProvider
+from rigovo.domain.interfaces.repositories import MemoryRepository
 
 
 MEMORY_EXTRACTION_PROMPT = """\
@@ -33,6 +37,8 @@ If nothing worth remembering, respond with: []
 async def store_memory_node(
     state: TaskState,
     llm: LLMProvider,
+    memory_repo: MemoryRepository | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
 ) -> dict[str, Any]:
     """Extract and store memories from the completed task."""
     agent_outputs = state.get("agent_outputs", {})
@@ -62,7 +68,54 @@ async def store_memory_node(
     except json.JSONDecodeError:
         memories = []
 
-    memory_texts = [m.get("content", "") for m in memories if m.get("content")]
+    parsed_memories: list[dict[str, str]] = []
+    if isinstance(memories, list):
+        for item in memories:
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content", "")).strip()
+            if not content:
+                continue
+            parsed_memories.append(
+                {
+                    "content": content,
+                    "type": str(item.get("type", "pattern")),
+                }
+            )
+
+    memory_texts = [m["content"] for m in parsed_memories]
+    deduped_memories = parsed_memories
+    dedup_skipped = 0
+    persisted_count = 0
+    workspace_id = _parse_uuid(state.get("workspace_id"))
+    source_task_id = _parse_uuid(state.get("task_id"))
+    source_project_id = _derive_project_id(state.get("project_root"))
+
+    if memory_repo and embedding_provider and workspace_id and parsed_memories:
+        existing = await memory_repo.list_by_workspace(workspace_id, limit=500)
+        existing_norm = {_normalize_memory_text(m.content) for m in existing}
+        deduped_memories = []
+        for item in parsed_memories:
+            norm = _normalize_memory_text(item["content"])
+            if not norm or norm in existing_norm:
+                dedup_skipped += 1
+                continue
+            deduped_memories.append(item)
+            existing_norm.add(norm)
+
+        memory_texts = [m["content"] for m in deduped_memories]
+        embeddings = await embedding_provider.embed_batch(memory_texts) if memory_texts else []
+        for mem_data, embedding in zip(deduped_memories, embeddings):
+            memory = Memory(
+                workspace_id=workspace_id,
+                source_project_id=source_project_id,
+                source_task_id=source_task_id,
+                content=mem_data["content"],
+                memory_type=_coerce_memory_type(mem_data["type"]),
+                embedding=embedding,
+            )
+            await memory_repo.save(memory)
+            persisted_count += 1
 
     return {
         "memories_to_store": memory_texts,
@@ -70,5 +123,34 @@ async def store_memory_node(
         "events": state.get("events", []) + [{
             "type": "memories_stored",
             "count": len(memory_texts),
+            "persisted_count": persisted_count,
+            "dedup_skipped": dedup_skipped,
         }],
     }
+
+
+def _parse_uuid(value: Any) -> UUID | None:
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except (ValueError, TypeError):
+        return None
+
+
+def _coerce_memory_type(raw: str) -> MemoryType:
+    try:
+        return MemoryType(raw)
+    except ValueError:
+        return MemoryType.PATTERN
+
+
+def _normalize_memory_text(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _derive_project_id(project_root: Any) -> UUID | None:
+    root = str(project_root or "").strip()
+    if not root:
+        return None
+    return uuid5(NAMESPACE_URL, root)

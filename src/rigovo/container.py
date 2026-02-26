@@ -20,6 +20,7 @@ from rigovo.domain.services.memory_ranker import MemoryRanker
 from rigovo.domain.services.team_assembler import TeamAssemblerService
 from rigovo.domains.engineering import EngineeringDomain
 from rigovo.infrastructure.llm.llm_factory import LLMProviderFactory
+from rigovo.infrastructure.persistence.sqlite_memory_repo import SqliteMemoryRepository
 from rigovo.infrastructure.quality.gate_builder import QualityGateBuilder
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,18 @@ class Container:
             consultation_policy=self.config.yml.orchestration.consultation.model_dump(),
             deep_mode=self.config.yml.orchestration.deep_mode,
             deep_pro=self.config.yml.orchestration.deep_pro,
+            replan_policy=self.config.yml.orchestration.replan.model_dump(),
+            memory_repo=SqliteMemoryRepository(self.get_db()),
+            embedding_provider=self.get_embedding_provider(),
+            plugin_registry=self.get_plugin_registry() if self.config.yml.plugins.enabled else None,
+            integration_policy={
+                "enable_connector_tools": self.config.yml.plugins.enable_connector_tools,
+                "enable_mcp_tools": self.config.yml.plugins.enable_mcp_tools,
+                "enable_action_tools": self.config.yml.plugins.enable_action_tools,
+                "min_trust_level": self.config.yml.plugins.min_trust_level,
+                "allowed_plugin_ids": list(self.config.yml.plugins.allowed_plugin_ids),
+                "dry_run": self.config.yml.plugins.dry_run,
+            },
             ci_mode=ci_mode,
             offline=offline,
             enable_streaming=enable_streaming,

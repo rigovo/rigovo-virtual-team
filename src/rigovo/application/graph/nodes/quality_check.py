@@ -9,6 +9,18 @@ from rigovo.domain.interfaces.quality_gate import QualityGate, GateInput
 from rigovo.domain.entities.quality import GateStatus, FixPacket, FixItem, Violation, ViolationSeverity
 
 
+def _serialize_violation(violation: Violation) -> dict[str, Any]:
+    return {
+        "rule": violation.gate_id,
+        "gate_id": violation.gate_id,
+        "file_path": violation.file_path,
+        "message": violation.message,
+        "suggestion": violation.suggestion,
+        "severity": str(violation.severity.value if hasattr(violation.severity, "value") else violation.severity),
+        "line": violation.line,
+    }
+
+
 def _resolve_deep_mode(state: TaskState, current_role: str) -> tuple[bool, bool]:
     """
     Decide whether to enable Rigour deep analysis for this gate run.
@@ -56,6 +68,53 @@ async def quality_check_node(
     team_config = state["team_config"]
     gates_after = team_config.get("gates_after", [])
 
+    # Contract failures are hard-stop gate failures (no retry loop).
+    status = str(state.get("status", ""))
+    if status.startswith("contract_failed_"):
+        max_retries = state.get("max_retries", 5)
+        contract_violations = list(state.get("contract_violations", []))
+        structured_violations = [
+            {
+                "rule": "contract_failed",
+                "gate_id": "contract_failed",
+                "file_path": "",
+                "message": str(v),
+                "suggestion": "",
+                "severity": "error",
+                "line": None,
+            }
+            for v in contract_violations
+        ]
+        gate_summary = {
+            "status": GateStatus.FAILED,
+            "passed": False,
+            "reason": "contract_failed",
+            "gates_run": 1,
+            "gates_passed": 0,
+            "violation_count": len(contract_violations),
+            "violations": structured_violations,
+        }
+        events = list(state.get("events", []))
+        events.append(
+            {
+                "type": "gate_results",
+                "role": current_role,
+                "passed": False,
+                "gates_run": 1,
+                "violations": len(contract_violations),
+                "reason": "contract_failed",
+            }
+        )
+        gate_history = list(state.get("gate_history", []))
+        gate_history.append({"role": current_role, **gate_summary})
+        return {
+            "gate_results": gate_summary,
+            "gate_history": gate_history,
+            "retry_count": max_retries,
+            "status": f"gate_failed_{current_role}",
+            "events": events,
+        }
+
     # Only run gates on code-producing roles
     if current_role not in gates_after:
         return {
@@ -99,14 +158,20 @@ async def quality_check_node(
             max_attempts=max_retries,
         )
 
+        gate_summary = {
+            "status": GateStatus.FAILED,
+            "passed": False,
+            "reason": "no_files_produced",
+            "gates_run": 1,
+            "gates_passed": 0,
+            "violation_count": 1,
+            "violations": [_serialize_violation(violation)],
+        }
+        gate_history = list(state.get("gate_history", []))
+        gate_history.append({"role": current_role, **gate_summary})
         return {
-            "gate_results": {
-                "status": GateStatus.FAILED,
-                "passed": False,
-                "gates_run": 1,
-                "gates_passed": 0,
-                "violation_count": 1,
-            },
+            "gate_results": gate_summary,
+            "gate_history": gate_history,
             "fix_packets": state.get("fix_packets", []) + [fix_packet.to_prompt()],
             "retry_count": retry_count,
             "status": f"gate_failed_{current_role}",
@@ -143,16 +208,21 @@ async def quality_check_node(
             all_passed = False
             all_violations.extend(result.violations)
 
+    structured_violations = [_serialize_violation(v) for v in all_violations]
     gate_summary = {
         "status": GateStatus.PASSED if all_passed else GateStatus.FAILED,
         "passed": all_passed,
         "gates_run": total_gates_run,
         "gates_passed": total_gates_passed,
         "violation_count": len(all_violations),
+        "violations": structured_violations,
     }
+    gate_history = list(state.get("gate_history", []))
+    gate_history.append({"role": current_role, **gate_summary})
 
     update: dict[str, Any] = {
         "gate_results": gate_summary,
+        "gate_history": gate_history,
         "events": state.get("events", []) + [{
             "type": "gate_results",
             "role": current_role,

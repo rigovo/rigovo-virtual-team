@@ -2,6 +2,11 @@ import { contextBridge, ipcRenderer } from "electron";
 
 export interface ElectronAPI {
   engineStatus: () => Promise<{ running: boolean; pid: number | null; apiUrl: string }>;
+  engineRuntimeConfig: () => Promise<{
+    electronSandbox: boolean;
+    worktreeMode: "project" | "git_worktree";
+    worktreeRoot: string;
+  }>;
   startEngine: (args: {
     host?: string;
     port?: number;
@@ -15,6 +20,7 @@ export interface ElectronAPI {
 
 const api: ElectronAPI = {
   engineStatus: () => ipcRenderer.invoke("engine:status"),
+  engineRuntimeConfig: () => ipcRenderer.invoke("engine:runtime-config"),
   startEngine: (args) => ipcRenderer.invoke("engine:start", args),
   stopEngine: () => ipcRenderer.invoke("engine:stop"),
   openExternal: (url: string) => ipcRenderer.invoke("shell:open-external", url),

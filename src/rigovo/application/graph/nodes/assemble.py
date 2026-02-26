@@ -38,21 +38,41 @@ async def assemble_node(
             "system_prompt": agent.system_prompt,
             "llm_model": agent.llm_model,
             "tools": agent.tools,
+            "depends_on": list(getattr(agent, "depends_on", [])),
             "enrichment_context": agent.enrichment.to_prompt_section(),
+            "input_contract": getattr(agent, "input_contract", {}) or {},
+            "output_contract": getattr(agent, "output_contract", {}) or {},
         }
         pipeline_order.append(agent.role)
+
+    # Build DAG dependencies.
+    # Default behavior remains linear pipeline when depends_on isn't configured.
+    execution_dag: dict[str, list[str]] = {}
+    for idx, role in enumerate(pipeline_order):
+        explicit = agent_configs.get(role, {}).get("depends_on", []) or []
+        deps = [d for d in explicit if d in pipeline_order and d != role]
+        if not deps and idx > 0:
+            deps = [pipeline_order[idx - 1]]
+        execution_dag[role] = deps
+
+    ready_roles = [r for r in pipeline_order if not execution_dag.get(r, [])]
+    first_role = ready_roles[0] if ready_roles else (pipeline_order[0] if pipeline_order else "")
 
     team_config = {
         **state.get("team_config", {}),
         "agents": agent_configs,
         "pipeline_order": pipeline_order,
+        "execution_dag": execution_dag,
         "gates_after": pipeline.gates_after,
     }
 
     return {
         "team_config": team_config,
         "current_agent_index": 0,
-        "current_agent_role": pipeline_order[0] if pipeline_order else "",
+        "current_agent_role": first_role,
+        "ready_roles": ready_roles,
+        "completed_roles": [],
+        "blocked_roles": [],
         "agent_outputs": {},
         "agent_messages": state.get("agent_messages", []),
         "retry_count": 0,

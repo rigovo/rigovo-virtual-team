@@ -21,12 +21,16 @@ import logging
 import time
 from pathlib import Path
 from typing import Any
+from uuid import UUID, NAMESPACE_URL, uuid5
 
+from rigovo.application.context.memory_retriever import MemoryRetriever, ROLE_MEMORY_PREFERENCES
 from rigovo.application.context.context_builder import ContextBuilder
 from rigovo.application.graph.state import TaskState, AgentOutput
+from rigovo.domain.interfaces.embedding_provider import EmbeddingProvider
 from rigovo.domain.interfaces.llm_provider import LLMProvider, LLMResponse, LLMUsage
+from rigovo.domain.interfaces.repositories import MemoryRepository
 from rigovo.domain.services.cost_calculator import CostCalculator
-from rigovo.domains.engineering.tools import get_engineering_tools
+from rigovo.domains.engineering.tools import TOOL_DEFINITIONS, get_engineering_tools
 from rigovo.infrastructure.filesystem.tool_executor import ToolExecutor
 
 logger = logging.getLogger(__name__)
@@ -121,11 +125,96 @@ class AgentTimeoutError(Exception):
         super().__init__(f"Agent '{role}' timed out after {timeout}s")
 
 
+def _schema_type_ok(expected: str, value: Any) -> bool:
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "null":
+        return value is None
+    return True
+
+
+def _validate_contract(
+    schema: dict[str, Any],
+    payload: Any,
+    path: str = "$",
+) -> list[str]:
+    """Minimal JSON-schema-like validation for input/output contracts."""
+    if not isinstance(schema, dict) or not schema:
+        return []
+
+    errors: list[str] = []
+    expected_type = schema.get("type")
+    if isinstance(expected_type, str) and not _schema_type_ok(expected_type, payload):
+        return [f"{path}: expected type '{expected_type}'"]
+
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and payload not in enum_values:
+        errors.append(f"{path}: value '{payload}' not in enum {enum_values}")
+
+    if isinstance(payload, dict):
+        required = schema.get("required", [])
+        if isinstance(required, list):
+            for key in required:
+                if key not in payload:
+                    errors.append(f"{path}.{key}: required field missing")
+
+        properties = schema.get("properties", {})
+        if isinstance(properties, dict):
+            for key, child_schema in properties.items():
+                if key in payload and isinstance(child_schema, dict):
+                    errors.extend(
+                        _validate_contract(child_schema, payload[key], f"{path}.{key}")
+                    )
+
+    if isinstance(payload, list):
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for idx, item in enumerate(payload):
+                errors.extend(_validate_contract(item_schema, item, f"{path}[{idx}]"))
+
+    return errors
+
+
+def _contract_failure_result(
+    state: TaskState,
+    current_role: str,
+    stage: str,
+    violations: list[str],
+) -> dict[str, Any]:
+    events = list(state.get("events", []))
+    events.append(
+        {
+            "type": "contract_failed",
+            "role": current_role,
+            "stage": stage,
+            "violations": violations[:10],
+        }
+    )
+    return {
+        "status": f"contract_failed_{current_role}",
+        "error": f"{stage} contract failed for '{current_role}'",
+        "contract_stage": stage,
+        "contract_violations": violations,
+        "events": events,
+    }
+
+
 def _build_agent_messages(
     state: TaskState,
     system_prompt: str,
     agent_config: dict[str, Any],
     current_role: str,
+    memory_section_text: str = "",
 ) -> list[dict[str, Any]]:
     """Build the message list for an agent execution."""
     # Context engineering: assemble rich per-agent context
@@ -137,6 +226,8 @@ def _build_agent_messages(
         previous_outputs=state.get("agent_outputs"),
         agent_messages=state.get("agent_messages"),
     )
+    if memory_section_text:
+        agent_context.memory_section = memory_section_text
     full_context = agent_context.to_full_context()
     if full_context:
         system_prompt += f"\n\n{full_context}"
@@ -155,6 +246,113 @@ def _build_agent_messages(
         })
 
     return messages
+
+
+def _parse_state_uuid(value: Any) -> UUID | None:
+    """Parse UUID values from state fields safely."""
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except (ValueError, TypeError):
+        return None
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    if len(a) != len(b) or not a:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+async def _resolve_memory_context_for_role(
+    state: TaskState,
+    current_role: str,
+    memory_repo: MemoryRepository | None,
+    embedding_provider: EmbeddingProvider | None,
+    memory_retriever: MemoryRetriever | None,
+) -> tuple[str, dict[str, str], list[dict[str, Any]]]:
+    """Retrieve, rank, and render relevant memory context for one role."""
+    existing = state.get("memory_context_by_role", {}) or {}
+    memory_context_by_role: dict[str, str] = {}
+    if isinstance(existing, dict):
+        memory_context_by_role = {str(role): str(text) for role, text in existing.items()}
+    if current_role in memory_context_by_role:
+        return memory_context_by_role[current_role], memory_context_by_role, []
+
+    if not memory_repo or not embedding_provider:
+        return "", memory_context_by_role, []
+
+    workspace_id = _parse_state_uuid(state.get("workspace_id"))
+    if workspace_id is None:
+        return "", memory_context_by_role, []
+
+    task_description = str(state.get("description", "")).strip()
+    if not task_description:
+        return "", memory_context_by_role, []
+
+    retriever = memory_retriever or MemoryRetriever()
+    events: list[dict[str, Any]] = []
+    try:
+        query_embedding = await embedding_provider.embed(task_description)
+        preferred_types = ROLE_MEMORY_PREFERENCES.get(current_role) or None
+        memories = await memory_repo.search(
+            workspace_id=workspace_id,
+            query_embedding=query_embedding,
+            limit=24,
+            memory_types=preferred_types,
+        )
+        similarity_scores = [
+            _cosine_similarity(query_embedding, m.embedding or [])
+            for m in memories
+        ]
+        retrieved = await retriever.retrieve(
+            task_description=task_description,
+            role=current_role,
+            memories=memories,
+            similarity_scores=similarity_scores,
+        )
+        memory_section_text = retrieved.to_context_section()
+        memory_context_by_role[current_role] = memory_section_text
+
+        project_id = _derive_project_id(state.get("project_root"))
+        for scored in retrieved.memories:
+            scored.memory.record_usage(project_id=project_id)
+            await memory_repo.save(scored.memory)
+
+        avg_score = (
+            sum(sm.score for sm in retrieved.memories) / max(len(retrieved.memories), 1)
+            if retrieved.memories
+            else 0.0
+        )
+        top_score = max((sm.score for sm in retrieved.memories), default=0.0)
+
+        events.append(
+            {
+                "type": "memories_retrieved",
+                "role": current_role,
+                "count": retrieved.count,
+                "avg_score": round(avg_score, 3),
+                "top_score": round(top_score, 3),
+            }
+        )
+        return memory_section_text, memory_context_by_role, events
+    except Exception as exc:
+        logger.warning("Memory retrieval failed for role '%s': %s", current_role, exc)
+        events.append(
+            {
+                "type": "memory_retrieval_failed",
+                "role": current_role,
+                "error": str(exc),
+            }
+        )
+        memory_context_by_role[current_role] = ""
+        return "", memory_context_by_role, events
 
 
 def _check_budget_guards(state: TaskState, current_role: str) -> dict[str, Any] | None:
@@ -197,12 +395,32 @@ def _check_budget_guards(state: TaskState, current_role: str) -> dict[str, Any] 
 
 def _resolve_tool_definitions(agent_config: dict[str, Any], current_role: str) -> list[dict[str, Any]]:
     """Resolve tool names in agent_config to full tool definitions for the LLM."""
-    # agent_config["tools"] is a list of tool names like ["read_file", "write_file"]
-    # We need to convert these to full LLM tool definitions
-    tool_names = agent_config.get("tools", [])
-    if not tool_names:
+    role_defs = get_engineering_tools(current_role)
+    configured = agent_config.get("tools")
+    if configured is None:
+        return role_defs
+    if not isinstance(configured, list) or not configured:
         return []
-    return get_engineering_tools(current_role)
+
+    by_name = {tool.get("name", ""): tool for tool in role_defs if tool.get("name")}
+    # Allow explicitly-configured ecosystem tool when policy enables it,
+    # even if not part of legacy role defaults.
+    if "invoke_integration" in configured and "invoke_integration" in TOOL_DEFINITIONS:
+        by_name.setdefault("invoke_integration", TOOL_DEFINITIONS["invoke_integration"])
+
+    resolved: list[dict[str, Any]] = []
+    for name in configured:
+        tool_def = by_name.get(str(name))
+        if tool_def:
+            resolved.append(tool_def)
+    return resolved
+
+
+def _derive_project_id(project_root: Any) -> UUID | None:
+    root = str(project_root or "").strip()
+    if not root:
+        return None
+    return uuid5(NAMESPACE_URL, root)
 
 
 def _new_message_id(agent_messages: list[dict[str, Any]]) -> str:
@@ -544,6 +762,25 @@ async def _run_agentic_loop(
                     )
             else:
                 result_str = await tool_executor.execute(tc["name"], tc["input"])
+                if tc["name"] == "invoke_integration":
+                    try:
+                        integration_result = json.loads(result_str)
+                    except json.JSONDecodeError:
+                        integration_result = {}
+                    event_type = (
+                        "integration_blocked"
+                        if integration_result.get("blocked")
+                        else "integration_invoked"
+                    )
+                    events.append({
+                        "type": event_type,
+                        "role": role,
+                        "kind": str(tc.get("input", {}).get("kind", "")),
+                        "plugin_id": str(tc.get("input", {}).get("plugin_id", "")),
+                        "target_id": str(tc.get("input", {}).get("target_id", "")),
+                        "operation": str(tc.get("input", {}).get("operation", "")),
+                        "dry_run": bool(integration_result.get("dry_run", False)),
+                    })
             return tc, result_str
 
         if len(response.tool_calls) > 1:
@@ -633,6 +870,9 @@ async def execute_agent_node(
     llm_factory: Any,
     cost_calculator: CostCalculator,
     stream_callback: Any | None = None,
+    memory_repo: MemoryRepository | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
+    memory_retriever: MemoryRetriever | None = None,
 ) -> dict[str, Any]:
     """
     Execute the current agent with context isolation and tool calling.
@@ -665,21 +905,54 @@ async def execute_agent_node(
         }
     agent_config = agents[current_role]
 
+    # --- Contract guards (input) ---
+    input_contract = agent_config.get("input_contract", {}) or {}
+    input_payload = {
+        "task_description": state.get("description", ""),
+        "role": current_role,
+        "project_root": state.get("project_root", ""),
+        "classification": state.get("classification", {}),
+        "previous_outputs": state.get("agent_outputs", {}),
+        "fix_packets": state.get("fix_packets", []),
+    }
+    input_violations = _validate_contract(input_contract, input_payload)
+    if input_violations:
+        return _contract_failure_result(state, current_role, "input", input_violations)
+
     # --- Budget guards ---
     budget_error = _check_budget_guards(state, current_role)
     if budget_error:
         return budget_error
 
+    # --- Memory retrieval and context assembly ---
+    memory_section_text, memory_context_by_role, memory_events = await _resolve_memory_context_for_role(
+        state=state,
+        current_role=current_role,
+        memory_repo=memory_repo,
+        embedding_provider=embedding_provider,
+        memory_retriever=memory_retriever,
+    )
+
     # --- Build messages ---
     system_prompt = agent_config["system_prompt"]
-    messages = _build_agent_messages(state, system_prompt, agent_config, current_role)
+    messages = _build_agent_messages(
+        state,
+        system_prompt,
+        agent_config,
+        current_role,
+        memory_section_text=memory_section_text,
+    )
 
     # --- Resolve tool definitions ---
     tool_defs = _resolve_tool_definitions(agent_config, current_role)
 
     # --- Create ToolExecutor ---
     project_root = Path(state.get("project_root", "."))
-    tool_executor = ToolExecutor(project_root)
+    tool_executor = ToolExecutor(
+        project_root,
+        integration_catalog=state.get("integration_catalog", {}),
+        integration_policy=state.get("integration_policy", {}),
+    )
 
     # --- LLM setup ---
     llm_model = agent_config.get("llm_model", DEFAULT_LLM_MODEL)
@@ -688,6 +961,7 @@ async def execute_agent_node(
 
     # Emit agent_started event
     events = list(state.get("events", []))
+    events.extend(memory_events)
     agent_messages_log = list(state.get("agent_messages", []))
     events.append({
         "type": "agent_started",
@@ -792,6 +1066,20 @@ async def execute_agent_node(
         "duration_ms": duration_ms,
     }
 
+    # --- Contract guards (output) ---
+    output_contract = agent_config.get("output_contract", {}) or {}
+    output_payload = {
+        "summary": final_text,
+        "files_changed": files_changed,
+        "tokens": total_tokens,
+        "cost": cost,
+        "duration_ms": duration_ms,
+        "status": f"agent_{current_role}_complete",
+    }
+    output_violations = _validate_contract(output_contract, output_payload)
+    if output_violations:
+        return _contract_failure_result(state, current_role, "output", output_violations)
+
     events.append({
         "type": "agent_complete",
         "role": current_role,
@@ -817,6 +1105,7 @@ async def execute_agent_node(
         },
         "status": f"agent_{current_role}_complete",
         "agent_messages": agent_messages_log,
+        "memory_context_by_role": memory_context_by_role,
         "events": events,
     }
 
@@ -884,6 +1173,9 @@ async def execute_agents_parallel(
     llm_factory: Any,
     cost_calculator: CostCalculator,
     stream_callback: Any | None = None,
+    memory_repo: MemoryRepository | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
+    memory_retriever: MemoryRetriever | None = None,
 ) -> dict[str, Any]:
     """
     Execute multiple independent agents in parallel (item 8).
@@ -891,12 +1183,31 @@ async def execute_agents_parallel(
     Only used for agents that have no dependencies on each other's output.
     Each agent sees the SAME state — they don't see each other's results.
     """
+    def _build_role_state(base: TaskState, role: str) -> TaskState:
+        """Create an isolated task state for one parallel role execution."""
+        role_state: TaskState = dict(base)
+        role_state["current_agent_role"] = role
+        # Isolate mutable collections so parallel agents can't cross-contaminate.
+        role_state["events"] = []
+        role_state["agent_messages"] = []
+        role_state["agent_outputs"] = dict(base.get("agent_outputs", {}))
+        role_state["cost_accumulator"] = dict(base.get("cost_accumulator", {}))
+        role_state["memory_context_by_role"] = dict(base.get("memory_context_by_role", {}))
+        return role_state
+
     tasks = []
     for role in roles:
-        role_state = dict(state)
-        role_state["current_agent_role"] = role
+        role_state = _build_role_state(state, role)
         tasks.append(
-            execute_agent_node(role_state, llm_factory, cost_calculator, stream_callback)
+            execute_agent_node(
+                role_state,
+                llm_factory,
+                cost_calculator,
+                stream_callback,
+                memory_repo=memory_repo,
+                embedding_provider=embedding_provider,
+                memory_retriever=memory_retriever,
+            )
         )
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -904,30 +1215,45 @@ async def execute_agents_parallel(
     # Merge results
     merged_outputs = dict(state.get("agent_outputs", {}))
     merged_costs = dict(state.get("cost_accumulator", {}))
+    merged_memory_context = dict(state.get("memory_context_by_role", {}))
     merged_events = list(state.get("events", []))
-    total_new_tokens = 0
-    total_new_cost = 0.0
 
     for i, result in enumerate(results):
+        role = roles[i]
         if isinstance(result, Exception):
-            logger.error("Parallel agent %s failed: %s", roles[i], result)
+            logger.error("Parallel agent %s failed: %s", role, result)
             merged_events.append({
                 "type": "agent_timeout",
-                "role": roles[i],
+                "role": role,
                 "error": str(result),
             })
             continue
         if isinstance(result, dict):
-            for role, output in result.get("agent_outputs", {}).items():
-                merged_outputs[role] = output
-                total_new_tokens += output.get("tokens", 0)
-                total_new_cost += output.get("cost", 0.0)
-            merged_costs.update(result.get("cost_accumulator", {}))
+            role_outputs = result.get("agent_outputs", {})
+            if role in role_outputs:
+                merged_outputs[role] = role_outputs[role]
+
+            # Merge only the current role's cost entry to avoid stale overwrites.
+            role_agent_id = str(
+                state.get("team_config", {}).get("agents", {}).get(role, {}).get("id", "")
+            )
+            role_costs = result.get("cost_accumulator", {})
+            if role_agent_id and role_agent_id in role_costs:
+                merged_costs[role_agent_id] = role_costs[role_agent_id]
+            elif role in merged_outputs:
+                merged_costs[role_agent_id or role] = {
+                    "tokens": merged_outputs[role].get("tokens", 0),
+                    "cost": merged_outputs[role].get("cost", 0.0),
+                }
+            merged_memory_context.update(result.get("memory_context_by_role", {}))
+
+            # Child role states start with events=[], so this extends only new events.
             merged_events.extend(result.get("events", []))
 
     return {
         "agent_outputs": merged_outputs,
         "cost_accumulator": merged_costs,
+        "memory_context_by_role": merged_memory_context,
         "events": merged_events,
         "status": "parallel_complete",
     }

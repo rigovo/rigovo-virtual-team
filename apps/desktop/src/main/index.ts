@@ -15,6 +15,28 @@ interface EngineStatus {
   apiUrl: string;
 }
 
+interface RuntimeConfig {
+  electronSandbox: boolean;
+  worktreeMode: "project" | "git_worktree";
+  worktreeRoot: string;
+}
+
+function parseBoolEnv(name: string, defaultValue: boolean): boolean {
+  const raw = String(process.env[name] ?? "").trim().toLowerCase();
+  if (!raw) return defaultValue;
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function runtimeConfig(): RuntimeConfig {
+  const worktreeModeRaw = String(process.env.RIGOVO_WORKTREE_MODE ?? "project").trim().toLowerCase();
+  const worktreeMode = worktreeModeRaw === "git_worktree" ? "git_worktree" : "project";
+  return {
+    electronSandbox: parseBoolEnv("RIGOVO_DESKTOP_ELECTRON_SANDBOX", true),
+    worktreeMode,
+    worktreeRoot: String(process.env.RIGOVO_WORKTREE_ROOT ?? "").trim(),
+  };
+}
+
 function engineStatus(host = "127.0.0.1", port = 8787): EngineStatus {
   if (engineProcess && engineProcess.exitCode === null) {
     return { running: true, pid: engineProcess.pid ?? null, apiUrl: `http://${host}:${port}` };
@@ -33,11 +55,20 @@ function startEngine(
   if (status.running) return status;
 
   const args = ["serve", "--host", host, "--port", String(port)];
+  if (projectDir) {
+    args.push("--project", projectDir);
+  }
   const opts: { cwd?: string } = {};
   if (projectDir) opts.cwd = projectDir;
+  const runtime = runtimeConfig();
 
   engineProcess = spawn(rigovoBin, args, {
     ...opts,
+    env: {
+      ...process.env,
+      RIGOVO_WORKTREE_MODE: runtime.worktreeMode,
+      RIGOVO_WORKTREE_ROOT: runtime.worktreeRoot,
+    },
     stdio: "ignore",
     detached: false
   });
@@ -66,6 +97,7 @@ function stopEngine(): EngineStatus {
 
 function registerIpc(): void {
   ipcMain.handle("engine:status", () => engineStatus());
+  ipcMain.handle("engine:runtime-config", () => runtimeConfig());
 
   ipcMain.handle(
     "engine:start",
@@ -98,6 +130,7 @@ function registerIpc(): void {
 /* ------------------------------------------------------------------ */
 
 function createWindow(): void {
+  const runtime = runtimeConfig();
   const mainWindow = new BrowserWindow({
     width: 1480,
     height: 920,
@@ -106,7 +139,7 @@ function createWindow(): void {
     title: "Rigovo Control Plane",
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
-      sandbox: false
+      sandbox: runtime.electronSandbox
     }
   });
 

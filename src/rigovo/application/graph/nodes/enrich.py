@@ -20,11 +20,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from uuid import UUID, NAMESPACE_DNS, uuid5
 
 from rigovo.application.context.rigour_supervisor import RigourSupervisor, FixPacket
 from rigovo.application.graph.state import TaskState
 from rigovo.application.master.enricher import ContextEnricher, EnrichmentUpdate
-from rigovo.domain.entities.quality import GateResult, GateStatus
+from rigovo.application.master.evaluator import AgentEvaluator
+from rigovo.domain.entities.agent import Agent
+from rigovo.domain.entities.quality import GateResult, GateStatus, Violation, ViolationSeverity
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,7 @@ GATE_TO_PITFALL_MAP: dict[str, str] = {
 async def enrich_node(
     state: TaskState,
     enricher: ContextEnricher | None = None,
+    evaluator: AgentEvaluator | None = None,
     supervisor: RigourSupervisor | None = None,
 ) -> dict[str, Any]:
     """Extract learnings from the completed pipeline and update enrichment.
@@ -59,12 +63,18 @@ async def enrich_node(
     supervisor = supervisor or RigourSupervisor()
     events = list(state.get("events", []))
 
-    # Collect all gate results from the pipeline
+    # Collect gate results across the pipeline (history preferred).
     gate_results_raw = state.get("gate_results", {})
+    gate_history = state.get("gate_history", [])
+    gate_payloads: list[dict[str, Any]] = []
+    if isinstance(gate_history, list):
+        gate_payloads = [g for g in gate_history if isinstance(g, dict)]
+    if not gate_payloads and isinstance(gate_results_raw, dict):
+        gate_payloads = [gate_results_raw]
     enrichment_updates: list[dict[str, Any]] = []
 
     # 1. Extract patterns from gate violations
-    patterns_from_gates = _extract_gate_patterns(gate_results_raw)
+    patterns_from_gates = _extract_gate_patterns(gate_payloads)
 
     # 2. Extract patterns from retry loops
     retry_count = state.get("retry_count", 0)
@@ -103,6 +113,16 @@ async def enrich_node(
             "source": "pipeline_success",
         })
 
+    # 6. Master-service enrichment/evaluation (if wired)
+    if enricher is not None or evaluator is not None:
+        master_updates, eval_events = await _run_master_learning_loop(
+            state=state,
+            enricher=enricher,
+            evaluator=evaluator,
+        )
+        enrichment_updates.extend(master_updates)
+        events.extend(eval_events)
+
     events.append({
         "type": "enrichment_extracted",
         "pitfall_count": len(all_pitfalls),
@@ -117,25 +137,167 @@ async def enrich_node(
     }
 
 
-def _extract_gate_patterns(gate_results_raw: dict[str, Any]) -> list[str]:
+async def _run_master_learning_loop(
+    state: TaskState,
+    enricher: ContextEnricher | None,
+    evaluator: AgentEvaluator | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    updates: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+
+    team_agents = state.get("team_config", {}).get("agents", {})
+    gate_history = state.get("gate_history", [])
+    gate_by_role = {}
+    if isinstance(gate_history, list):
+        for entry in gate_history:
+            if isinstance(entry, dict):
+                role = str(entry.get("role", ""))
+                if role:
+                    gate_by_role[role] = entry
+
+    for role, output in (state.get("agent_outputs", {}) or {}).items():
+        if not isinstance(output, dict):
+            continue
+
+        agent_cfg = team_agents.get(role, {}) if isinstance(team_agents, dict) else {}
+        agent = _build_agent_for_role(state, role, agent_cfg)
+        gate_result = _gate_result_from_payload(gate_by_role.get(role, {}))
+
+        if evaluator is not None:
+            evaluation = evaluator.evaluate(
+                agent=agent,
+                gate_result=gate_result,
+                duration_ms=int(output.get("duration_ms", 0) or 0),
+                retry_count=int(state.get("retry_count", 0) or 0),
+                files_changed=len(output.get("files_changed", []) or []),
+            )
+            events.append(
+                {
+                    "type": "agent_evaluated",
+                    "role": role,
+                    "quality_score": evaluation.quality_score,
+                    "speed_score": evaluation.speed_score,
+                    "needs_enrichment": evaluation.needs_enrichment,
+                }
+            )
+
+        if enricher is not None:
+            try:
+                result = await enricher.analyze_execution(
+                    agent=agent,
+                    execution_summary=str(output.get("summary", "")),
+                    gate_result=gate_result,
+                    files_changed=list(output.get("files_changed", []) or []),
+                )
+                updates.append(
+                    {
+                        "known_pitfalls": result.known_pitfalls,
+                        "domain_knowledge": result.domain_knowledge,
+                        "pre_check_rules": result.pre_check_rules,
+                        "workspace_conventions": result.workspace_conventions,
+                        "source": "master_enricher",
+                        "role": role,
+                        "reasoning": result.reasoning,
+                    }
+                )
+            except Exception as exc:
+                events.append(
+                    {
+                        "type": "enrichment_service_failed",
+                        "role": role,
+                        "error": str(exc),
+                    }
+                )
+
+    return updates, events
+
+
+def _build_agent_for_role(
+    state: TaskState,
+    role: str,
+    agent_cfg: dict[str, Any],
+) -> Agent:
+    workspace_id = _parse_uuid(state.get("workspace_id")) or UUID(int=0)
+    team_id = uuid5(NAMESPACE_DNS, str(state.get("team_config", {}).get("team_id", "default-team")))
+    return Agent(
+        id=_parse_uuid(agent_cfg.get("id")) or uuid5(NAMESPACE_DNS, f"{team_id}:{role}"),
+        workspace_id=workspace_id,
+        team_id=team_id,
+        role=role,
+        name=str(agent_cfg.get("name", role.title())),
+        system_prompt=str(agent_cfg.get("system_prompt", "")),
+        llm_model=str(agent_cfg.get("llm_model", "claude-sonnet-4-6")),
+        tools=list(agent_cfg.get("tools", []) or []),
+    )
+
+
+def _gate_result_from_payload(payload: dict[str, Any]) -> GateResult | None:
+    if not isinstance(payload, dict) or not payload:
+        return None
+    violations_raw = payload.get("violations", [])
+    violations: list[Violation] = []
+    if isinstance(violations_raw, list):
+        for item in violations_raw:
+            if not isinstance(item, dict):
+                continue
+            sev = str(item.get("severity", "error")).lower()
+            if sev not in {"error", "warning", "info"}:
+                sev = "error"
+            violations.append(
+                Violation(
+                    gate_id=str(item.get("gate_id") or item.get("rule") or "unknown"),
+                    message=str(item.get("message", "")),
+                    severity=ViolationSeverity(sev),
+                    file_path=str(item.get("file_path", "")) or None,
+                    line=item.get("line"),
+                    suggestion=str(item.get("suggestion", "")),
+                )
+            )
+    status = GateStatus.PASSED if bool(payload.get("passed", False)) else GateStatus.FAILED
+    return GateResult(
+        status=status,
+        violations=violations,
+        gates_run=int(payload.get("gates_run", 0) or 0),
+        gates_passed=int(payload.get("gates_passed", 0) or 0),
+    )
+
+
+def _parse_uuid(value: Any) -> UUID | None:
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except (ValueError, TypeError):
+        return None
+
+
+def _extract_gate_patterns(gate_payloads: list[dict[str, Any]]) -> list[str]:
     """Extract known pitfalls from gate results."""
     patterns: list[str] = []
 
-    violations = gate_results_raw.get("violations", [])
-    if not violations:
-        return patterns
-
     # Count violations by rule
     rule_counts: dict[str, int] = {}
-    for v in violations:
-        rule = v.get("rule", "unknown") if isinstance(v, dict) else "unknown"
-        rule_counts[rule] = rule_counts.get(rule, 0) + 1
+    for payload in gate_payloads:
+        violations = payload.get("violations", [])
+        if isinstance(violations, list):
+            for v in violations:
+                rule = v.get("rule", "unknown") if isinstance(v, dict) else "unknown"
+                rule_counts[rule] = rule_counts.get(rule, 0) + 1
+            continue
+        # Fallback when only counts are available (legacy states).
+        if int(payload.get("violation_count", 0) or 0) > 0:
+            rule_counts["unknown"] = rule_counts.get("unknown", 0) + int(payload.get("violation_count", 0) or 0)
+
+    if not rule_counts:
+        return patterns
 
     # Convert frequent violations to pitfalls
     for rule, count in rule_counts.items():
         mapped = GATE_TO_PITFALL_MAP.get(rule)
         if mapped:
             patterns.append(mapped)
+        elif rule == "contract_failed":
+            patterns.append("Respect declared input/output contracts strictly; fail fast on mismatch.")
         elif count >= 2:
             patterns.append(
                 f"Repeated violation of '{rule}' ({count}x). Fix this pattern."

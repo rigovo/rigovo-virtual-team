@@ -18,17 +18,17 @@ def get_engineering_tools(role_id: str) -> list[dict[str, Any]]:
 
 # Which tools each role has access to
 TOOLS_BY_ROLE: dict[str, list[str]] = {
-    "planner": ["read_file", "list_directory", "search_codebase", "read_dependencies", "consult_agent"],
+    "planner": ["read_file", "list_directory", "search_codebase", "read_dependencies", "consult_agent", "invoke_integration"],
     "coder": [
         "read_file", "write_file", "list_directory", "search_codebase",
         "run_command", "read_dependencies", "spawn_subtask", "consult_agent",
     ],
     "reviewer": ["read_file", "list_directory", "search_codebase", "consult_agent"],
-    "security": ["read_file", "search_codebase", "run_command", "consult_agent"],
+    "security": ["read_file", "search_codebase", "run_command", "consult_agent", "invoke_integration"],
     "qa": ["read_file", "write_file", "list_directory", "search_codebase", "run_command", "consult_agent"],
-    "devops": ["read_file", "write_file", "list_directory", "run_command", "consult_agent"],
-    "sre": ["read_file", "write_file", "list_directory", "run_command", "consult_agent"],
-    "lead": ["read_file", "list_directory", "search_codebase", "consult_agent"],
+    "devops": ["read_file", "write_file", "list_directory", "run_command", "consult_agent", "invoke_integration"],
+    "sre": ["read_file", "write_file", "list_directory", "run_command", "consult_agent", "invoke_integration"],
+    "lead": ["read_file", "list_directory", "search_codebase", "consult_agent", "invoke_integration"],
 }
 
 # Tool definitions for LLM function calling
@@ -178,6 +178,39 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 },
             },
             "required": ["to_role", "question"],
+        },
+    },
+    "invoke_integration": {
+        "name": "invoke_integration",
+        "description": (
+            "Invoke a trusted plugin capability (connector, MCP server, or action). "
+            "Execution is policy-gated by trust level and enabled plugin allow-lists."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "description": "One of: connector|mcp|action.",
+                },
+                "plugin_id": {
+                    "type": "string",
+                    "description": "Plugin manifest id exposing the capability.",
+                },
+                "target_id": {
+                    "type": "string",
+                    "description": "Capability id inside plugin (connector id, mcp server id, action id).",
+                },
+                "operation": {
+                    "type": "string",
+                    "description": "Operation name (e.g. post_message, query, run).",
+                },
+                "payload": {
+                    "type": "object",
+                    "description": "Structured input payload for the operation.",
+                },
+            },
+            "required": ["kind", "plugin_id", "target_id", "operation"],
         },
     },
 }

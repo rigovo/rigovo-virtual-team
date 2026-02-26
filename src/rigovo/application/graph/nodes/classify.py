@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from rigovo.application.graph.state import TaskState
+from rigovo.application.master.classifier import TaskClassifier
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 
 
@@ -29,8 +30,34 @@ Respond with ONLY valid JSON:
 async def classify_node(
     state: TaskState,
     llm: LLMProvider,
+    classifier: TaskClassifier | None = None,
 ) -> dict[str, Any]:
     """Classify the task using the Master Agent's LLM."""
+    if classifier is not None:
+        result = await classifier.classify(state["description"])
+        classification = {
+            "task_type": str(result.task_type.value),
+            "complexity": str(result.complexity.value),
+            "reasoning": result.reasoning,
+        }
+        return {
+            "classification": classification,
+            "status": "classified",
+            "cost_accumulator": {
+                **state.get("cost_accumulator", {}),
+                "classifier": {
+                    "tokens": 0,
+                    "cost": 0.0,
+                },
+            },
+            "events": state.get("events", []) + [{
+                "type": "task_classified",
+                "task_type": classification.get("task_type"),
+                "complexity": classification.get("complexity"),
+                "reasoning": classification.get("reasoning"),
+            }],
+        }
+
     response = await llm.invoke(
         messages=[
             {"role": "system", "content": CLASSIFICATION_PROMPT},
