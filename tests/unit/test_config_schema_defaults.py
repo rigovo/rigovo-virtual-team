@@ -27,6 +27,12 @@ class TestRigovoConfigDefaults:
         assert config.quality.rigour_timeout == 120
         assert config.database.backend == "sqlite"
         assert config.database.local_path == ".rigovo/local.db"
+        assert config.plugins.enabled is True
+        assert config.plugins.paths == [".rigovo/plugins"]
+        assert config.plugins.allow_unsigned is False
+        assert config.identity.sso_enabled is False
+        assert "admin" in config.identity.personas
+        assert "tasks.approve" in config.identity.personas["operator"]
 
     def test_project_schema_defaults(self):
         """ProjectSchema should have defaults."""

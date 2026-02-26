@@ -11,7 +11,6 @@ Load order (later overrides earlier):
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -74,6 +73,28 @@ class ApprovalConfig(BaseSettings):
     model_config = {"extra": "ignore"}
 
 
+class IdentityConfig(BaseSettings):
+    """Identity and SSO configuration.
+
+    WORKOS_CLIENT_ID is a *public* identifier (like any OAuth client ID) and
+    is safe to embed in the shipped binary.  End-users never need to set it.
+    WORKOS_API_KEY is a *secret* used only for server-side admin operations
+    (org/role lookup, invitations) — optional for basic auth which uses PKCE.
+    """
+
+    provider: str = Field(default="workos", alias="RIGOVO_IDENTITY_PROVIDER")
+    auth_mode: str = Field(default="email_only", alias="RIGOVO_AUTH_MODE")
+    workos_api_key: str = Field(default="", alias="WORKOS_API_KEY")
+    # Public client ID — safe to ship in the binary.  Override via env for dev.
+    workos_client_id: str = Field(
+        default="client_01KECSP9SGAB8RYBZW08A3R9S7",
+        alias="WORKOS_CLIENT_ID",
+    )
+    workos_organization_id: str = Field(default="", alias="WORKOS_ORGANIZATION_ID")
+
+    model_config = {"extra": "ignore"}
+
+
 class AppConfig(BaseSettings):
     """
     Root application configuration.
@@ -97,6 +118,7 @@ class AppConfig(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
+    identity: IdentityConfig = Field(default_factory=IdentityConfig)
 
     # Orchestration
     max_retries: int = Field(default=5, alias="RIGOVO_MAX_RETRIES")
@@ -154,5 +176,11 @@ def load_config(project_root: Path | None = None) -> AppConfig:
 
     # 5. Merge cloud settings
     app_config.cloud.enabled = yml.cloud.enabled
+
+    # 6. Merge identity settings
+    app_config.identity.provider = yml.identity.provider or app_config.identity.provider
+    app_config.identity.auth_mode = yml.identity.auth_mode
+    if yml.identity.workos_organization_id:
+        app_config.identity.workos_organization_id = yml.identity.workos_organization_id
 
     return app_config

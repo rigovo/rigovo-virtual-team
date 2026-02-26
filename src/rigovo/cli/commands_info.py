@@ -352,6 +352,61 @@ def register(app: typer.Typer) -> None:
         container.close()
         console.print()
 
+    @app.command("plugins")
+    def plugins_cmd(
+        all: bool = typer.Option(
+            False, "--all", help="Include disabled plugins",
+        ),
+        project_dir: str | None = typer.Option(
+            None, "--project", "-p", help="Project directory",
+        ),
+    ) -> None:
+        """List discovered ecosystem plugins (connectors/skills/MCP)."""
+        root = Path(project_dir) if project_dir else Path.cwd()
+        container = _load_container(root)
+
+        console.print("[bold blue]Rigovo[/bold blue] — Plugins\n")
+        plugins_cfg = container.config.yml.plugins
+        console.print(f"  [bold]Enabled:[/bold] {plugins_cfg.enabled}")
+        console.print(f"  [bold]Paths:[/bold]   {', '.join(plugins_cfg.paths) or '(none)'}")
+        console.print()
+
+        if not plugins_cfg.enabled:
+            console.print("  [yellow]Plugin ecosystem disabled in rigovo.yml[/yellow]\n")
+            container.close()
+            return
+
+        registry = container.get_plugin_registry()
+        manifests = registry.load(include_disabled=all)
+
+        if not manifests:
+            console.print("  [dim]No plugins discovered.[/dim]")
+            console.print(
+                "  [dim]Add plugin manifests under .rigovo/plugins/<plugin>/plugin.yaml[/dim]\n",
+            )
+            container.close()
+            return
+
+        table = Table(title="Discovered Plugins")
+        table.add_column("ID", style="cyan")
+        table.add_column("Version")
+        table.add_column("Capabilities")
+        table.add_column("Trust")
+        table.add_column("Enabled")
+
+        for p in manifests:
+            table.add_row(
+                p.id,
+                p.version,
+                ", ".join(p.capabilities) if p.capabilities else "—",
+                p.trust_level,
+                "yes" if p.enabled else "no",
+            )
+
+        console.print(table)
+        console.print()
+        container.close()
+
 
 # ---------------------------------------------------------------------------
 # Helpers

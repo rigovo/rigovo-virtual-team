@@ -111,6 +111,41 @@ That's it. One command. Full engineering team.
 
 ---
 
+## Desktop Control Plane (Tauri)
+
+Rigovo now includes a UI-first desktop shell under `apps/desktop` so users can operate the virtual team from a control plane instead of CLI commands.
+
+```bash
+cd apps/desktop
+pnpm install
+pnpm tauri dev
+```
+
+One-command local E2E launcher (API + desktop):
+
+```bash
+./scripts/e2e_desktop.sh
+```
+
+Fast path (skip dependency install if already installed):
+
+```bash
+RIGOVO_E2E_INSTALL=never ./scripts/e2e_desktop.sh
+```
+
+Prerequisite for desktop shell: Rust toolchain (`cargo`) installed via `rustup`.
+
+The desktop app is designed for enterprise operation:
+
+- Task ingestion inbox (plugins/channels)
+- Approval center (`auto|notify|approve`)
+- Cross-team workforce matrix (Team A/B/C role assignment)
+- Live event stream + execution spotlight
+
+Identity setup is backend-managed. End users running the desktop app are not expected to set `WORKOS_*` or `RIGOVO_*` identity env vars locally. Admins configure identity once from the Governance panel (or server env for cloud/self-hosted deploys). Secrets like `WORKOS_API_KEY` are persisted in project `.env` (gitignored), not in `.rigovo/control_plane_state.json`.
+
+---
+
 ## Meet Your Team
 
 ```
@@ -247,34 +282,35 @@ flowchart TD
     START((START)) --> SCAN
 
     subgraph PERCEIVE["Phase 1: Perception"]
-        SCAN[🔍 scan_project<br/>Read codebase structure,<br/>detect tech stack, entry points]
+        SCAN["scan_project"]
     end
 
     SCAN --> CLASSIFY
 
     subgraph THINK["Phase 2: Classification & Assembly"]
-        CLASSIFY[🧠 classify<br/>Master Agent classifies<br/>task type & complexity]
-        CLASSIFY --> ASSEMBLE[🔧 assemble<br/>TeamAssembler builds<br/>agent pipeline & gate schedule]
+        CLASSIFY["classify"]
+        CLASSIFY --> ROUTE_TEAM["route_team"]
+        ROUTE_TEAM --> ASSEMBLE["assemble"]
     end
 
     ASSEMBLE --> PLAN_APPROVAL
 
     subgraph APPROVE_PLAN["Phase 3: Plan Approval"]
-        PLAN_APPROVAL{⚠️ plan_approval<br/>User reviews pipeline}
+        PLAN_APPROVAL{"plan_approval"}
     end
 
     PLAN_APPROVAL -->|rejected| FINALIZE
     PLAN_APPROVAL -->|approved| EXECUTE
 
     subgraph EXECUTE_LOOP["Phase 4: Agent Execution Loop"]
-        EXECUTE[⚡ execute_agent<br/>Run current agent with<br/>context engineering]
-        EXECUTE -.-> CONSULT[💬 consult_agent<br/>Advisory-only role-to-role<br/>consultation policy-gated]
+        EXECUTE["execute_agent"]
+        EXECUTE -.-> CONSULT["consult_agent"]
         CONSULT -.-> EXECUTE
-        EXECUTE --> QUALITY[🛡️ quality_check<br/>Run Rigour AST gates<br/>on files changed]
+        EXECUTE --> QUALITY["quality_check"]
         QUALITY --> GATE_ROUTE{Gates passed?}
         GATE_ROUTE -->|fail + retries left| EXECUTE
         GATE_ROUTE -->|fail + max retries| FINALIZE
-        GATE_ROUTE -->|pass| ROUTE_NEXT[route_next<br/>Advance pipeline index]
+        GATE_ROUTE -->|pass| ROUTE_NEXT["route_next"]
         ROUTE_NEXT --> PIPELINE_CHECK{Pipeline complete?}
         PIPELINE_CHECK -->|more agents| EXECUTE
         PIPELINE_CHECK -->|parallelizable agents| PARALLEL
@@ -282,48 +318,49 @@ flowchart TD
     end
 
     subgraph PARALLEL_PHASE["Phase 5: Parallel Fan-Out"]
-        PARALLEL[⚡ parallel_fan_out<br/>Execute reviewer + QA +<br/>security simultaneously]
-        PARALLEL --> DEBATE_CHECK{Reviewer requested<br/>changes?}
-        DEBATE_CHECK -->|debate needed| DEBATE[💬 debate_check<br/>Inject reviewer feedback,<br/>reset to coder]
+        PARALLEL["parallel_fan_out"]
+        PARALLEL --> DEBATE_CHECK{"Reviewer requested changes?"}
+        DEBATE_CHECK -->|debate needed| DEBATE["debate_check"]
         DEBATE --> EXECUTE
         DEBATE_CHECK -->|debate done| COMMIT
     end
 
     subgraph COMMIT_PHASE["Phase 6: Commit Approval"]
-        COMMIT{⚠️ commit_approval<br/>User reviews all results}
+        COMMIT{"commit_approval"}
     end
 
     COMMIT -->|rejected| FINALIZE
     COMMIT -->|approved| ENRICH
 
     subgraph LEARN["Phase 7: Learning Loop"]
-        ENRICH[📚 enrich<br/>Extract learnings from<br/>gate violations & retries]
-        ENRICH --> MEMORY[💾 store_memory<br/>Persist reusable lessons<br/>to memory repository]
+        ENRICH["enrich"]
+        ENRICH --> MEMORY["store_memory"]
     end
 
     MEMORY --> FINALIZE
 
     subgraph DONE["Phase 8: Finalization"]
-        FINALIZE[📊 finalize<br/>Aggregate totals,<br/>determine final status]
+        FINALIZE["finalize"]
     end
 
     FINALIZE --> END_NODE((END))
 ```
 
-### Pipeline Nodes (10 total)
+### Pipeline Nodes (11 total)
 
 | # | Node | Purpose | Input | Output |
 |---|------|---------|-------|--------|
 | 1 | `scan_project` | Read codebase structure, detect tech stack | `project_root` | `ProjectSnapshot` |
 | 2 | `classify` | Master Agent classifies task type & complexity | description + snapshot | `ClassificationData` |
-| 3 | `assemble` | Build agent pipeline based on classification | classification + agents | `TeamConfig` with pipeline_order |
-| 4 | `plan_approval` | User approves proposed pipeline | team config | approval_status |
-| 5 | `execute_agent` | Run agent with full context engineering | agent config + context | `AgentOutput` |
-| 6 | `quality_check` | Run Rigour AST gates on changed files | files_changed | `GateResult` |
-| 7 | `route_next` | Advance to next agent, reset retry state | pipeline index | next agent config |
-| 8 | `parallel_fan_out` | Execute independent agents simultaneously | remaining roles | merged `AgentOutput`s |
-| 9 | `commit_approval` | User approves final results before commit | all outputs | approval_status |
-| 10 | `enrich` + `store_memory` + `finalize` | Extract learnings, persist, aggregate | full state | final result |
+| 3 | `route_team` | Select target team (auto route or requested team) | classification + team set | `team_config` seed |
+| 4 | `assemble` | Build agent pipeline based on classification | classification + team agents | `TeamConfig` with pipeline_order |
+| 5 | `plan_approval` | User approves proposed pipeline | team config | approval_status |
+| 6 | `execute_agent` | Run agent with full context engineering | agent config + context | `AgentOutput` |
+| 7 | `quality_check` | Run Rigour AST gates on changed files | files_changed | `GateResult` |
+| 8 | `route_next` | Advance to next agent, reset retry state | pipeline index | next agent config |
+| 9 | `parallel_fan_out` | Execute independent agents simultaneously | remaining roles | merged `AgentOutput`s |
+| 10 | `commit_approval` | User approves final results before commit | all outputs | approval_status |
+| 11 | `enrich` + `store_memory` + `finalize` | Extract learnings, persist, aggregate | full state | final result |
 
 ---
 
@@ -432,13 +469,13 @@ Agents can request targeted advice from other roles during execution via `consul
 
 ```mermaid
 flowchart LR
-    A[Requesting Agent<br/>e.g. reviewer] -->|consult request to role| P{Policy Gate<br/>allowed_targets}
-    P -->|blocked| ERR[Tool Error<br/>policy violation]
-    P -->|allowed| READY{Target role<br/>already has output?}
-    READY -->|yes| IMM[Immediate Advisory Response<br/>from target summary]
+    A["Requesting agent"] -->|"consult request"| P{"Policy gate"}
+    P -->|blocked| ERR["Policy violation"]
+    P -->|allowed| READY{"Target output available?"}
+    READY -->|yes| IMM["Immediate advisory response"]
     READY -->|no| Q[Queue Pending Consult Request]
-    Q --> TGT[Target Role executes later<br/>normal pipeline step]
-    TGT --> AUTO[Auto-fulfill pending consult<br/>as advisory response]
+    Q --> TGT["Target role executes later"]
+    TGT --> AUTO["Auto-fulfill advisory response"]
     IMM --> THREAD[agent_messages thread]
     AUTO --> THREAD
 ```
@@ -1103,6 +1140,31 @@ orchestration:
     max_response_chars: 1200
     allowed_targets:
       reviewer: [planner, coder, security, qa, devops, sre, lead]
+```
+
+**Enable ecosystem plugins (connectors/skills/MCP):**
+```yaml
+plugins:
+  enabled: true
+  paths: [".rigovo/plugins"]
+  enabled_plugins: []             # optional allow-list
+  allow_unsigned: false           # keep false in company mode
+```
+
+**Enterprise SSO + personas:**
+```yaml
+identity:
+  sso_enabled: true
+  auth_mode: hybrid               # email_only|hybrid|sso_required
+  provider: workos                # local|workos (desktop control-plane identity adapter)
+  workos_organization_id: org_123
+  issuer_url: https://sso.company.com
+  client_id: rigovo-desktop
+  allowed_domains: [company.com]
+  personas:
+    admin: [workspace.manage, teams.manage, plugins.manage, tasks.abort, tasks.approve, audit.read]
+    operator: [tasks.run, tasks.approve, tasks.resume, audit.read]
+    viewer: [tasks.read, audit.read]
 ```
 
 **Add custom rules per agent:**

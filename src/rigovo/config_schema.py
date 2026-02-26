@@ -21,7 +21,6 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Sub-schemas
 # ---------------------------------------------------------------------------
@@ -155,10 +154,10 @@ class OrchestrationSchema(BaseModel):
     max_agents_per_task: int = 8
     timeout_per_agent: int = 900          # 15 min batch ceiling (streaming uses idle)
     idle_timeout: int = 120               # 2 min idle = abort (no tokens received)
-    parallel_agents: bool = False
+    parallel_agents: bool = True          # ON by default — independent agents run in parallel
     deep_mode: str = "final"              # never|final|ci|always|critical_only
     deep_pro: bool = False                # Use larger deep model when deep is enabled
-    consultation: "ConsultationSchema" = Field(default_factory=lambda: ConsultationSchema())
+    consultation: ConsultationSchema = Field(default_factory=lambda: ConsultationSchema())
 
     budget: BudgetSchema = Field(default_factory=BudgetSchema)
 
@@ -215,6 +214,47 @@ class DatabaseSchema(BaseModel):
     local_path: str = ".rigovo/local.db"
 
 
+class PluginsSchema(BaseModel):
+    """Plugin ecosystem configuration."""
+
+    enabled: bool = True
+    paths: list[str] = Field(default_factory=lambda: [".rigovo/plugins"])
+    enabled_plugins: list[str] = Field(default_factory=list)
+    allow_unsigned: bool = False
+
+
+class IdentitySchema(BaseModel):
+    """Enterprise identity + persona controls."""
+
+    sso_enabled: bool = False
+    auth_mode: str = "email_only"          # email_only|hybrid|sso_required
+    provider: str = ""                    # okta|azuread|google|auth0|saml|oidc
+    workos_organization_id: str = ""
+    issuer_url: str = ""
+    client_id: str = ""
+    allowed_domains: list[str] = Field(default_factory=list)
+    personas: dict[str, list[str]] = Field(default_factory=lambda: {
+        "admin": [
+            "workspace.manage",
+            "teams.manage",
+            "plugins.manage",
+            "tasks.abort",
+            "tasks.approve",
+            "audit.read",
+        ],
+        "operator": [
+            "tasks.run",
+            "tasks.approve",
+            "tasks.resume",
+            "audit.read",
+        ],
+        "viewer": [
+            "tasks.read",
+            "audit.read",
+        ],
+    })
+
+
 # ---------------------------------------------------------------------------
 # Root schema
 # ---------------------------------------------------------------------------
@@ -240,6 +280,8 @@ class RigovoConfig(BaseModel):
     ci: CISchema = Field(default_factory=CISchema)
     logging: LoggingSchema = Field(default_factory=LoggingSchema)
     database: DatabaseSchema = Field(default_factory=DatabaseSchema)
+    plugins: PluginsSchema = Field(default_factory=PluginsSchema)
+    identity: IdentitySchema = Field(default_factory=IdentitySchema)
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +333,8 @@ def save_rigovo_yml(config: RigovoConfig, project_root: Path) -> Path:
         "ci:": "\n# ─── CI/CD Integration ───────────────────────────",
         "logging:": "\n# ─── Logging ─────────────────────────────────────",
         "database:": "\n# ─── Database ───────────────────────────────────",
+        "plugins:": "\n# ─── Plugin Ecosystem ───────────────────────────",
+        "identity:": "\n# ─── Identity & Personas ───────────────────────",
     }
 
     for yaml_line in yaml_str.splitlines():

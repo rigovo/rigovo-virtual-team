@@ -1,0 +1,253 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Rigovo dark palette — lightened:
+   Base:    #0f172a (slate-900 — main bg)
+   Surface: #1e293b (slate-800 — sidebar, panels)
+   Card:    #273549 (between slate-800/700 — cards, inputs)
+   Elevated:#334155 (slate-700 — hover states, elevated)
+   Brand:   #4f46e5 (indigo — primary accent)
+   Text:    #f1f5f9 (slate-100 — primary) / #94a3b8 (slate-400 — secondary)
+*/
+
+@layer base {
+  body {
+    @apply m-0 antialiased;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #0f172a;
+    color: #f1f5f9;
+    min-height: 100vh;
+  }
+  /* Hide scrollbars by default, show only on hover */
+  * { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+  *:hover { scrollbar-color: #475569 transparent; }
+  *::-webkit-scrollbar { width: 5px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; }
+  *:hover::-webkit-scrollbar-thumb { background: #475569; }
+}
+
+@layer components {
+  /* ---- 2-panel layout ---- */
+  .two-panel {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .sidebar {
+    @apply flex flex-col;
+    background: #1e293b;
+    border-right: 1px solid rgba(255,255,255,0.08);
+  }
+
+  .main-panel {
+    @apply flex flex-col;
+    background: #0f172a;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* Scrollable content zone — takes remaining space */
+  .content-scroll {
+    @apply flex-1 min-h-0 overflow-y-auto;
+  }
+
+  /* Fixed input dock at bottom */
+  .input-dock {
+    @apply flex-shrink-0;
+    background: #0f172a;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    padding: 12px 24px 16px;
+  }
+
+  /* ---- Sidebar task item ---- */
+  .task-item {
+    @apply block w-full rounded-xl px-3 py-2.5 text-left transition-all;
+    margin-bottom: 2px;
+    color: #94a3b8;
+  }
+  .task-item:hover { background: rgba(255,255,255,0.05); color: #f1f5f9; }
+  .task-item.active {
+    background: rgba(79,70,229,0.12);
+    color: #f1f5f9;
+    border-left: 2px solid #4f46e5;
+  }
+
+  /* ---- Card ---- */
+  .card {
+    @apply rounded-2xl border p-5;
+    background: #273549;
+    border-color: rgba(255,255,255,0.08);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+
+  /* ---- Panel (for multi-panel layout) ---- */
+  .panel {
+    @apply rounded-2xl border;
+    background: rgba(30,41,59,0.7);
+    border-color: rgba(255,255,255,0.08);
+  }
+  .panel-header {
+    @apply px-4 py-2.5 border-b flex items-center gap-2;
+    border-color: rgba(255,255,255,0.08);
+  }
+  .panel-header-label {
+    @apply text-[11px] font-semibold uppercase tracking-wider;
+    color: #64748b;
+  }
+  .panel-body {
+    @apply overflow-y-auto;
+  }
+
+  /* ---- Chips & pills ---- */
+  .tier-chip { @apply rounded-md px-2 py-0.5 text-[11px] font-medium; }
+  .tier-auto { background: rgba(16,185,129,0.15); color: #34d399; }
+  .tier-notify { background: rgba(245,158,11,0.15); color: #fbbf24; }
+  .tier-approve { background: rgba(244,63,94,0.15); color: #fb7185; }
+
+  .status-pill { @apply rounded-md px-2 py-0.5 text-[11px] font-medium capitalize; }
+  .status-awaiting { background: rgba(245,158,11,0.15); color: #fbbf24; }
+  .status-running { background: rgba(14,165,233,0.15); color: #38bdf8; }
+  .status-failed { background: rgba(244,63,94,0.15); color: #fb7185; }
+  .status-idle { background: rgba(148,163,184,0.12); color: #94a3b8; }
+
+  /* ---- Buttons ---- */
+  .primary-btn {
+    @apply rounded-xl px-4 py-2 text-sm font-semibold text-white transition-all;
+    background: #4f46e5;
+  }
+  .primary-btn:hover { background: #4338ca; }
+  .primary-btn:active { background: #3730a3; transform: scale(0.98); }
+  .primary-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .warn-btn {
+    @apply rounded-xl border px-3 py-2 text-sm font-semibold transition-all;
+    background: rgba(244,63,94,0.1);
+    border-color: rgba(244,63,94,0.2);
+    color: #fb7185;
+  }
+  .warn-btn:hover { background: rgba(244,63,94,0.2); }
+
+  .ghost-btn {
+    @apply rounded-xl border px-3 py-2 text-sm font-medium transition-all;
+    background: transparent;
+    border-color: rgba(255,255,255,0.12);
+    color: #94a3b8;
+  }
+  .ghost-btn:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.18); color: #f1f5f9; }
+
+  /* ---- Input bar — now inside input-dock ---- */
+  .input-bar {
+    @apply rounded-2xl border;
+    background: #1e293b;
+    border-color: rgba(255,255,255,0.1);
+  }
+  .input-bar:focus-within {
+    border-color: rgba(79,70,229,0.5);
+    box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
+  }
+
+  .send-btn {
+    @apply flex h-9 w-9 items-center justify-center rounded-xl transition-all;
+    background: #4f46e5;
+  }
+  .send-btn:hover { background: #4338ca; }
+  .send-btn:disabled { background: #334155; cursor: not-allowed; }
+
+  /* ---- Labels ---- */
+  .meta-label { @apply text-[11px] font-medium uppercase tracking-[0.06em]; color: #64748b; }
+
+  /* ---- Agent bubble ---- */
+  .agent-bubble {
+    @apply rounded-2xl border p-4 transition-all;
+    background: rgba(39,53,73,0.6);
+    border-color: rgba(255,255,255,0.07);
+  }
+  .agent-bubble:hover {
+    background: rgba(39,53,73,0.85);
+    border-color: rgba(255,255,255,0.1);
+  }
+
+  /* ---- Rigour gate bar ---- */
+  .gate-bar {
+    @apply rounded-xl border px-4 py-2.5 text-xs;
+    border-color: rgba(255,255,255,0.07);
+    background: rgba(30,41,59,0.6);
+  }
+  .gate-bar.pass { border-color: rgba(16,185,129,0.25); background: rgba(16,185,129,0.08); }
+  .gate-bar.fail { border-color: rgba(244,63,94,0.25); background: rgba(244,63,94,0.08); }
+
+  /* ---- Feedback banner ---- */
+  .feedback-banner {
+    @apply rounded-xl px-4 py-3 text-sm font-medium;
+  }
+  .feedback-banner.error { background: rgba(244,63,94,0.1); color: #fb7185; border: 1px solid rgba(244,63,94,0.2); }
+  .feedback-banner.success { background: rgba(16,185,129,0.1); color: #34d399; border: 1px solid rgba(16,185,129,0.2); }
+  .feedback-banner.info { background: rgba(79,70,229,0.1); color: #818cf8; border: 1px solid rgba(79,70,229,0.2); }
+
+  /* ---- Typing indicator ---- */
+  .typing-dots { @apply flex items-center gap-1; }
+  .typing-dots span {
+    @apply inline-block h-1.5 w-1.5 rounded-full;
+    background: #94a3b8;
+  }
+
+  /* ---- Approval card ---- */
+  .approval-card {
+    @apply rounded-2xl border-2 p-5;
+    border-color: rgba(245,158,11,0.3);
+    background: rgba(245,158,11,0.06);
+  }
+
+  /* ---- Multi-panel task view ---- */
+  .task-layout {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 16px;
+    height: 100%;
+  }
+  @media (max-width: 1100px) {
+    .task-layout { grid-template-columns: 1fr; }
+    .task-layout .side-panels { display: none; }
+  }
+
+  /* Side panel tab buttons */
+  .side-tab {
+    @apply text-[10px] font-semibold uppercase tracking-wider px-2.5 py-1.5 rounded-lg transition-all;
+    color: #64748b;
+  }
+  .side-tab:hover { color: #94a3b8; background: rgba(255,255,255,0.05); }
+  .side-tab.active {
+    color: #f1f5f9;
+    background: rgba(79,70,229,0.18);
+  }
+
+  /* ---- Monaco editor container ---- */
+  .monaco-container {
+    @apply rounded-xl border overflow-hidden;
+    border-color: rgba(255,255,255,0.08);
+    background: #1e293b;
+  }
+  .file-tree-item {
+    @apply flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer transition-all;
+    color: #94a3b8;
+  }
+  .file-tree-item:hover { background: rgba(255,255,255,0.05); color: #f1f5f9; }
+  .file-tree-item.active { background: rgba(79,70,229,0.12); color: #c7d2fe; }
+}
+
+/* Animations */
+@keyframes fadeup { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+.animate-fadeup { animation: fadeup 340ms ease both; }
+
+@keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+@media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation:none!important; transition:none!important; } }
+
+@media (max-width: 768px) {
+  .two-panel { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+}

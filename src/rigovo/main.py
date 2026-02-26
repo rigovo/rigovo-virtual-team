@@ -297,6 +297,32 @@ def version() -> None:
     console.print(f"rigovo {__version__}")
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", help="Control-plane bind host"),
+    port: int = typer.Option(8787, "--port", help="Control-plane bind port"),
+    project_dir: str | None = typer.Option(
+        None, "--project", "-p", help="Project directory",
+    ),
+) -> None:
+    """Run Rigovo control-plane API for desktop/connectors."""
+    project_root = Path(project_dir) if project_dir else Path.cwd()
+    from rigovo.api.control_plane import create_app
+
+    try:
+        import uvicorn
+    except ImportError as e:
+        console.print("[red]uvicorn is required for `rigovo serve`.[/red]")
+        console.print("Install dependencies from pyproject.toml and retry.")
+        raise typer.Exit(1) from e
+
+    console.print("[bold blue]Rigovo[/bold blue] — Control Plane API")
+    console.print(f"  [dim]Project:[/dim] {project_root}")
+    console.print(f"  [dim]URL:[/dim]     http://{host}:{port}")
+    console.print()
+    uvicorn.run(create_app(project_root), host=host, port=port, log_level="info")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Register P1/P2/P3 commands from sub-modules
 # ═══════════════════════════════════════════════════════════════════════════

@@ -20,6 +20,10 @@ class SqliteTaskRepository(TaskRepository):
     def __init__(self, db: LocalDatabase) -> None:
         self._db = db
 
+    async def get(self, task_id: UUID) -> Task | None:
+        """Backward-compatible alias used by CLI commands."""
+        return await self.get_by_id(task_id)
+
     async def get_by_id(self, task_id: UUID) -> Task | None:
         await asyncio.sleep(0)
         row = self._db.fetchone("SELECT * FROM tasks WHERE id = ?", (str(task_id),))

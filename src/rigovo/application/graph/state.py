@@ -65,6 +65,7 @@ class TaskState(TypedDict, total=False):
 
     # --- Team routing (set by route_team node) ---
     team_config: TeamConfig
+    requested_team_name: str            # Optional user-requested team key/name
 
     # --- Pipeline execution ---
     current_agent_index: int            # Index into pipeline_order

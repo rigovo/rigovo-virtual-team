@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import time
 import threading
+import logging
 from typing import Any, Callable
 
 from textual.app import App, ComposeResult
@@ -59,6 +60,7 @@ EVENT_TO_STAGE: dict[str, str] = {
     "memories_stored": "store_memory",
     "task_finalized": "finalize",
 }
+logger = logging.getLogger(__name__)
 
 
 class RigovoDashboard(App[dict[str, Any]]):
@@ -161,8 +163,8 @@ class RigovoDashboard(App[dict[str, Any]]):
             time.sleep(0.5)
             try:
                 self.call_from_thread(self.exit, self._final_result)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to exit dashboard from pipeline thread: %s", exc)
 
     # ── Approval flow (thread-safe) ──────────────────────────────
 
@@ -237,8 +239,8 @@ class RigovoDashboard(App[dict[str, Any]]):
         """Thread-safe: forwards to Textual event loop."""
         try:
             self.call_from_thread(self._handle_event_internal, event)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to forward dashboard event %s: %s", event.get("type"), exc)
 
     def _handle_event_internal(self, event: dict[str, Any]) -> None:
         event_type = event.get("type", "")

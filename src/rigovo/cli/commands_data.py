@@ -147,6 +147,53 @@ def register(app: typer.Typer) -> None:
 
         container.close()
 
+    @app.command()
+    def audit(
+        limit: int = typer.Option(100, "--limit", "-n", help="Number of audit entries"),
+        project_dir: str | None = typer.Option(
+            None, "--project", "-p", help="Project directory",
+        ),
+    ) -> None:
+        """Show audit trail for monitoring and governance."""
+        root = Path(project_dir) if project_dir else Path.cwd()
+        container = _load_container(root)
+        db = container.get_db()
+        from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
+
+        audit_repo = SqliteAuditRepository(db)
+        workspace_id = (
+            UUID(container.config.workspace_id)
+            if container.config.workspace_id
+            else UUID(int=0)
+        )
+        entries = asyncio.run(audit_repo.list_by_workspace(workspace_id, limit=limit))
+
+        console.print("[bold blue]Rigovo[/bold blue] — Audit Trail\n")
+        if not entries:
+            console.print("  [dim]No audit entries yet.[/dim]\n")
+            container.close()
+            return
+
+        table = Table(title=f"Audit Entries ({len(entries)})")
+        table.add_column("When", style="dim")
+        table.add_column("Action", style="cyan")
+        table.add_column("Role")
+        table.add_column("Summary", max_width=70)
+        table.add_column("Task", style="dim")
+
+        for e in entries:
+            table.add_row(
+                e.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                e.action.value,
+                e.agent_role or "system",
+                e.summary,
+                str(e.task_id)[:8] if e.task_id else "—",
+            )
+
+        console.print(table)
+        console.print()
+        container.close()
+
     @app.command("export")
     def export_cmd(
         format: str = typer.Option(

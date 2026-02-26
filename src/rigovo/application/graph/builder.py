@@ -31,6 +31,7 @@ from rigovo.application.graph.edges import (
 )
 from rigovo.application.graph.nodes.scan_project import scan_project_node
 from rigovo.application.graph.nodes.classify import classify_node
+from rigovo.application.graph.nodes.route_team import route_team_node
 from rigovo.application.graph.nodes.assemble import assemble_node
 from rigovo.application.graph.nodes.execute_agent import (
     execute_agent_node,
@@ -68,6 +69,8 @@ class GraphBuilder:
         cost_calculator: CostCalculator,
         quality_gates: list[QualityGate],
         agents: list[Agent] | None = None,
+        team_agents_by_id: dict[str, list[Agent]] | None = None,
+        available_teams: list[dict[str, Any]] | None = None,
         approval_handler: Callable[[TaskState], dict[str, Any]] | None = None,
         auto_approve: bool = True,
         enable_parallel: bool = True,   # ON by default — the magic
@@ -78,6 +81,8 @@ class GraphBuilder:
         self._cost_calculator = cost_calculator
         self._quality_gates = quality_gates
         self._agents = agents or []
+        self._team_agents_by_id = team_agents_by_id or {}
+        self._available_teams = available_teams or []
         self._approval_handler = approval_handler
         self._auto_approve = auto_approve
         self._enable_parallel = enable_parallel
@@ -132,6 +137,8 @@ class GraphBuilder:
         cost_calc = self._cost_calculator
         gates = self._quality_gates
         agents = self._agents
+        team_agents_by_id = self._team_agents_by_id
+        available_teams = self._available_teams
         auto_approve = self._auto_approve
         approval_handler = self._approval_handler
         stream_cb = self._stream_callback
@@ -144,8 +151,22 @@ class GraphBuilder:
         async def _classify(state: TaskState) -> dict:
             return await classify_node(state, master_llm)
 
+        async def _route_team(state: TaskState) -> dict:
+            if not available_teams:
+                return {
+                    "status": "routed",
+                    "events": state.get("events", []) + [{
+                        "type": "team_routed",
+                        "team_name": "engineering",
+                        "reasoning": "No team config provided; using default engineering team.",
+                    }],
+                }
+            return await route_team_node(state, master_llm, available_teams)
+
         async def _assemble(state: TaskState) -> dict:
-            return await assemble_node(state, agents=agents)
+            selected_team_id = str(state.get("team_config", {}).get("team_id", "")).strip()
+            selected_agents = team_agents_by_id.get(selected_team_id, agents)
+            return await assemble_node(state, agents=selected_agents)
 
         async def _plan_approval(state: TaskState) -> dict:
             result = await plan_approval_node(state)
@@ -223,6 +244,7 @@ class GraphBuilder:
         # --- Register nodes ---
         graph.add_node("scan_project", _scan_project)
         graph.add_node("classify", _classify)
+        graph.add_node("route_team", _route_team)
         graph.add_node("assemble", _assemble)
         graph.add_node("plan_approval", _plan_approval)
         graph.add_node("execute_agent", _execute_agent)
@@ -239,7 +261,8 @@ class GraphBuilder:
         # Pipeline: scan → classify → assemble → plan_approval
         graph.add_edge(START, "scan_project")
         graph.add_edge("scan_project", "classify")
-        graph.add_edge("classify", "assemble")
+        graph.add_edge("classify", "route_team")
+        graph.add_edge("route_team", "assemble")
         graph.add_edge("assemble", "plan_approval")
 
         graph.add_conditional_edges("plan_approval", check_approval, {
@@ -312,11 +335,19 @@ class GraphBuilder:
         update = await classify_node(state, self._master_llm)
         state.update(update)
 
-        # 2. Assemble pipeline
-        update = await assemble_node(state, resolved_agents)
+        # 2. Route team
+        available_teams = available_teams if available_teams is not None else self._available_teams
+        if available_teams:
+            update = await route_team_node(state, self._master_llm, available_teams)
+            state.update(update)
+
+        # 3. Assemble pipeline
+        selected_team_id = str(state.get("team_config", {}).get("team_id", "")).strip()
+        selected_agents = self._team_agents_by_id.get(selected_team_id, self._agents)
+        update = await assemble_node(state, selected_agents)
         state.update(update)
 
-        # 3. Plan approval
+        # 4. Plan approval
         update = await plan_approval_node(state)
         state.update(update)
         if self._auto_approve:

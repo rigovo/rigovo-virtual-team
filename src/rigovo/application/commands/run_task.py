@@ -18,7 +18,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Any, Callable
-from uuid import UUID, uuid4
+from uuid import UUID, NAMESPACE_DNS, uuid4, uuid5
 
 from rigovo.application.graph.builder import GraphBuilder
 from rigovo.application.graph.state import TaskState
@@ -74,6 +74,7 @@ class RunTaskCommand:
         db: LocalDatabase | None = None,
         approval_handler: Callable | None = None,
         max_retries: int = 5,
+        team_configs: dict[str, Any] | None = None,
         consultation_policy: dict[str, Any] | None = None,
         deep_mode: str = "final",
         deep_pro: bool = False,
@@ -95,6 +96,7 @@ class RunTaskCommand:
         self._db = db
         self._approval_handler = approval_handler
         self._max_retries = max_retries
+        self._team_configs = team_configs or {}
         self._consultation_policy = consultation_policy or {}
         self._deep_mode = deep_mode
         self._deep_pro = deep_pro
@@ -152,12 +154,24 @@ class RunTaskCommand:
         })
 
         # --- 2. Build initial state ---
-        domain_id = "engineering"
-        domain_plugin = self._domain_plugins.get(domain_id)
+        try:
+            available_teams, team_agents_by_id = self._build_available_teams(team_name)
+        except Exception as e:
+            task.fail(str(e))
+            if self._task_repo:
+                await self._task_repo.save(task)
+            self._emit_sync("task_failed", {"task_id": str(task_id), "error": str(e)})
+            return {"status": "failed", "error": str(e), "task_id": str(task_id)}
 
-        agent_roles = {}
-        if domain_plugin:
-            agent_roles = {r.role_id: r for r in domain_plugin.get_agent_roles()}
+        if not available_teams:
+            err = "No enabled teams with available agents"
+            task.fail(err)
+            if self._task_repo:
+                await self._task_repo.save(task)
+            self._emit_sync("task_failed", {"task_id": str(task_id), "error": err})
+            return {"status": "failed", "error": err, "task_id": str(task_id)}
+
+        domain_id = available_teams[0].get("domain", "engineering")
 
         initial_state: TaskState = {
             "task_id": str(task_id),
@@ -165,6 +179,7 @@ class RunTaskCommand:
             "project_root": str(self._project_root),
             "description": description,
             "domain": domain_id,
+            "requested_team_name": team_name or "",
             "task_type": None,
             "complexity": None,
             "team_config": {},
@@ -192,8 +207,8 @@ class RunTaskCommand:
             "events": [],
         }
 
-        # --- 3. Build agents ---
-        agents = self._build_agents(domain_id, agent_roles)
+        # --- 3. Resolve default agents (fallback safety)
+        default_agents = team_agents_by_id.get(available_teams[0]["id"], [])
 
         # --- 4. Stream callback for real-time output (item 2) ---
         stream_callback = None
@@ -213,7 +228,9 @@ class RunTaskCommand:
             master_llm=self._master_llm,
             cost_calculator=self._cost_calculator,
             quality_gates=self._quality_gates,
-            agents=agents,
+            agents=default_agents,
+            team_agents_by_id=team_agents_by_id,
+            available_teams=available_teams,
             approval_handler=self._approval_handler,
             auto_approve=self._auto_approve,
             enable_parallel=self._enable_parallel,
@@ -385,10 +402,59 @@ class RunTaskCommand:
         if self._event_emitter:
             self._event_emitter.emit(event_type, data)
 
-    def _build_agents(
+    def _build_available_teams(
         self,
-        domain_id: str,
+        requested_team_name: str | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, list[Agent]]]:
+        """Build team routing metadata and per-team agent pools."""
+        teams_config = self._team_configs or {}
+        if not teams_config:
+            # Backward-compatible fallback: single engineering team.
+            teams_config = {"engineering": type("TeamCfg", (), {"enabled": True, "domain": "engineering", "agents": {}})()}
+
+        selected_key = (requested_team_name or "").strip().lower()
+        available_teams: list[dict[str, Any]] = []
+        team_agents_by_id: dict[str, list[Agent]] = {}
+
+        for team_key, team_cfg in teams_config.items():
+            if not getattr(team_cfg, "enabled", True):
+                continue
+            if selected_key and team_key.lower() != selected_key:
+                continue
+
+            domain_id = str(getattr(team_cfg, "domain", "engineering") or "engineering")
+            domain_plugin = self._domain_plugins.get(domain_id)
+            if not domain_plugin:
+                continue
+
+            role_defs = {r.role_id: r for r in domain_plugin.get_agent_roles()}
+            agents = self._build_agents_for_team(team_key, role_defs, team_cfg)
+            if not agents:
+                continue
+
+            team_id = team_key
+            team_agents_by_id[team_id] = agents
+            pipeline_order = [a.role for a in sorted(agents, key=lambda a: a.pipeline_order)]
+            available_teams.append(
+                {
+                    "id": team_id,
+                    "name": team_key,
+                    "domain": domain_id,
+                    "agents": {},
+                    "pipeline_order": pipeline_order,
+                }
+            )
+
+        if selected_key and not available_teams:
+            raise ValueError(f"Requested team '{requested_team_name}' not found or disabled")
+
+        return available_teams, team_agents_by_id
+
+    def _build_agents_for_team(
+        self,
+        team_key: str,
         agent_roles: dict[str, Any],
+        team_cfg: Any,
     ) -> list[Agent]:
         """Build agent entities from domain role definitions.
 
@@ -398,20 +464,38 @@ class RunTaskCommand:
         - User override via role_def.default_llm_model always wins
         """
         agents = []
+        stable_team_uuid = uuid5(self._workspace_id or UUID(int=0), team_key) if self._workspace_id else uuid5(NAMESPACE_DNS, team_key)
         for role_id, role_def in agent_roles.items():
+            override = (
+                team_cfg.agents.get(role_id)
+                if getattr(team_cfg, "agents", None) and hasattr(team_cfg.agents, "get")
+                else None
+            )
             # Resolve model: user override > role default > catalog default
             model = resolve_model_for_role(
                 role_id=role_id,
-                user_model=role_def.default_llm_model,  # Empty = use catalog
+                user_model=(override.model if override and getattr(override, "model", "") else role_def.default_llm_model),
+            )
+            tools = (
+                list(override.tools)
+                if override and getattr(override, "tools", None)
+                else list(role_def.default_tools) if role_def.default_tools else []
+            )
+            custom_rules = (
+                list(override.rules)
+                if override and getattr(override, "rules", None)
+                else []
             )
             agent = Agent(
                 workspace_id=self._workspace_id,
-                team_id=uuid4(),
+                team_id=stable_team_uuid,
                 name=role_def.name,
                 role=role_id,
                 llm_model=model,
                 system_prompt=role_def.default_system_prompt,
-                tools=list(role_def.default_tools) if role_def.default_tools else [],
+                tools=tools,
+                custom_rules=custom_rules,
+                pipeline_order=getattr(role_def, "pipeline_order", 0),
             )
             agents.append(agent)
         return agents

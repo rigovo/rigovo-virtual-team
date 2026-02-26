@@ -12,6 +12,8 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 
+from rigovo.domain.entities.audit_entry import AuditAction, AuditEntry
+
 console = Console()
 
 
@@ -234,6 +236,115 @@ def register(app: typer.Typer) -> None:
             if ui:
                 ui.stop()
             container.close()
+
+    @app.command(name="abort")
+    def abort_cmd(
+        task_id: str = typer.Argument(..., help="Task ID to abort"),
+        reason: str = typer.Option("Aborted by operator", "--reason", "-m", help="Abort reason"),
+        project_dir: str | None = typer.Option(
+            None, "--project", "-p", help="Project directory",
+        ),
+    ) -> None:
+        """Abort a task and persist audit trail for operator control."""
+        root = Path(project_dir) if project_dir else Path.cwd()
+        container = _load_container(root)
+        db = container.get_db()
+        from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
+        from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
+
+        task_repo = SqliteTaskRepository(db)
+        audit_repo = SqliteAuditRepository(db)
+
+        task = asyncio.run(task_repo.get(UUID(task_id)))
+        if not task:
+            console.print(f"[red]Task not found:[/red] {task_id}")
+            raise typer.Exit(1)
+
+        task.fail(reason=reason)
+        asyncio.run(task_repo.update_status(task))
+        asyncio.run(
+            audit_repo.append(
+                AuditEntry(
+                    workspace_id=task.workspace_id,
+                    task_id=task.id,
+                    action=AuditAction.TASK_FAILED,
+                    agent_role="operator",
+                    summary=f"Task aborted: {reason}",
+                    metadata={"source": "cli.abort"},
+                )
+            )
+        )
+        console.print(f"[yellow]Aborted:[/yellow] {task_id}")
+        container.close()
+
+    @app.command(name="approve")
+    def approve_cmd(
+        task_id: str = typer.Argument(..., help="Task ID to approve"),
+        resume_now: bool = typer.Option(
+            True, "--resume/--no-resume", help="Resume execution immediately after approval",
+        ),
+        project_dir: str | None = typer.Option(
+            None, "--project", "-p", help="Project directory",
+        ),
+    ) -> None:
+        """Mark approval granted and optionally resume from checkpoint."""
+        from rigovo.main import _setup_logging
+
+        root = Path(project_dir) if project_dir else Path.cwd()
+        container = _load_container(root)
+        db = container.get_db()
+        from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
+        from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
+
+        task_repo = SqliteTaskRepository(db)
+        audit_repo = SqliteAuditRepository(db)
+
+        task = asyncio.run(task_repo.get(UUID(task_id)))
+        if not task:
+            console.print(f"[red]Task not found:[/red] {task_id}")
+            raise typer.Exit(1)
+
+        task.approve()
+        asyncio.run(task_repo.update_status(task))
+        asyncio.run(
+            audit_repo.append(
+                AuditEntry(
+                    workspace_id=task.workspace_id,
+                    task_id=task.id,
+                    action=AuditAction.APPROVAL_GRANTED,
+                    agent_role="operator",
+                    summary="Approval granted by operator",
+                    metadata={"source": "cli.approve"},
+                )
+            )
+        )
+        console.print(f"[green]Approved:[/green] {task_id}")
+
+        if resume_now:
+            checkpoint_db = root / ".rigovo" / "checkpoints.db"
+            if not checkpoint_db.exists():
+                console.print(
+                    "[yellow]No checkpoints database found; approval recorded but not resumed.[/yellow]",
+                )
+                container.close()
+                return
+
+            _setup_logging(False)
+            cmd = container.build_run_task_command(offline=False)
+            result = asyncio.run(
+                cmd.execute(
+                    description=task.description,
+                    resume_thread_id=task_id,
+                )
+            )
+            if result["status"] == "failed":
+                console.print(
+                    f"[red]Resume failed:[/red] {result.get('error', 'Unknown error')}",
+                )
+            else:
+                console.print("[green]Resumed and completed.[/green]")
+
+        container.close()
 
     @app.command()
     def upgrade() -> None:

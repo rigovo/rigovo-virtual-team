@@ -47,9 +47,18 @@ rigour-report.json
 rigour-fix-packet.json
 .rigour/
 
-# Node (for Rigour CLI)
+# Rigovo local state (runtime, not source)
+.rigovo/
+
+# Node
 node_modules/
-package-lock.json
+
+# Desktop app (Electron)
+apps/desktop/node_modules/
+apps/desktop/out/
+apps/desktop/release/
+apps/desktop/pnpm-lock.yaml
+apps/desktop/package-lock.json
 
 # Test projects (local E2E testing)
 test-project/

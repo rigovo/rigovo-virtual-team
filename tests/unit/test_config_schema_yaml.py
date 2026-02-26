@@ -115,6 +115,18 @@ class TestYAMLIO:
         assert database["backend"] == "sqlite"
         assert database["local_path"] == ".rigovo/local.db"
 
+        assert "plugins" in reloaded
+        plugins = reloaded["plugins"]
+        assert plugins["enabled"] is True
+        assert plugins["paths"] == [".rigovo/plugins"]
+        assert plugins["allow_unsigned"] is False
+
+        assert "identity" in reloaded
+        identity = reloaded["identity"]
+        assert identity["sso_enabled"] is False
+        assert "personas" in identity
+        assert "admin" in identity["personas"]
+
 
 # Import ProjectSchema for empty file test
 from rigovo.config_schema import ProjectSchema

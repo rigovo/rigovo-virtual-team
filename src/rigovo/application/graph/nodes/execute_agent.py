@@ -368,8 +368,8 @@ async def _run_subtask(
         try:
             result = await tool_executor.execute("read_file", {"path": fp})
             context_parts.append(f"--- {fp} ---\n{result}")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Subtask context read failed for %s: %s", fp, exc)
 
     context_text = "\n\n".join(context_parts) if context_parts else ""
 
@@ -393,8 +393,8 @@ async def _run_subtask(
     if stream_callback:
         try:
             stream_callback("subtask", f"\n  🔀 Sub-agent: {description[:60]}...\n")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Stream callback failed for subtask start: %s", exc)
 
     # Run a mini agentic loop (max 10 rounds for subtasks)
     text, inp_tok, out_tok, files = await _run_agentic_loop(
@@ -555,8 +555,8 @@ async def _run_agentic_loop(
                 if stream_callback:
                     try:
                         stream_callback(role, f"\n  ⚡ {tc['name']}({_summarize_input(tc['input'])})\n")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Stream callback failed for parallel tool result: %s", exc)
                 tool_results_content.append({
                     "type": "tool_result",
                     "tool_use_id": tc["id"],
@@ -569,8 +569,8 @@ async def _run_agentic_loop(
             if stream_callback:
                 try:
                     stream_callback(role, f"\n  ⚡ {tc['name']}({_summarize_input(tc['input'])})\n")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Stream callback failed for tool result: %s", exc)
             tool_results_content.append({
                 "type": "tool_result",
                 "tool_use_id": tc["id"],

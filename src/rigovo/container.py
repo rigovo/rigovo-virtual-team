@@ -53,6 +53,7 @@ class Container:
         self._db = None
         self._event_emitter: EventEmitter | None = None
         self._sync_client = None
+        self._plugin_registry = None
 
     def get_db(self):
         """Get or create the local SQLite database."""
@@ -140,7 +141,7 @@ class Container:
         offline: bool = False,
         approval_handler: Callable | None = None,
         enable_streaming: bool = True,
-        enable_parallel: bool = False,
+        enable_parallel: bool = True,
         auto_approve: bool = True,
         ci_mode: bool = False,
     ):
@@ -166,6 +167,7 @@ class Container:
             db=self.get_db(),
             approval_handler=approval_handler,
             max_retries=self.config.max_retries,
+            team_configs=self.config.yml.teams,
             consultation_policy=self.config.yml.orchestration.consultation.model_dump(),
             deep_mode=self.config.yml.orchestration.deep_mode,
             deep_pro=self.config.yml.orchestration.deep_pro,
@@ -175,6 +177,18 @@ class Container:
             enable_parallel=enable_parallel,
             auto_approve=auto_approve,
         )
+
+    def get_plugin_registry(self):
+        """Get or create the local plugin registry."""
+        if self._plugin_registry is None:
+            from rigovo.infrastructure.plugins.loader import PluginRegistry
+
+            self._plugin_registry = PluginRegistry(
+                project_root=self.config.project_root,
+                plugin_paths=self.config.yml.plugins.paths,
+                enabled_plugins=self.config.yml.plugins.enabled_plugins,
+            )
+        return self._plugin_registry
 
     def close(self) -> None:
         """Clean up resources."""
