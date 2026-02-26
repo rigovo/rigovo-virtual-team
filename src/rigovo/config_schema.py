@@ -140,7 +140,7 @@ class ApprovalSchema(BaseModel):
 class BudgetSchema(BaseModel):
     """Cost controls — prevent surprise bills."""
 
-    max_cost_per_task: float = 2.00       # USD
+    max_cost_per_task: float = 25.00      # USD — soft warning only, never hard-stops
     max_tokens_per_task: int = 200_000
     monthly_budget: float = 100.00        # USD
     alert_at_percent: float = 0.80        # Alert at 80%

@@ -151,6 +151,30 @@ class SqliteTaskRepository(TaskRepository):
         task.langgraph_thread_id = row["langgraph_thread_id"]
         task.rejected_at = row["rejected_at"]
         task.user_feedback = row["user_feedback"]
+        # Deserialize pipeline_steps from JSON
+        try:
+            raw_steps = json.loads(row["pipeline_steps"]) if row["pipeline_steps"] else []
+            task.pipeline_steps = [
+                PipelineStep(
+                    agent_id=UUID(s["agent_id"]) if s.get("agent_id") else UUID(int=0),
+                    agent_role=s.get("agent_role", "unknown"),
+                    agent_name=s.get("agent_name", "Unknown"),
+                    status=s.get("status", "pending"),
+                    duration_ms=s.get("duration_ms", 0),
+                    input_tokens=s.get("input_tokens", 0),
+                    output_tokens=s.get("output_tokens", 0),
+                    total_tokens=s.get("total_tokens", 0),
+                    cost_usd=s.get("cost_usd", 0.0),
+                    summary=s.get("summary", ""),
+                    files_changed=s.get("files_changed", []),
+                    gate_passed=s.get("gate_passed"),
+                    gate_score=s.get("gate_score"),
+                    retry_count=s.get("retry_count", 0),
+                )
+                for s in raw_steps
+            ]
+        except (json.JSONDecodeError, TypeError, KeyError):
+            task.pipeline_steps = []
         if row["started_at"]:
             task.started_at = datetime.fromisoformat(row["started_at"])
         if row["completed_at"]:

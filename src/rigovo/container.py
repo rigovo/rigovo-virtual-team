@@ -6,6 +6,7 @@ Modules depend on interfaces, container provides implementations.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 from uuid import UUID
 
@@ -20,6 +21,8 @@ from rigovo.domain.services.team_assembler import TeamAssemblerService
 from rigovo.domains.engineering import EngineeringDomain
 from rigovo.infrastructure.llm.llm_factory import LLMProviderFactory
 from rigovo.infrastructure.quality.gate_builder import QualityGateBuilder
+
+logger = logging.getLogger(__name__)
 
 
 class Container:
@@ -44,13 +47,14 @@ class Container:
             "engineering": EngineeringDomain(),
         }
 
-        # Factories
-        self._llm_factory = LLMProviderFactory(config.llm)
+        # Factories — LLM factory is rebuilt lazily once DB is available
+        self._llm_factory: LLMProviderFactory | None = None
         self._gate_builder = QualityGateBuilder(config, self.domains)
 
         # Lazy infrastructure
         self._quality_gates: list[QualityGate] = []
         self._db = None
+        self._settings_repo = None
         self._event_emitter: EventEmitter | None = None
         self._sync_client = None
         self._plugin_registry = None
@@ -64,17 +68,34 @@ class Container:
                 from rigovo.infrastructure.persistence.postgres_local import (
                     PostgresDatabase,
                 )
-
                 self._db = PostgresDatabase(self.config.db_url)
             else:
                 from rigovo.infrastructure.persistence.sqlite_local import (
                     LocalDatabase,
                 )
-
                 db_path = self.config.local_db_full_path
                 db_path.parent.mkdir(parents=True, exist_ok=True)
                 self._db = LocalDatabase(str(db_path))
         return self._db
+
+    def get_settings_repo(self):
+        """Get or create the encrypted settings repository."""
+        if self._settings_repo is None:
+            from rigovo.infrastructure.persistence.sqlite_settings_repo import (
+                SqliteSettingsRepository,
+            )
+            self._settings_repo = SqliteSettingsRepository(self.get_db())
+        return self._settings_repo
+
+    def _get_llm_factory(self) -> LLMProviderFactory:
+        """Get or create the LLM factory with live key resolution."""
+        if self._llm_factory is None:
+            settings = self.get_settings_repo()
+            self._llm_factory = LLMProviderFactory(
+                config=self.config.llm,
+                key_resolver=settings.get,  # reads from encrypted SQLite
+            )
+        return self._llm_factory
 
     def get_event_emitter(self) -> EventEmitter:
         """Get or create the in-process event emitter."""
@@ -94,15 +115,15 @@ class Container:
 
     def get_llm(self, model: str | None = None) -> LLMProvider:
         """Get an LLM provider for a given model."""
-        return self._llm_factory.get(model)
+        return self._get_llm_factory().get(model)
 
     def get_master_llm(self) -> LLMProvider:
         """Get the LLM provider used by the Master Agent."""
-        return self._llm_factory.get(self.config.llm.model)
+        return self._get_llm_factory().get(self.config.llm.model)
 
     def llm_factory(self, model: str) -> LLMProvider:
         """Factory function for creating LLM providers (passed to graph)."""
-        return self._llm_factory.get(model)
+        return self._get_llm_factory().get(model)
 
     def get_quality_gates(self) -> list[QualityGate]:
         """Get configured quality gates."""

@@ -9,6 +9,7 @@ import { tierClass, statusClass } from "../defaults";
 import { API_BASE, readJson } from "../api";
 import AgentTimeline from "./AgentTimeline";
 import ApprovalCard from "./ApprovalCard";
+import FileViewer from "./FileViewer";
 
 interface TaskDetailProps {
   task: InboxTask;
@@ -52,6 +53,43 @@ function getPhase(status: string) {
 /*  ProcessingState — shown while task has no agent steps yet          */
 /* ================================================================== */
 function ProcessingState({ status }: { status: string }) {
+  const st = status.toLowerCase();
+  const isFailed = st.includes("fail") || st.includes("reject");
+  const isCompleted = st.includes("complete");
+  const isTerminal = isFailed || isCompleted;
+
+  // Terminal states — show result, not a spinner
+  if (isTerminal) {
+    return (
+      <div className="animate-fadeup">
+        <div className="flex items-center gap-3 mb-4">
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl text-lg ${
+            isFailed ? "bg-rose-500/15 ring-1 ring-rose-500/30" : "bg-emerald-500/15 ring-1 ring-emerald-500/30"
+          }`}>
+            {isFailed ? "\u274C" : "\u2705"}
+          </div>
+          <div>
+            <span className="text-sm font-semibold text-brand-light">Orchestrator</span>
+            <span className="ml-2 text-[10px] text-slate-600">Master Brain</span>
+          </div>
+        </div>
+        <div className={`ml-[52px] rounded-2xl border p-5 ${
+          isFailed ? "border-rose-500/15 bg-rose-500/5" : "border-emerald-500/15 bg-emerald-500/5"
+        }`}>
+          <h3 className="text-sm font-semibold text-slate-200 mb-1">
+            {isFailed ? "Task failed" : "Task completed"}
+          </h3>
+          <p className="text-[13px] text-slate-400 leading-relaxed">
+            {isFailed
+              ? "The task could not be completed. Check the error logs in Settings \u2192 Logs, or click Resume to retry."
+              : "All agents finished successfully."}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Active states — show progress animation
   const phase = getPhase(status);
   const steps = ["Understanding the request", "Classifying task type", "Selecting agents"];
   return (
@@ -156,7 +194,7 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
         ))}
       </div>
 
-      {/* ── Files tab ── */}
+      {/* ── Files tab — Monaco-based viewer ── */}
       {tab === "files" && (
         <div className="panel flex-1 min-h-0 flex flex-col">
           <div className="panel-header">
@@ -164,24 +202,12 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
             <span className="panel-header-label">Changed files</span>
             <span className="ml-auto text-[10px] text-slate-600">{fileCount} file{fileCount !== 1 ? "s" : ""}</span>
           </div>
-          <div className="panel-body flex-1 min-h-0 overflow-y-auto px-3 py-2">
-            {!hasSteps && <p className="text-xs text-slate-600 py-4 text-center">No files yet</p>}
-            {Object.entries(allFiles.by_agent).map(([agent, agentFiles]) => (
-              <div key={agent} className="mb-3">
-                <p className={`text-[10px] font-semibold uppercase tracking-wider mb-1 ${roleColor(agent)}`}>
-                  {agent}
-                </p>
-                {agentFiles.map((f) => (
-                  <p key={f} className="text-xs font-mono text-slate-400 py-0.5 flex items-center gap-1.5 hover:text-slate-300 transition-colors">
-                    <span className="text-emerald-500/60 text-[10px]">+</span>
-                    {f.replace(/^\//, "")}
-                  </p>
-                ))}
-              </div>
-            ))}
-            {hasSteps && fileCount === 0 && (
-              <p className="text-xs text-slate-600 py-4 text-center">Agents haven't written files yet</p>
-            )}
+          <div className="panel-body flex-1 min-h-0">
+            <FileViewer
+              taskId={task.id}
+              filesByAgent={allFiles.by_agent}
+              allFiles={allFiles.files}
+            />
           </div>
         </div>
       )}
@@ -364,9 +390,12 @@ function AgentStatusStrip({ steps }: { steps: TaskStep[] }) {
 /*  TaskDetail — main export                                           */
 /* ================================================================== */
 export default function TaskDetail({ task, detail, onAction, actionMsg }: TaskDetailProps) {
-  const isApproval = task.status.includes("approval");
-  const isRunning = task.status.includes("running") || task.status.includes("progress");
-  const isDone = task.status.includes("complete") || task.status.includes("fail") || task.status.includes("paused");
+  const st = task.status.toLowerCase();
+  const isApproval = st.includes("approval");
+  const isCompleted = st.includes("complete");
+  const isFailed = st.includes("fail") || st.includes("reject");
+  const isActive = !isApproval && !isCompleted && !isFailed;  // running, classifying, routing, assembling, pending, quality_check, etc.
+  const canResume = isFailed;  // Only failed/rejected tasks can be resumed
   const hasSteps = detail && detail.steps.length > 0;
   const isProcessing = !detail || !hasSteps;
 
@@ -397,13 +426,13 @@ export default function TaskDetail({ task, detail, onAction, actionMsg }: TaskDe
                 Reject
               </button>
             </>)}
-            {isRunning && (
+            {isActive && (
               <button type="button" className="warn-btn text-xs py-1.5 px-3"
-                onClick={() => onAction(`/v1/tasks/${task.id}/abort`, { reason: "Paused" })}>
-                Pause
+                onClick={() => onAction(`/v1/tasks/${task.id}/abort`, { reason: "Aborted by user" })}>
+                Abort
               </button>
             )}
-            {isDone && (
+            {canResume && (
               <button type="button" className="ghost-btn text-xs py-1.5 px-3"
                 onClick={() => onAction(`/v1/tasks/${task.id}/resume`, { resume_now: true })}>
                 Resume

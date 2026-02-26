@@ -248,7 +248,7 @@ export function statusClass(status: string): string {
   if (status.includes("approval") || status.includes("awaiting")) return "status-pill status-awaiting";
   if (status.includes("running") || status.includes("progress") || status.includes("assembl") || status.includes("classif") || status.includes("rout") || status.includes("in_progress")) return "status-pill status-running";
   if (status.includes("fail") || status.includes("reject")) return "status-pill status-failed";
-  if (status.includes("complete")) return "status-pill" + " rounded-md px-2 py-0.5 text-[11px] font-medium capitalize bg-emerald-500/15 text-emerald-400";
+  if (status.includes("complete")) return "status-pill status-complete";
   return "status-pill status-idle";
 }
 

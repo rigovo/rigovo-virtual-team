@@ -113,6 +113,7 @@
   .status-running { background: rgba(14,165,233,0.15); color: #38bdf8; }
   .status-failed { background: rgba(244,63,94,0.15); color: #fb7185; }
   .status-idle { background: rgba(148,163,184,0.12); color: #94a3b8; }
+  .status-complete { background: rgba(16,185,129,0.15); color: #34d399; }
 
   /* ---- Buttons ---- */
   .primary-btn {

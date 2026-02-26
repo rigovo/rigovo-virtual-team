@@ -110,8 +110,13 @@ export default function App(): JSX.Element {
           return [...optimistic, ...tasks];
         });
         setSelected((p) => {
-          if (!p) return tasks.length ? tasks[0].id : "";
-          return p; // keep current selection stable
+          if (p) return p; // keep current selection stable
+          // On first load, only auto-select if there's an active (non-terminal) task
+          const activeTask = tasks.find((t) => {
+            const s = t.status.toLowerCase();
+            return !s.includes("complete") && !s.includes("fail") && !s.includes("reject");
+          });
+          return activeTask ? activeTask.id : "";
         });
       }
       if (queue) setApprovals(queue);

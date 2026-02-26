@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import httpx
+import yaml
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -24,7 +25,57 @@ from rigovo.container import Container
 from rigovo.domain.entities.audit_entry import AuditAction, AuditEntry
 from rigovo.domain.entities.task import TaskStatus
 from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
+from rigovo.infrastructure.persistence.sqlite_settings_repo import SqliteSettingsRepository
 from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
+
+
+# ── Live agent progress tracker (in-memory, per-task) ──────────────
+# Populated by event emitter callbacks during graph execution.
+# The detail endpoint reads this for running tasks; completed tasks
+# fall back to persisted pipeline_steps in SQLite.
+_live_agent_progress: dict[str, dict[str, dict]] = {}  # task_id -> {role -> step_data}
+
+
+def _on_agent_event(event: dict) -> None:
+    """Handle agent_started / agent_complete events from the graph."""
+    etype = event.get("type", "")
+    task_id = event.get("task_id", "")
+    role = event.get("role", "")
+    if not task_id or not role:
+        return
+
+    if task_id not in _live_agent_progress:
+        _live_agent_progress[task_id] = {}
+
+    if etype == "agent_started":
+        _live_agent_progress[task_id][role] = {
+            "agent": role,
+            "agent_name": event.get("name", role.replace("_", " ").title()),
+            "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": None,
+            "output": "",
+            "files_changed": [],
+            "gate_results": [],
+        }
+    elif etype == "agent_complete":
+        existing = _live_agent_progress[task_id].get(role, {})
+        _live_agent_progress[task_id][role] = {
+            **existing,
+            "agent": role,
+            "agent_name": event.get("name", role.replace("_", " ").title()),
+            "status": "complete",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "output": event.get("summary", existing.get("output", "")),
+            "files_changed": event.get("files_changed", []),
+            "tokens": event.get("tokens", 0),
+            "cost_usd": event.get("cost", 0.0),
+            "duration_ms": event.get("duration_ms", 0),
+            "gate_results": [],
+        }
+    elif etype in ("task_finalized", "task_failed"):
+        # Clean up live state once task is done
+        _live_agent_progress.pop(task_id, None)
 
 
 class TaskActionRequest(BaseModel):
@@ -52,6 +103,23 @@ class CreateTaskRequest(BaseModel):
 class RegisterProjectRequest(BaseModel):
     path: str
     name: str = ""
+
+
+class UpdateSettingsRequest(BaseModel):
+    """Partial settings update from the UI.
+
+    Any field can be sent individually. The backend merges changes.
+    """
+    # API keys — any provider
+    api_keys: dict[str, str] | None = None       # e.g. {"anthropic": "sk-...", "deepseek": "ds-..."}
+    # Other .env settings
+    default_model: str | None = None
+    ollama_url: str | None = None
+    custom_base_url: str | None = None            # For OpenAI-compatible endpoints
+    # Per-agent model overrides (written to rigovo.yml)
+    agent_models: dict[str, str] | None = None
+    # Raw YAML override (written directly to rigovo.yml)
+    yml_raw: str | None = None
 
 
 class PersonaMember(BaseModel):
@@ -175,37 +243,149 @@ def _tier_from_task(task) -> str:
     return "auto"
 
 
+def _setup_logging(root: Path) -> Path:
+    """Configure structured file logging for the Rigovo control plane.
+
+    Logs are stored in <project>/.rigovo/logs/ so users can inspect them.
+    Three log files:
+      - app.log     — all application events (INFO+)
+      - error.log   — errors and warnings only
+      - audit.log   — task lifecycle + settings changes (structured JSON)
+    """
+    import logging
+    import logging.handlers
+
+    log_dir = root / ".rigovo" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # JSON-ish formatter for structured logs
+    class StructuredFormatter(logging.Formatter):
+        def format(self, record: logging.LogRecord) -> str:
+            ts = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat()
+            base = {
+                "ts": ts,
+                "level": record.levelname,
+                "logger": record.name,
+                "msg": record.getMessage(),
+            }
+            if record.exc_info and record.exc_info[1]:
+                base["error"] = str(record.exc_info[1])
+            return json.dumps(base, default=str)
+
+    # Human-readable formatter for app.log
+    readable_fmt = logging.Formatter(
+        "%(asctime)s  %(levelname)-7s  [%(name)s]  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # App log — rotating, 5MB per file, keep 5
+    app_handler = logging.handlers.RotatingFileHandler(
+        log_dir / "app.log", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8",
+    )
+    app_handler.setLevel(logging.INFO)
+    app_handler.setFormatter(readable_fmt)
+
+    # Error log — errors and warnings only
+    error_handler = logging.handlers.RotatingFileHandler(
+        log_dir / "error.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8",
+    )
+    error_handler.setLevel(logging.WARNING)
+    error_handler.setFormatter(readable_fmt)
+
+    # Audit log — structured JSON, one line per event
+    audit_handler = logging.handlers.RotatingFileHandler(
+        log_dir / "audit.log", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8",
+    )
+    audit_handler.setLevel(logging.INFO)
+    audit_handler.setFormatter(StructuredFormatter())
+
+    # Wire up root logger for rigovo namespace
+    root_logger = logging.getLogger("rigovo")
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.addHandler(app_handler)
+    root_logger.addHandler(error_handler)
+
+    # Separate audit logger
+    audit_logger = logging.getLogger("rigovo.audit")
+    audit_logger.addHandler(audit_handler)
+    audit_logger.propagate = True  # also appears in app.log
+
+    # Console handler for development
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(readable_fmt)
+    root_logger.addHandler(console)
+
+    logging.getLogger("rigovo.api").info("Logging initialized → %s", log_dir)
+
+    return log_dir
+
+
 def create_app(project_root: Path | None = None) -> FastAPI:
     root = project_root or Path.cwd()
     config = load_config(root)
     container = Container(config)
 
+    # Set up structured file logging
+    log_dir = _setup_logging(root)
+
+    import logging
+    logger = logging.getLogger("rigovo.api")
+
     # Auto-initialize database schema (ensures tables exist on first run)
     try:
         db = container.get_db()
         db.initialize()
+        logger.info("Database schema initialized successfully")
     except Exception:
-        import logging
-        logging.getLogger("rigovo.api").warning(
+        logger.warning(
             "Could not auto-initialize database — run `rigovo init` if errors persist",
             exc_info=True,
         )
 
+    # One-time migration: copy API keys from .env → encrypted SQLite
+    try:
+        repo = container.get_settings_repo()
+        _env_keys = {
+            "ANTHROPIC_API_KEY": config.llm.anthropic_api_key,
+            "OPENAI_API_KEY": config.llm.openai_api_key,
+            "GOOGLE_API_KEY": config.llm.google_api_key,
+            "DEEPSEEK_API_KEY": config.llm.deepseek_api_key,
+            "GROQ_API_KEY": config.llm.groq_api_key,
+            "MISTRAL_API_KEY": config.llm.mistral_api_key,
+        }
+        migrated = []
+        for key_name, key_val in _env_keys.items():
+            if key_val and not repo.get(key_name):
+                repo.set(key_name, key_val)
+                migrated.append(key_name)
+        if migrated:
+            logger.info("Migrated %d API key(s) from .env to encrypted SQLite: %s", len(migrated), migrated)
+    except Exception:
+        logger.debug("API key migration skipped", exc_info=True)
+
     app = FastAPI(title="Rigovo Control Plane API", version="0.1.0")
 
-    # CORS — allow Electron renderer and local Vite dev server to reach the API.
+    # CORS — allow Electron renderer (file:// sends null origin),
+    # Vite dev server, and electron-vite dev server to reach the API.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:1420",
-            "http://127.0.0.1:1420",
-        ],
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # --- Wire up live agent progress tracking ---
+    try:
+        emitter = container.get_event_emitter()
+        emitter.on("agent_started", _on_agent_event)
+        emitter.on("agent_complete", _on_agent_event)
+        emitter.on("task_finalized", _on_agent_event)
+        emitter.on("task_failed", _on_agent_event)
+        logger.info("Live agent progress tracking enabled")
+    except Exception:
+        logger.debug("Could not wire event emitter for live tracking", exc_info=True)
 
     # --- WorkOS AuthKit PKCE state ----
     # Pending auth flow: stores {state: {code_verifier, redirect_uri}}
@@ -275,25 +455,6 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         state.identity.pop("workosApiKey", None)
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps(state.model_dump(), indent=2))
-
-    def _upsert_env_var(name: str, value: str) -> None:
-        env_path = root / ".env"
-        lines: list[str] = []
-        if env_path.exists():
-            lines = env_path.read_text().splitlines()
-        prefix = f"{name}="
-        replacement = f'{name}="{value}"'
-        updated = False
-        for idx, line in enumerate(lines):
-            if line.startswith(prefix):
-                lines[idx] = replacement
-                updated = True
-                break
-        if not updated:
-            if lines and lines[-1].strip():
-                lines.append("")
-            lines.append(replacement)
-        env_path.write_text("\n".join(lines) + "\n")
 
     def _auth_result_html(success: bool, detail: str) -> str:
         """Return a simple HTML page for the browser callback tab."""
@@ -392,19 +553,41 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             )
         )
 
-    async def _resume_task_async(task_id: str, description: str) -> None:
-        # Read parallel setting from config (default True for speed)
-        enable_parallel = getattr(
-            getattr(getattr(container, "config", None), "yml", None),
-            "orchestration", None,
-        )
-        parallel = getattr(enable_parallel, "parallel_agents", True) if enable_parallel else True
-        cmd = container.build_run_task_command(
-            offline=False,
-            enable_parallel=parallel,
-            enable_streaming=True,
-        )
-        await cmd.execute(description=description, resume_thread_id=task_id)
+    async def _resume_task_async(task_id: str, description: str, use_task_id: str | None = None) -> None:
+        """Run a task in background. use_task_id ensures the DB record is reused, not duplicated."""
+        import logging as _logging
+        _bg_logger = _logging.getLogger("rigovo.api.background")
+        real_task_id = use_task_id or task_id
+        try:
+            # Read parallel setting from config (default True for speed)
+            enable_parallel = getattr(
+                getattr(getattr(container, "config", None), "yml", None),
+                "orchestration", None,
+            )
+            parallel = getattr(enable_parallel, "parallel_agents", True) if enable_parallel else True
+            cmd = container.build_run_task_command(
+                offline=False,
+                enable_parallel=parallel,
+                enable_streaming=True,
+            )
+            await cmd.execute(
+                description=description,
+                resume_thread_id=task_id,
+                task_id=real_task_id,
+            )
+        except Exception as exc:
+            _bg_logger.error("Task %s failed in background: %s", real_task_id, exc, exc_info=True)
+            # Mark the task as failed in the DB so the UI doesn't show it stuck forever
+            try:
+                task_repo = SqliteTaskRepository(container.get_db())
+                from uuid import UUID as _UUID
+                task_obj = await task_repo.get(_UUID(str(real_task_id)))
+                if task_obj and task_obj.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.REJECTED):
+                    task_obj.fail(str(exc)[:500])
+                    await task_repo.update_status(task_obj)
+                    _bg_logger.info("Marked task %s as failed", real_task_id)
+            except Exception as db_exc:
+                _bg_logger.warning("Could not mark task %s as failed: %s", real_task_id, db_exc)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -462,14 +645,17 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         )
         state.policy["authMode"] = auth_mode
 
-        # Persist identity runtime config to .env (gitignored) for restart stability.
-        _upsert_env_var("RIGOVO_IDENTITY_PROVIDER", provider)
-        _upsert_env_var("RIGOVO_AUTH_MODE", auth_mode)
-        _upsert_env_var("WORKOS_CLIENT_ID", workos_client_id)
-        _upsert_env_var("WORKOS_ORGANIZATION_ID", workos_organization_id)
+        # Persist identity runtime config to encrypted SQLite for restart stability.
+        repo = _settings_repo()
+        repo.set_many({
+            "RIGOVO_IDENTITY_PROVIDER": provider,
+            "RIGOVO_AUTH_MODE": auth_mode,
+            "WORKOS_CLIENT_ID": workos_client_id,
+            "WORKOS_ORGANIZATION_ID": workos_organization_id,
+        })
         if workos_api_key:
             runtime_workos_api_key = workos_api_key
-            _upsert_env_var("WORKOS_API_KEY", workos_api_key)
+            repo.set("WORKOS_API_KEY", workos_api_key)
 
         config.identity.provider = provider
         config.identity.auth_mode = auth_mode
@@ -935,27 +1121,46 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
 
-        # Build step info from task metadata
+        # --- Priority 1: Live agent progress (for running tasks) ---
+        live_steps = _live_agent_progress.get(task_id, {})
         steps = []
-        pipeline = task.metadata.get("pipeline", []) if task.metadata else []
-        for step in pipeline:
-            steps.append({
-                "agent": step.get("agent", "unknown"),
-                "status": step.get("status", "pending"),
-                "started_at": step.get("started_at"),
-                "completed_at": step.get("completed_at"),
-                "output": step.get("output", ""),
-                "files_changed": step.get("files_changed", []),
-                "gate_results": step.get("gate_results", []),
-            })
 
-        # If no pipeline metadata, show a simplified view based on task status
+        if live_steps:
+            # Task is actively running — return live tracked steps
+            steps = list(live_steps.values())
+
+        # --- Priority 2: Persisted pipeline_steps (for completed tasks) ---
+        if not steps and task.pipeline_steps:
+            for ps in task.pipeline_steps:
+                gate_results = []
+                if ps.gate_passed is not None:
+                    gate_results.append({
+                        "gate": "rigour",
+                        "passed": ps.gate_passed,
+                        "message": f"Score: {ps.gate_score:.1f}" if ps.gate_score else "",
+                        "severity": "info" if ps.gate_passed else "error",
+                    })
+                steps.append({
+                    "agent": ps.agent_role,
+                    "agent_name": ps.agent_name,
+                    "status": ps.status,
+                    "started_at": ps.started_at.isoformat() if ps.started_at else None,
+                    "completed_at": ps.completed_at.isoformat() if ps.completed_at else None,
+                    "output": ps.summary,
+                    "files_changed": ps.files_changed or [],
+                    "tokens": ps.total_tokens,
+                    "cost_usd": ps.cost_usd,
+                    "duration_ms": ps.duration_ms,
+                    "gate_results": gate_results,
+                })
+
+        # --- Priority 3: Synthetic placeholders (legacy / no data) ---
         if not steps:
             agents = ["planner", "coder", "reviewer", "qa"]
             for agent in agents:
                 if task.status.value in ("completed", "done"):
                     steps.append({"agent": agent, "status": "complete", "started_at": None, "completed_at": None, "output": "", "files_changed": [], "gate_results": []})
-                elif task.status.value in ("running", "in_progress"):
+                elif task.status.value in ("running", "in_progress", "assembling", "routing", "classifying"):
                     s = "complete" if agents.index(agent) < 1 else ("running" if agents.index(agent) == 1 else "pending")
                     steps.append({"agent": agent, "status": s, "started_at": None, "completed_at": None, "output": "", "files_changed": [], "gate_results": []})
                 else:
@@ -998,8 +1203,38 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         if not req.description.strip():
             raise HTTPException(status_code=400, detail="Task description is required")
 
+        # Pre-flight: verify the default model's API key is configured
+        default_model = config.llm.model
+        try:
+            from rigovo.infrastructure.llm.model_catalog import detect_provider
+            provider = detect_provider(default_model)
+        except ImportError:
+            provider = "anthropic"  # safe default
+
+        if provider != "ollama":
+            from rigovo.infrastructure.llm.llm_factory import _PROVIDER_DB_KEY
+            db_key = _PROVIDER_DB_KEY.get(provider, "")
+            if db_key:
+                repo = _settings_repo()
+                key_val = repo.get(db_key, "")
+                if not key_val:
+                    # Also check env/config fallback
+                    from rigovo.infrastructure.llm.llm_factory import _PROVIDER_KEY_ATTR
+                    attr = _PROVIDER_KEY_ATTR.get(provider, "")
+                    env_val = getattr(config.llm, attr, "") if attr else ""
+                    if not env_val:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"No API key configured for {provider}. "
+                                   f"Go to Settings → API Keys and add your {provider.title()} key.",
+                        )
+
         task_id = str(uuid4())
-        background_tasks.add_task(_resume_task_async, task_id, req.description.strip())
+        import logging as _logging
+        _logging.getLogger("rigovo.audit").info(
+            "Task created: id=%s desc=%r", task_id, req.description.strip()[:100],
+        )
+        background_tasks.add_task(_resume_task_async, task_id, req.description.strip(), task_id)
         return {
             "status": "created",
             "task_id": task_id,
@@ -1038,7 +1273,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             actor=req.actor,
         )
         if req.resume_now:
-            background_tasks.add_task(_resume_task_async, task_id, task.description)
+            background_tasks.add_task(_resume_task_async, task_id, task.description, task_id)
         return {"status": "approved", "task_id": task_id, "resuming": bool(req.resume_now)}
 
     @app.post("/v1/tasks/{task_id}/resume")
@@ -1048,6 +1283,11 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         background_tasks: BackgroundTasks,
     ) -> dict:
         _, task = await _load_task(task_id)
+
+        # Guard: don't spawn another run if already running
+        if task.status in (TaskStatus.RUNNING, TaskStatus.ASSEMBLING, TaskStatus.ROUTING, TaskStatus.CLASSIFYING, TaskStatus.QUALITY_CHECK):
+            return {"status": "already_running", "task_id": task_id}
+
         await _append_audit(
             AuditAction.TASK_STARTED,
             task,
@@ -1055,7 +1295,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             metadata={"source": "api.resume"},
             actor=req.actor,
         )
-        background_tasks.add_task(_resume_task_async, task_id, task.description)
+        background_tasks.add_task(_resume_task_async, task_id, task.description, task_id)
         return {"status": "resuming", "task_id": task_id}
 
     # ── Task enrichment endpoints ──────────────────────────────────
@@ -1140,9 +1380,45 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         except Exception:
             return {"task_id": task_id, "files": [], "by_agent": {}}
 
+    @app.get("/v1/tasks/{task_id}/files/{file_path:path}")
+    async def task_file_content(task_id: str, file_path: str) -> dict:
+        """Return the content of a specific file changed by an agent."""
+        try:
+            task_repo = SqliteTaskRepository(container.get_db())
+            task = await task_repo.get(UUID(task_id))
+            if not task:
+                return {"path": file_path, "content": "", "error": "Task not found"}
+
+            # Try to find the file in the project working directory
+            project_dir = (task.metadata or {}).get("project_dir", ".")
+            full_path = Path(project_dir) / file_path
+            if full_path.is_file():
+                try:
+                    content = full_path.read_text(encoding="utf-8", errors="replace")
+                    return {"path": file_path, "content": content}
+                except Exception:
+                    return {"path": file_path, "content": "", "error": "Cannot read file"}
+
+            # File might have been generated but not yet written to disk
+            # Check task output/artifacts
+            pipeline = (task.metadata or {}).get("pipeline", [])
+            for step in pipeline:
+                output = step.get("output", "")
+                files = step.get("files_changed", [])
+                if file_path in files and output:
+                    return {"path": file_path, "content": f"// Content from {step.get('role', 'agent')} output:\n{output}"}
+
+            return {"path": file_path, "content": "", "error": "File content not available"}
+        except Exception:
+            return {"path": file_path, "content": "", "error": "Internal error"}
+
     # ── Settings API ─────────────────────────────────────────────────
     # Lets the desktop UI read/write LLM keys & per-agent model
     # overrides so end-users never need to touch .env or rigovo.yml.
+    #
+    # Supports ALL providers the engine knows (Anthropic, OpenAI,
+    # Google, DeepSeek, Groq, Mistral, Ollama) plus any
+    # OpenAI-compatible endpoint via custom base_url.
 
     AGENT_ROLES = ["planner", "coder", "reviewer", "qa", "security", "devops", "sre", "docs", "lead"]
     DEFAULT_MODELS = {
@@ -1157,32 +1433,72 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         "docs": "claude-haiku-4-5",
     }
 
+    # All providers with their env var name and console link
+    PROVIDERS = {
+        "anthropic": {"key_env": "ANTHROPIC_API_KEY", "label": "Anthropic", "link": "https://console.anthropic.com/settings/keys"},
+        "openai":    {"key_env": "OPENAI_API_KEY",    "label": "OpenAI",    "link": "https://platform.openai.com/api-keys"},
+        "google":    {"key_env": "GOOGLE_API_KEY",     "label": "Google AI", "link": "https://aistudio.google.com/apikey"},
+        "deepseek":  {"key_env": "DEEPSEEK_API_KEY",   "label": "DeepSeek",  "link": "https://platform.deepseek.com/api_keys"},
+        "groq":      {"key_env": "GROQ_API_KEY",       "label": "Groq",      "link": "https://console.groq.com/keys"},
+        "mistral":   {"key_env": "MISTRAL_API_KEY",     "label": "Mistral",   "link": "https://console.mistral.ai/api-keys"},
+        "ollama":    {"key_env": "",                     "label": "Ollama (Local)", "link": "https://ollama.com"},
+    }
+
     AVAILABLE_MODELS = [
-        {"id": "claude-opus-4-6", "label": "Claude Opus 4.6", "provider": "anthropic", "tier": "premium"},
+        # Anthropic
+        {"id": "claude-opus-4-6",   "label": "Claude Opus 4.6",   "provider": "anthropic", "tier": "premium"},
         {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "provider": "anthropic", "tier": "standard"},
-        {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "provider": "anthropic", "tier": "budget"},
-        {"id": "gpt-4o", "label": "GPT-4o", "provider": "openai", "tier": "premium"},
+        {"id": "claude-haiku-4-5",  "label": "Claude Haiku 4.5",  "provider": "anthropic", "tier": "budget"},
+        # OpenAI
+        {"id": "gpt-4o",      "label": "GPT-4o",      "provider": "openai", "tier": "premium"},
         {"id": "gpt-4o-mini", "label": "GPT-4o Mini", "provider": "openai", "tier": "budget"},
-        {"id": "o1", "label": "o1", "provider": "openai", "tier": "premium"},
+        {"id": "o1",          "label": "o1",           "provider": "openai", "tier": "premium"},
+        {"id": "o3-mini",     "label": "o3-mini",      "provider": "openai", "tier": "standard"},
+        # Google
+        {"id": "gemini-2.0-flash", "label": "Gemini 2.0 Flash", "provider": "google",   "tier": "standard"},
+        {"id": "gemini-2.5-pro",   "label": "Gemini 2.5 Pro",   "provider": "google",   "tier": "premium"},
+        # DeepSeek
+        {"id": "deepseek-chat",     "label": "DeepSeek V3",       "provider": "deepseek", "tier": "budget"},
+        {"id": "deepseek-reasoner", "label": "DeepSeek R1",       "provider": "deepseek", "tier": "standard"},
+        # Groq
+        {"id": "llama-3.3-70b-versatile", "label": "Llama 3.3 70B (Groq)", "provider": "groq", "tier": "budget"},
+        {"id": "mixtral-8x7b-32768",      "label": "Mixtral 8x7B (Groq)",  "provider": "groq", "tier": "budget"},
+        # Mistral
+        {"id": "mistral-large-latest", "label": "Mistral Large",    "provider": "mistral", "tier": "premium"},
+        {"id": "codestral-latest",     "label": "Codestral",        "provider": "mistral", "tier": "standard"},
+        # Ollama / Local
+        {"id": "llama3",   "label": "Llama 3 (Ollama)",   "provider": "ollama", "tier": "local"},
+        {"id": "codellama","label": "Code Llama (Ollama)", "provider": "ollama", "tier": "local"},
     ]
+
+    def _settings_repo() -> SqliteSettingsRepository:
+        return container.get_settings_repo()
+
+    def _mask_key(val: str) -> str:
+        if not val:
+            return ""
+        if len(val) > 8:
+            return f"{'•' * 8}…{val[-4:]}"
+        return "•••"
 
     @app.get("/v1/settings")
     async def get_settings() -> dict:
-        """Read current LLM settings — keys are masked for display."""
-        env_path = root / ".env"
-        env_vars: dict[str, str] = {}
-        if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    env_vars[k.strip()] = v.strip().strip('"').strip("'")
+        """Read current LLM settings — keys masked, all providers listed."""
+        repo = _settings_repo()
+        all_keys = [meta["key_env"] for meta in PROVIDERS.values() if meta["key_env"]]
+        all_keys += ["LLM_MODEL", "OLLAMA_BASE_URL", "OPENAI_BASE_URL"]
+        stored = repo.get_many(all_keys)
 
-        def _mask(key: str) -> dict:
-            val = env_vars.get(key, "")
-            return {
+        providers: dict[str, dict] = {}
+        for name, meta in PROVIDERS.items():
+            key_env = meta["key_env"]
+            val = stored.get(key_env, "") if key_env else ""
+            providers[name] = {
                 "configured": bool(val),
-                "masked": f"{'•' * 8}…{val[-4:]}" if len(val) > 8 else ("•••" if val else ""),
+                "masked": _mask_key(val),
+                "key_env": key_env,
+                "label": meta["label"],
+                "link": meta["link"],
             }
 
         # Read per-agent model overrides from rigovo.yml
@@ -1196,92 +1512,208 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                     override = eng.agents[role].model
             agent_models[role] = override or DEFAULT_MODELS.get(role, "claude-sonnet-4-6")
 
+        # Read rigovo.yml raw for the config editor — generate defaults if missing
+        yml_path = root / "rigovo.yml"
+        if yml_path.exists():
+            yml_raw = yml_path.read_text(encoding="utf-8")
+        else:
+            from rigovo.config_schema import RigovoConfig, save_rigovo_yml
+            default_cfg = RigovoConfig()
+            save_rigovo_yml(default_cfg, root)
+            yml_raw = yml_path.read_text(encoding="utf-8")
+
         return {
-            "providers": {
-                "anthropic": {
-                    **_mask("ANTHROPIC_API_KEY"),
-                    "key_env": "ANTHROPIC_API_KEY",
-                },
-                "openai": {
-                    **_mask("OPENAI_API_KEY"),
-                    "key_env": "OPENAI_API_KEY",
-                },
-                "groq": {
-                    **_mask("GROQ_API_KEY"),
-                    "key_env": "GROQ_API_KEY",
-                },
-            },
-            "default_model": env_vars.get("LLM_MODEL", config.llm.model),
+            "providers": providers,
+            "default_model": stored.get("LLM_MODEL", "") or config.llm.model,
             "agent_models": agent_models,
             "available_models": AVAILABLE_MODELS,
             "default_agent_models": DEFAULT_MODELS,
-            "ollama_url": env_vars.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+            "ollama_url": stored.get("OLLAMA_BASE_URL", "") or "http://localhost:11434",
+            "custom_base_url": stored.get("OPENAI_BASE_URL", ""),
+            "yml_raw": yml_raw,
         }
-
-    class UpdateSettingsRequest(BaseModel):
-        """Partial settings update from the UI."""
-        anthropic_api_key: str | None = None
-        openai_api_key: str | None = None
-        groq_api_key: str | None = None
-        default_model: str | None = None
-        ollama_url: str | None = None
-        agent_models: dict[str, str] | None = None
 
     @app.post("/v1/settings")
     async def update_settings(req: UpdateSettingsRequest) -> dict:
-        """Update LLM keys in .env and agent models in rigovo.yml."""
+        """Update LLM settings — API keys stored encrypted in SQLite."""
+        import logging as _logging
+        _logger = _logging.getLogger("rigovo.api.settings")
         changes: list[str] = []
+        errors: list[str] = []
+        repo = _settings_repo()
 
-        # 1. Update .env for API keys
-        if req.anthropic_api_key is not None:
-            _upsert_env_var("ANTHROPIC_API_KEY", req.anthropic_api_key)
-            changes.append("ANTHROPIC_API_KEY")
-        if req.openai_api_key is not None:
-            _upsert_env_var("OPENAI_API_KEY", req.openai_api_key)
-            changes.append("OPENAI_API_KEY")
-        if req.groq_api_key is not None:
-            _upsert_env_var("GROQ_API_KEY", req.groq_api_key)
-            changes.append("GROQ_API_KEY")
-        if req.default_model is not None:
-            _upsert_env_var("LLM_MODEL", req.default_model)
-            changes.append("LLM_MODEL")
-        if req.ollama_url is not None:
-            _upsert_env_var("OLLAMA_BASE_URL", req.ollama_url)
-            changes.append("OLLAMA_BASE_URL")
+        # 1. Save API keys (encrypted at rest in SQLite)
+        if req.api_keys:
+            try:
+                for provider_name, key_value in req.api_keys.items():
+                    meta = PROVIDERS.get(provider_name)
+                    if meta and meta["key_env"]:
+                        repo.set(meta["key_env"], key_value)
+                        changes.append(meta["key_env"])
+                        _logger.info("Saved %s to encrypted settings", meta["key_env"])
+                    else:
+                        _logger.warning("Unknown provider '%s' — skipping", provider_name)
+            except Exception as exc:
+                _logger.error("Failed to save API keys: %s", exc, exc_info=True)
+                errors.append(f"Failed to save API keys: {str(exc)}")
 
-        # 2. Update rigovo.yml for per-agent model overrides
-        if req.agent_models:
-            import yaml as _yaml
-            yml_path = root / "rigovo.yml"
-            yml_data: dict = {}
-            if yml_path.exists():
-                yml_data = _yaml.safe_load(yml_path.read_text()) or {}
+        # 2. Save other settings (model, URLs — not secrets, plain text)
+        try:
+            if req.default_model is not None:
+                repo.set("LLM_MODEL", req.default_model)
+                changes.append("LLM_MODEL")
+            if req.ollama_url is not None:
+                repo.set("OLLAMA_BASE_URL", req.ollama_url)
+                changes.append("OLLAMA_BASE_URL")
+            if req.custom_base_url is not None:
+                repo.set("OPENAI_BASE_URL", req.custom_base_url)
+                changes.append("OPENAI_BASE_URL")
+        except Exception as exc:
+            _logger.error("Failed to save settings: %s", exc, exc_info=True)
+            errors.append(f"Failed to save settings: {str(exc)}")
 
-            teams = yml_data.setdefault("teams", {})
-            eng = teams.setdefault("engineering", {})
-            agents = eng.setdefault("agents", {})
+        # 3. If raw YAML is provided, write it directly
+        if req.yml_raw is not None:
+            try:
+                yml_path = root / "rigovo.yml"
+                # Validate it's valid YAML first
+                yaml.safe_load(req.yml_raw)
+                yml_path.write_text(req.yml_raw, encoding="utf-8")
+                changes.append("rigovo.yml (raw)")
+                _logger.info("Updated rigovo.yml from raw editor")
+            except yaml.YAMLError as exc:
+                errors.append(f"Invalid YAML syntax: {str(exc)}")
+            except Exception as exc:
+                _logger.error("Failed to write rigovo.yml: %s", exc, exc_info=True)
+                errors.append(f"Failed to write rigovo.yml: {str(exc)}")
 
-            for role, model in req.agent_models.items():
-                if role not in AGENT_ROLES:
-                    continue
-                if model == DEFAULT_MODELS.get(role, ""):
-                    # Remove override if it matches the default
-                    if role in agents and "model" in agents[role]:
-                        del agents[role]["model"]
-                        if not agents[role]:
-                            del agents[role]
-                else:
-                    agent_cfg = agents.setdefault(role, {})
-                    agent_cfg["model"] = model
-                changes.append(f"agent.{role}.model")
+        # 4. Update rigovo.yml for per-agent model overrides
+        elif req.agent_models:
+            try:
+                yml_path = root / "rigovo.yml"
+                yml_data: dict = {}
+                if yml_path.exists():
+                    yml_data = yaml.safe_load(yml_path.read_text()) or {}
 
-            yml_path.write_text(_yaml.dump(yml_data, default_flow_style=False, sort_keys=False))
+                teams = yml_data.setdefault("teams", {})
+                eng = teams.setdefault("engineering", {})
+                agents = eng.setdefault("agents", {})
+
+                for role, model in req.agent_models.items():
+                    if role not in AGENT_ROLES:
+                        continue
+                    if model == DEFAULT_MODELS.get(role, ""):
+                        if role in agents and isinstance(agents.get(role), dict) and "model" in agents[role]:
+                            del agents[role]["model"]
+                            if not agents[role]:
+                                del agents[role]
+                    else:
+                        agent_cfg = agents.setdefault(role, {})
+                        if not isinstance(agent_cfg, dict):
+                            agents[role] = {"model": model}
+                        else:
+                            agent_cfg["model"] = model
+                    changes.append(f"agent.{role}.model")
+
+                yml_path.write_text(yaml.dump(yml_data, default_flow_style=False, sort_keys=False))
+                _logger.info("Updated rigovo.yml agent models: %s", list(req.agent_models.keys()))
+            except Exception as exc:
+                _logger.error("Failed to update rigovo.yml: %s", exc, exc_info=True)
+                errors.append(f"Failed to write rigovo.yml: {str(exc)}")
+
+        if errors:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=500,
+                content={"status": "error", "detail": "; ".join(errors), "errors": errors, "changes": changes},
+            )
+
+        # No restart needed — the LLM factory reads keys from SQLite
+        # on every provider creation, so changes take effect immediately.
 
         return {
             "status": "updated",
             "changes": changes,
-            "note": "Restart the engine for changes to take full effect.",
         }
+
+    # ── Logs API ──────────────────────────────────────────────────────
+    # Users can view app, error, and audit logs from the desktop UI.
+    # Logs are stored in <project>/.rigovo/logs/
+
+    @app.get("/v1/logs")
+    async def list_log_files() -> dict:
+        """List available log files with sizes and last-modified times."""
+        if not log_dir.exists():
+            return {"log_dir": str(log_dir), "files": []}
+        files = []
+        for f in sorted(log_dir.iterdir()):
+            if f.is_file() and f.suffix == ".log":
+                stat = f.stat()
+                files.append({
+                    "name": f.name,
+                    "size_bytes": stat.st_size,
+                    "size_human": _human_size(stat.st_size),
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                })
+        return {"log_dir": str(log_dir), "files": files}
+
+    @app.get("/v1/logs/{log_name}")
+    async def read_log_file(log_name: str, tail: int = 200) -> dict:
+        """Read the last N lines of a log file.
+
+        Args:
+            log_name: Name of the log file (e.g. 'app.log', 'error.log', 'audit.log')
+            tail: Number of lines from the end to return (default 200)
+        """
+        # Sanitize — only allow .log files in the log directory
+        if ".." in log_name or "/" in log_name or not log_name.endswith(".log"):
+            raise HTTPException(status_code=400, detail="Invalid log file name")
+
+        log_file = log_dir / log_name
+        if not log_file.exists():
+            return {"name": log_name, "lines": [], "total_lines": 0, "truncated": False}
+
+        try:
+            all_lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            total = len(all_lines)
+            lines = all_lines[-tail:] if total > tail else all_lines
+            return {
+                "name": log_name,
+                "lines": lines,
+                "total_lines": total,
+                "truncated": total > tail,
+                "showing": f"last {len(lines)} of {total}",
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to read log: {exc}")
+
+    def _human_size(size: int) -> str:
+        for unit in ["B", "KB", "MB", "GB"]:
+            if size < 1024:
+                return f"{size:.1f} {unit}" if unit != "B" else f"{size} {unit}"
+            size //= 1024
+        return f"{size} TB"
+
+    # ── Request logging middleware ────────────────────────────────────
+    @app.middleware("http")
+    async def log_requests(request: Request, call_next):  # type: ignore[no-untyped-def]
+        import time
+        start = time.time()
+        response = await call_next(request)
+        duration_ms = (time.time() - start) * 1000
+        # Log non-health requests
+        if request.url.path != "/health":
+            logger.info(
+                "%s %s → %d (%.0fms)",
+                request.method, request.url.path, response.status_code, duration_ms,
+            )
+            # Log errors to audit
+            if response.status_code >= 400:
+                logging.getLogger("rigovo.audit").warning(
+                    "API error: %s %s → %d",
+                    request.method, request.url.path, response.status_code,
+                )
+        return response
 
     @app.on_event("shutdown")
     async def shutdown_event() -> None:

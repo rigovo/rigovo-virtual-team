@@ -158,13 +158,21 @@ def _build_agent_messages(
 
 
 def _check_budget_guards(state: TaskState, current_role: str) -> dict[str, Any] | None:
-    """Check budget and token limits. Returns error state dict if exceeded, None otherwise."""
+    """Check budget and token limits. Logs warnings but does NOT hard-stop.
+
+    Returns error state dict if token limit exceeded, None otherwise.
+    Cost overruns are logged as warnings — user should be informed, not blocked.
+    """
     accumulated_cost = sum(
         v.get("cost", 0) for v in state.get("cost_accumulator", {}).values()
     )
     budget_limit = state.get("budget_max_cost_per_task", 0)
     if budget_limit > 0 and accumulated_cost >= budget_limit:
-        raise BudgetExceededError(accumulated_cost, budget_limit)
+        logger.warning(
+            "Budget warning: $%.4f spent (soft limit $%.2f) — continuing task. "
+            "Adjust budget.max_cost_per_task in rigovo.yml to change the limit.",
+            accumulated_cost, budget_limit,
+        )
 
     accumulated_tokens = sum(
         v.get("tokens", 0) for v in state.get("cost_accumulator", {}).values()
@@ -792,6 +800,7 @@ async def execute_agent_node(
         "cost": cost,
         "duration_ms": duration_ms,
         "files_changed": files_changed,
+        "summary": final_text,
     })
 
     return {

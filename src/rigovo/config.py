@@ -3,13 +3,14 @@
 Load order (later overrides earlier):
 1. Built-in defaults
 2. rigovo.yml (version-controlled project config)
-3. .env file (secrets — gitignored)
+3. .env file (secrets — gitignored, migrated to SQLite on first run)
 4. Environment variables (CI overrides)
 5. CLI flags (--verbose, --offline, etc.)
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic import Field
@@ -18,27 +19,76 @@ from pydantic_settings import BaseSettings
 from rigovo.config_schema import RigovoConfig, load_rigovo_yml
 
 
+def _load_env_file(env_path: Path) -> dict[str, str]:
+    """Parse a .env file and load its values into os.environ.
+
+    This ensures all BaseSettings sub-models (LLMConfig, CloudConfig, etc.)
+    can read the values — not just the top-level AppConfig.
+    Returns the dict of key→value pairs that were loaded.
+    """
+    loaded: dict[str, str] = {}
+    if not env_path.is_file():
+        return loaded
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+            loaded[key] = value
+    return loaded
+
+
 class LLMConfig(BaseSettings):
-    """LLM provider configuration. Loaded from environment variables."""
+    """LLM provider configuration. Loaded from environment variables.
+
+    Supports all providers from the model catalog:
+    Anthropic, OpenAI, Google, DeepSeek, Groq, Mistral, Ollama,
+    plus any OpenAI-compatible endpoint via OPENAI_BASE_URL.
+    """
 
     model: str = Field(default="claude-sonnet-4-6", alias="LLM_MODEL")
+
+    # API keys — one per provider
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    google_api_key: str = Field(default="", alias="GOOGLE_API_KEY")
+    deepseek_api_key: str = Field(default="", alias="DEEPSEEK_API_KEY")
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
+    mistral_api_key: str = Field(default="", alias="MISTRAL_API_KEY")
+
+    # Endpoint overrides
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
+    openai_base_url: str = Field(default="", alias="OPENAI_BASE_URL")  # custom OpenAI-compatible
 
     model_config = {"extra": "ignore"}
 
     @property
     def provider(self) -> str:
-        """Detect provider from model name."""
-        if self.model.startswith("claude"):
-            return "anthropic"
-        if self.model.startswith(("gpt", "o1")):
-            return "openai"
-        if self.model.startswith(("llama", "mixtral")):
-            return "groq"
-        return "ollama"
+        """Detect provider from model name (uses model_catalog for accuracy)."""
+        try:
+            from rigovo.infrastructure.llm.model_catalog import detect_provider
+            return detect_provider(self.model)
+        except ImportError:
+            # Fallback heuristic if catalog not available
+            if self.model.startswith("claude"):
+                return "anthropic"
+            if self.model.startswith(("gpt", "o1", "o3")):
+                return "openai"
+            if self.model.startswith("gemini"):
+                return "google"
+            if self.model.startswith("deepseek"):
+                return "deepseek"
+            if self.model.startswith(("llama", "mixtral", "gemma")):
+                return "groq"
+            if self.model.startswith(("mistral", "codestral")):
+                return "mistral"
+            return "ollama"
 
     @property
     def api_key(self) -> str:
@@ -46,8 +96,12 @@ class LLMConfig(BaseSettings):
         key_map = {
             "anthropic": self.anthropic_api_key,
             "openai": self.openai_api_key,
+            "google": self.google_api_key,
+            "deepseek": self.deepseek_api_key,
             "groq": self.groq_api_key,
+            "mistral": self.mistral_api_key,
             "ollama": "",
+            "openai_compatible": self.openai_api_key,  # fallback uses openai key
         }
         return key_map.get(self.provider, "")
 
@@ -143,7 +197,7 @@ def load_config(project_root: Path | None = None) -> AppConfig:
     Load configuration by merging rigovo.yml + .env + env vars.
 
     rigovo.yml provides project settings (teams, quality, orchestration).
-    .env provides secrets (API keys).
+    .env provides secrets (API keys) — migrated to encrypted SQLite on first run.
     Environment variables override both.
     """
     root = project_root or Path.cwd()
@@ -151,12 +205,15 @@ def load_config(project_root: Path | None = None) -> AppConfig:
     # 1. Load rigovo.yml
     yml = load_rigovo_yml(root)
 
-    # 2. Apply YAML overrides to env-based config
-    #    Read .env from the project root, not from cwd
-    env_file = root / ".env" if (root / ".env").exists() else None
+    # 2. Load .env into process environment so ALL BaseSettings sub-models
+    #    (LLMConfig, CloudConfig, etc.) can read the values.
+    env_path = root / ".env"
+    _load_env_file(env_path)
+
+    # 3. Create AppConfig (reads from env vars + .env via pydantic-settings)
     app_config = AppConfig(
         project_root=root,
-        _env_file=str(env_file) if env_file else None,
+        _env_file=str(env_path) if env_path.exists() else None,
     )
     app_config.yml = yml
 

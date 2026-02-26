@@ -28,7 +28,7 @@ from rigovo.application.master.evaluator import AgentEvaluator
 from rigovo.application.master.router import TeamRouter
 from rigovo.domain.entities.agent import Agent
 from rigovo.domain.entities.audit_entry import AuditAction, AuditEntry
-from rigovo.domain.entities.task import Task, TaskStatus
+from rigovo.domain.entities.task import Task, TaskStatus, PipelineStep
 from rigovo.domain.entities.team import Team
 from rigovo.domain.interfaces.domain_plugin import DomainPlugin
 from rigovo.domain.interfaces.event_emitter import EventEmitter
@@ -105,6 +105,8 @@ class RunTaskCommand:
         self._enable_streaming = enable_streaming
         self._enable_parallel = enable_parallel
         self._auto_approve = auto_approve
+        self._budget_max_cost: float = 25.00    # soft warning only, never hard-stops
+        self._budget_max_tokens: int = 500_000  # token soft limit
 
         # Master Agent sub-services
         self._classifier = TaskClassifier(master_llm)
@@ -122,6 +124,7 @@ class RunTaskCommand:
         description: str,
         team_name: str | None = None,
         resume_thread_id: str | None = None,
+        task_id: str | UUID | None = None,
     ) -> dict[str, Any]:
         """
         Execute a task end-to-end.
@@ -130,23 +133,36 @@ class RunTaskCommand:
             description: Task description.
             team_name: Optional target team name.
             resume_thread_id: Optional thread ID to resume from checkpoint (item 3).
+            task_id: Optional pre-assigned task ID (from API create/resume).
+                     If None, a new UUID is generated.
 
         Returns:
             Final state dict with status, costs, files changed, etc.
         """
         start_time = time.monotonic()
-        task_id = uuid4()
+        task_id = UUID(str(task_id)) if task_id else uuid4()
 
-        # --- 1. Create and persist task ---
-        task = Task(
-            workspace_id=self._workspace_id,
-            description=description,
-            id=task_id,
-        )
-        task.start()
+        # --- 1. Create or resume task ---
+        existing_task = await self._task_repo.get(task_id) if self._task_repo else None
 
-        if self._task_repo:
-            await self._task_repo.save(task)
+        if existing_task:
+            # Resuming — reuse DB record, just update status
+            task = existing_task
+            task.start()
+            if self._task_repo:
+                await self._task_repo.update_status(task)
+            logger.info("Resuming existing task %s", task_id)
+        else:
+            # New task — create DB record
+            task = Task(
+                workspace_id=self._workspace_id,
+                description=description,
+                id=task_id,
+            )
+            task.start()
+            if self._task_repo:
+                await self._task_repo.save(task)
+            logger.info("Created new task %s", task_id)
 
         self._emit_sync("task_started", {
             "task_id": str(task_id),
@@ -200,8 +216,8 @@ class RunTaskCommand:
             "current_checkpoint": None,
             "total_tokens": 0,
             "total_cost_usd": 0.0,
-            "budget_max_cost_per_task": 2.00,
-            "budget_max_tokens_per_task": 200_000,
+            "budget_max_cost_per_task": self._budget_max_cost,
+            "budget_max_tokens_per_task": self._budget_max_tokens,
             "memories_to_store": [],
             "status": "running",
             "events": [],
@@ -282,6 +298,27 @@ class RunTaskCommand:
                 sum(v.get("cost", 0.0) for v in cost_acc.values()), 6
             )
         task.duration_ms = elapsed_ms
+
+        # --- Persist agent outputs as PipelineStep records ---
+        agent_outputs_raw = final_state.get("agent_outputs", {})
+        if isinstance(agent_outputs_raw, dict):
+            pipeline_steps: list[PipelineStep] = []
+            for role, output in agent_outputs_raw.items():
+                step = PipelineStep(
+                    agent_id=uuid5(NAMESPACE_DNS, f"{task_id}:{role}"),
+                    agent_role=role,
+                    agent_name=role.replace("_", " ").title(),
+                    status="completed",
+                    duration_ms=output.get("duration_ms", 0),
+                    total_tokens=output.get("tokens", 0),
+                    cost_usd=output.get("cost", 0.0),
+                    summary=output.get("summary", ""),
+                    files_changed=output.get("files_changed", []),
+                    gate_passed=output.get("gate_passed"),
+                    gate_score=output.get("gate_score"),
+                )
+                pipeline_steps.append(step)
+            task.pipeline_steps = pipeline_steps
 
         if self._task_repo:
             await self._task_repo.save(task)
@@ -392,6 +429,9 @@ class RunTaskCommand:
                 all_events = update.get("events", [])
                 new_events = all_events[seen_event_count:]
                 for event in new_events:
+                    # Inject task_id so API event listeners can track per-task
+                    if "task_id" not in event:
+                        event["task_id"] = str(initial_state.get("task_id", ""))
                     self._emit_sync(event.get("type", node_name), event)
                 seen_event_count = len(final_state.get("events", []))
 
