@@ -62,6 +62,7 @@ fi
 echo "[rigovo-e2e-runtime] verifying runtime capabilities and core UI APIs"
 assert_json "/v1/runtime/capabilities" "'orchestration' in doc and 'plugins' in doc and 'runtime' in doc"
 assert_json "/v1/runtime/capabilities" "doc['runtime'].get('filesystem_sandbox') == 'project_root'"
+assert_json "/v1/memory/metrics" "'total_memories' in doc and 'utilization_rate' in doc"
 assert_json "/v1/control/state" "'workspace' in doc and 'policy' in doc"
 assert_json "/v1/ui/inbox" "isinstance(doc, list)"
 assert_json "/v1/ui/approvals" "isinstance(doc, list)"

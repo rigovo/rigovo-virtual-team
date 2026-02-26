@@ -75,6 +75,10 @@ class PluginManifest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_capabilities(self) -> "PluginManifest":
+        if self.trust_level not in {"community", "verified", "internal"}:
+            raise ValueError(
+                "trust_level must be one of: community, verified, internal"
+            )
         implied: set[str] = set()
         if self.connectors:
             implied.add("connector")
@@ -89,4 +93,3 @@ class PluginManifest(BaseModel):
         if implied and not self.capabilities:
             self.capabilities = sorted(implied)
         return self
-

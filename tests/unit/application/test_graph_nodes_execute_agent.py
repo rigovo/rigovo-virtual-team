@@ -216,6 +216,8 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         assert "backoff" in system_content.lower()
         assert "memory_context_by_role" in result
         assert result["memory_context_by_role"]["coder"] != ""
+        assert "memory_retrieval_log" in result
+        assert result["memory_retrieval_log"]["coder"][0]["memory_id"]
         assert any(e.get("type") == "memories_retrieved" for e in result["events"])
         memory_event = next(e for e in result["events"] if e.get("type") == "memories_retrieved")
         assert "avg_score" in memory_event
@@ -775,6 +777,125 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         cost_calc.calculate.return_value = 0.08
         result = await execute_agent_node(state, llm_factory, cost_calc)
         assert any(e.get("type") == "integration_blocked" for e in result["events"])
+
+    async def test_spawn_subtask_counts_tokens_and_emits_events(self):
+        """spawn_subtask should run child loop and include its tokens in accounting."""
+        state: TaskState = {
+            "task_id": "task-6",
+            "description": "Implement auth with helper subtask",
+            "team_config": {
+                "agents": {
+                    "coder": {
+                        "id": "agent-coder",
+                        "name": "Coder",
+                        "role": "coder",
+                        "system_prompt": "You are a coder.",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": ["spawn_subtask"],
+                    },
+                }
+            },
+            "current_agent_role": "coder",
+            "agent_outputs": {},
+            "events": [],
+        }
+
+        mock_llm = AsyncMock()
+        mock_llm.invoke.side_effect = [
+            # Parent loop: requests subtask
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=100, output_tokens=20),
+                model="claude-sonnet-4-6",
+                tool_calls=[{
+                    "id": "toolu_sub_1",
+                    "name": "spawn_subtask",
+                    "input": {"description": "Write auth helper"},
+                }],
+            ),
+            # Subtask loop: single completion response
+            LLMResponse(
+                content="Subtask done.",
+                usage=LLMUsage(input_tokens=30, output_tokens=10),
+                model="claude-sonnet-4-6",
+            ),
+            # Parent loop: final response
+            LLMResponse(
+                content="Main task complete.",
+                usage=LLMUsage(input_tokens=50, output_tokens=20),
+                model="claude-sonnet-4-6",
+            ),
+        ]
+
+        def llm_factory(model: str):
+            return mock_llm
+
+        cost_calc = MagicMock()
+        cost_calc.calculate.return_value = 0.12
+        result = await execute_agent_node(state, llm_factory, cost_calc)
+
+        coder_out = result["agent_outputs"]["coder"]
+        assert coder_out["subtask_count"] == 1
+        assert coder_out["subtask_tokens"] == 40
+        assert coder_out["tokens"] == 230
+        assert any(e.get("type") == "subtask_spawned" for e in result["events"])
+        assert any(e.get("type") == "subtask_complete" for e in result["events"])
+
+    async def test_spawn_subtask_honors_policy_limit(self):
+        """subagent_policy should block spawns beyond max_subtasks_per_agent_step."""
+        state: TaskState = {
+            "task_id": "task-7",
+            "description": "Too many subtasks",
+            "team_config": {
+                "agents": {
+                    "coder": {
+                        "id": "agent-coder",
+                        "name": "Coder",
+                        "role": "coder",
+                        "system_prompt": "You are a coder.",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": ["spawn_subtask"],
+                    },
+                }
+            },
+            "current_agent_role": "coder",
+            "agent_outputs": {},
+            "subagent_policy": {
+                "enabled": True,
+                "max_subtasks_per_agent_step": 0,
+                "max_subtask_rounds": 5,
+            },
+            "events": [],
+        }
+
+        mock_llm = AsyncMock()
+        mock_llm.invoke.side_effect = [
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=40, output_tokens=10),
+                model="claude-sonnet-4-6",
+                tool_calls=[{
+                    "id": "toolu_sub_2",
+                    "name": "spawn_subtask",
+                    "input": {"description": "Try blocked subtask"},
+                }],
+            ),
+            LLMResponse(
+                content="Proceeding without subtask.",
+                usage=LLMUsage(input_tokens=30, output_tokens=10),
+                model="claude-sonnet-4-6",
+            ),
+        ]
+
+        def llm_factory(model: str):
+            return mock_llm
+
+        cost_calc = MagicMock()
+        cost_calc.calculate.return_value = 0.05
+        result = await execute_agent_node(state, llm_factory, cost_calc)
+
+        assert any(e.get("type") == "subtask_blocked" for e in result["events"])
+        assert result["agent_outputs"]["coder"]["subtask_count"] == 0
 
 
 if __name__ == "__main__":

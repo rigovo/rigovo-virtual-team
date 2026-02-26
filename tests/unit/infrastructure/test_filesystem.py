@@ -133,6 +133,11 @@ class TestCommandRunner:
         result = CommandRunner(project_dir).run("python3 -c \"print('x')\"")
         assert "error" in result
 
+    def test_run_non_allowlisted_command_blocked(self, project_dir):
+        result = CommandRunner(project_dir).run("curl --version")
+        assert "error" in result
+        assert "allow-listed" in result["error"]
+
     def test_run_timeout(self, project_dir):
         result = CommandRunner(project_dir).run("sleep 10", timeout_seconds=1)
         assert result.get("exit_code", -1) != 0 or "timeout" in str(result).lower()
@@ -220,7 +225,9 @@ class TestToolExecutor:
                 "acme-slack": {
                     "enabled": True,
                     "trust_level": "verified",
+                    "capabilities": ["connector"],
                     "connectors": ["slack"],
+                    "connector_operations": {"slack": ["post_message"]},
                     "mcp_servers": [],
                     "actions": [],
                 }
@@ -244,3 +251,127 @@ class TestToolExecutor:
         )
         assert result["blocked"] is False
         assert result["dry_run"] is True
+
+    def test_invoke_integration_blocks_disallowed_connector_operation(self, project_dir):
+        executor = ToolExecutor(
+            project_dir,
+            integration_catalog={
+                "acme-slack": {
+                    "enabled": True,
+                    "trust_level": "verified",
+                    "capabilities": ["connector"],
+                    "connectors": ["slack"],
+                    "connector_operations": {"slack": ["post_message"]},
+                    "mcp_servers": [],
+                    "actions": [],
+                }
+            },
+            integration_policy={
+                "enable_connector_tools": True,
+                "enable_mcp_tools": False,
+                "enable_action_tools": False,
+                "min_trust_level": "verified",
+            },
+        )
+        result = executor._handle_invoke_integration(
+            {
+                "kind": "connector",
+                "plugin_id": "acme-slack",
+                "target_id": "slack",
+                "operation": "delete_channel",
+                "payload": {"channel": "alerts"},
+            }
+        )
+        assert result["blocked"] is True
+        assert "operation" in result["error"].lower()
+
+    def test_invoke_integration_blocks_invalid_operation_format(self, project_dir):
+        executor = ToolExecutor(
+            project_dir,
+            integration_catalog={
+                "acme-slack": {
+                    "enabled": True,
+                    "trust_level": "verified",
+                    "capabilities": ["connector"],
+                    "connectors": ["slack"],
+                    "connector_operations": {"slack": ["post_message"]},
+                    "mcp_servers": [],
+                    "actions": [],
+                }
+            },
+            integration_policy={
+                "enable_connector_tools": True,
+                "enable_mcp_tools": False,
+                "enable_action_tools": False,
+                "min_trust_level": "verified",
+            },
+        )
+        result = executor._handle_invoke_integration(
+            {
+                "kind": "connector",
+                "plugin_id": "acme-slack",
+                "target_id": "slack",
+                "operation": "post message",  # invalid space
+                "payload": {"channel": "alerts"},
+            }
+        )
+        assert result["blocked"] is True
+        assert "format" in result["error"].lower()
+
+    def test_invoke_integration_blocks_payload_too_large(self, project_dir):
+        executor = ToolExecutor(
+            project_dir,
+            integration_catalog={
+                "acme-slack": {
+                    "enabled": True,
+                    "trust_level": "verified",
+                    "capabilities": ["connector"],
+                    "connectors": ["slack"],
+                    "connector_operations": {"slack": ["post_message"]},
+                    "mcp_servers": [],
+                    "actions": [],
+                }
+            },
+            integration_policy={
+                "enable_connector_tools": True,
+                "enable_mcp_tools": False,
+                "enable_action_tools": False,
+                "min_trust_level": "verified",
+            },
+        )
+        result = executor._handle_invoke_integration(
+            {
+                "kind": "connector",
+                "plugin_id": "acme-slack",
+                "target_id": "slack",
+                "operation": "post_message",
+                "payload": {"blob": "x" * 25_000},
+            }
+        )
+        assert result["blocked"] is True
+        assert "payload" in result["error"].lower()
+
+    def test_tool_executor_worktree_sandbox_writes_inside_worktree(self, project_dir):
+        worktree = project_dir / "worktrees" / "w1"
+        worktree.mkdir(parents=True)
+        executor = ToolExecutor(
+            project_dir,
+            integration_policy={"allowed_shell_commands": ["echo"]},
+            worktree_mode="git_worktree",
+            worktree_root=str(worktree),
+            filesystem_sandbox_mode="worktree",
+        )
+        result = executor._handle_write_file({"path": "sandboxed.py", "content": "x = 1\n"})
+        assert "error" not in result
+        assert (worktree / "sandboxed.py").exists()
+        assert not (project_dir / "sandboxed.py").exists()
+
+    def test_tool_executor_worktree_sandbox_blocks_escape(self, project_dir):
+        outside = project_dir.parent
+        with pytest.raises(PermissionError):
+            ToolExecutor(
+                project_dir,
+                worktree_mode="git_worktree",
+                worktree_root=str(outside),
+                filesystem_sandbox_mode="worktree",
+            )

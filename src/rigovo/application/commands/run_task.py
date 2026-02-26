@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -78,6 +79,7 @@ class RunTaskCommand:
         max_retries: int = 5,
         team_configs: dict[str, Any] | None = None,
         consultation_policy: dict[str, Any] | None = None,
+        subagent_policy: dict[str, Any] | None = None,
         deep_mode: str = "final",
         deep_pro: bool = False,
         replan_policy: dict[str, Any] | None = None,
@@ -105,6 +107,7 @@ class RunTaskCommand:
         self._max_retries = max_retries
         self._team_configs = team_configs or {}
         self._consultation_policy = consultation_policy or {}
+        self._subagent_policy = subagent_policy or {}
         self._deep_mode = deep_mode
         self._deep_pro = deep_pro
         self._replan_policy = replan_policy or {}
@@ -205,6 +208,9 @@ class RunTaskCommand:
             "task_id": str(task_id),
             "workspace_id": str(self._workspace_id),
             "project_root": str(self._project_root),
+            "worktree_mode": str(os.environ.get("RIGOVO_WORKTREE_MODE", "project")),
+            "worktree_root": str(os.environ.get("RIGOVO_WORKTREE_ROOT", "")),
+            "filesystem_sandbox_mode": str(os.environ.get("RIGOVO_FILESYSTEM_SANDBOX_MODE", "project_root")),
             "description": description,
             "domain": domain_id,
             "requested_team_name": team_name or "",
@@ -220,10 +226,12 @@ class RunTaskCommand:
             "retry_count": 0,
             "max_retries": self._max_retries,
             "consultation_policy": self._consultation_policy,
+            "subagent_policy": self._subagent_policy,
             "deep_mode": self._deep_mode,
             "deep_pro": self._deep_pro,
             "replan_policy": self._replan_policy,
             "replan_count": 0,
+            "replan_history": [],
             "ci_mode": self._ci_mode,
             "debate_round": 0,
             "max_debate_rounds": 2,
@@ -239,6 +247,8 @@ class RunTaskCommand:
             "budget_max_tokens_per_task": self._budget_max_tokens,
             "memories_to_store": [],
             "memory_context_by_role": {},
+            "memory_retrieval_log": {},
+            "memory_learning_metrics": {},
             "integration_policy": self._integration_policy,
             "integration_catalog": self._build_integration_catalog(),
             "status": "running",
@@ -460,10 +470,55 @@ class RunTaskCommand:
                     # Inject task_id so API event listeners can track per-task
                     if "task_id" not in event:
                         event["task_id"] = str(initial_state.get("task_id", ""))
+                    await self._append_replan_audit_if_needed(event, initial_state)
                     self._emit_sync(event.get("type", node_name), event)
                 seen_event_count = len(final_state.get("events", []))
 
         return final_state
+
+    async def _append_replan_audit_if_needed(
+        self,
+        event: dict[str, Any],
+        initial_state: TaskState,
+    ) -> None:
+        """Persist replan lifecycle events into durable audit trail."""
+        audit_repo = getattr(self, "_audit_repo", None)
+        if not audit_repo:
+            return
+        event_type = str(event.get("type", "") or "")
+        if event_type not in {"replan_triggered", "replan_failed"}:
+            return
+
+        task_id_raw = str(event.get("task_id") or initial_state.get("task_id", "")).strip()
+        try:
+            task_uuid = UUID(task_id_raw)
+        except ValueError:
+            return
+
+        action = (
+            AuditAction.REPLAN_TRIGGERED
+            if event_type == "replan_triggered"
+            else AuditAction.REPLAN_FAILED
+        )
+        summary = (
+            f"Replan #{event.get('replan_count', '?')} "
+            f"{'triggered' if event_type == 'replan_triggered' else 'failed'}"
+        )
+        await audit_repo.append(
+            AuditEntry(
+                workspace_id=self._workspace_id,
+                task_id=task_uuid,
+                action=action,
+                agent_role="system",
+                summary=summary,
+                metadata={
+                    "trigger_reason": event.get("trigger_reason", ""),
+                    "strategy": event.get("strategy", ""),
+                    "target_role": event.get("target_role", ""),
+                    "max_replans_per_task": event.get("max_replans_per_task"),
+                },
+            )
+        )
 
     def _emit_sync(self, event_type: str, data: dict[str, Any]) -> None:
         """Emit an event synchronously."""
@@ -530,12 +585,17 @@ class RunTaskCommand:
 
         catalog: dict[str, Any] = {}
         for manifest in manifests:
+            connector_operations = {
+                c.id: list(getattr(c, "outbound_actions", []) or [])
+                for c in getattr(manifest, "connectors", [])
+            }
             catalog[manifest.id] = {
                 "name": manifest.name,
                 "enabled": bool(getattr(manifest, "enabled", True)),
                 "trust_level": str(getattr(manifest, "trust_level", "community")),
                 "capabilities": list(getattr(manifest, "capabilities", [])),
                 "connectors": [c.id for c in getattr(manifest, "connectors", [])],
+                "connector_operations": connector_operations,
                 "mcp_servers": [m.id for m in getattr(manifest, "mcp_servers", [])],
                 "actions": [a.id for a in getattr(manifest, "actions", [])],
             }

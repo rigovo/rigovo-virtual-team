@@ -13,6 +13,8 @@ class AgentOutput(TypedDict, total=False):
     tokens: int
     cost: float
     duration_ms: int
+    subtask_count: int
+    subtask_tokens: int
 
 
 class AgentMessage(TypedDict, total=False):
@@ -60,6 +62,9 @@ class TaskState(TypedDict, total=False):
     workspace_id: str
     description: str
     project_root: str
+    worktree_mode: str                  # project|git_worktree
+    worktree_root: str                  # Optional worktree root within project sandbox
+    filesystem_sandbox_mode: str        # project_root|worktree
 
     # --- Classification (set by classify node) ---
     classification: ClassificationData
@@ -93,8 +98,10 @@ class TaskState(TypedDict, total=False):
     budget_max_cost_per_task: float
     budget_max_tokens_per_task: int
     consultation_policy: dict[str, Any]  # Runtime consultation policy from rigovo.yml
+    subagent_policy: dict[str, Any]      # Runtime sub-agent spawn policy from rigovo.yml
     replan_policy: dict[str, Any]       # Runtime replanning policy from rigovo.yml
     replan_count: int                   # Replans already triggered in this task
+    replan_history: list[dict[str, Any]]  # Replan trigger/failure history for auditability
     deep_mode: str                      # never|final|ci|always|critical_only
     deep_pro: bool                      # Run deep in pro tier when deep enabled
     ci_mode: bool                       # Task was launched in CI mode
@@ -112,6 +119,8 @@ class TaskState(TypedDict, total=False):
     # --- Memory ---
     memories_to_store: list[str]        # Memory text to persist post-task
     memory_context_by_role: dict[str, str]  # Cached retrieved memory prompt section per role
+    memory_retrieval_log: dict[str, list[dict[str, Any]]]  # Retrieved memory IDs/scores by role
+    memory_learning_metrics: dict[str, Any]  # Per-task feedback metrics for memory loop
     integration_policy: dict[str, Any]  # Runtime policy for plugin/connector/MCP tooling
     integration_catalog: dict[str, Any]  # Loaded plugin capability catalog
 

@@ -43,7 +43,10 @@ class TestReplanNode(unittest.IsolatedAsyncioTestCase):
         assert result["current_agent_role"] == "coder"
         assert result["fix_packets"]
         assert "REPLAN REQUIRED #1" in result["fix_packets"][-1]
-        assert any(e.get("type") == "replan_triggered" for e in result["events"])
+        trigger = next(e for e in result["events"] if e.get("type") == "replan_triggered")
+        assert trigger["strategy"] == "deterministic"
+        assert trigger["trigger_reason"] == "policy_replan"
+        llm.invoke.assert_not_called()
 
     async def test_replan_node_fails_when_budget_exhausted(self):
         state: TaskState = {
@@ -59,5 +62,39 @@ class TestReplanNode(unittest.IsolatedAsyncioTestCase):
 
         result = await replan_node(state, llm)
         assert result["status"] == "replan_failed"
-        assert any(e.get("type") == "replan_failed" for e in result["events"])
+        failure = next(e for e in result["events"] if e.get("type") == "replan_failed")
+        assert failure["reason"] == "replan_budget_exhausted"
+        assert failure["strategy"] == "deterministic"
         llm.invoke.assert_not_called()
+
+    async def test_replan_node_can_use_llm_strategy(self):
+        state: TaskState = {
+            "task_id": "task-2",
+            "description": "Fix contracts",
+            "current_agent_role": "reviewer",
+            "team_config": {"agents": {"reviewer": {"id": "a2"}}},
+            "gate_results": {"passed": False, "reason": "contract_failed"},
+            "contract_stage": "output",
+            "replan_policy": {"max_replans_per_task": 2, "strategy": "llm"},
+            "replan_count": 0,
+            "fix_packets": [],
+            "events": [],
+        }
+        llm = AsyncMock()
+        llm.invoke.return_value = LLMResponse(
+            content=json.dumps(
+                {
+                    "adjustment": "Regenerate reviewer summary with required schema.",
+                    "target_role": "reviewer",
+                    "reasoning": "contract mismatch",
+                }
+            ),
+            usage=LLMUsage(input_tokens=30, output_tokens=20),
+            model="mock",
+        )
+
+        result = await replan_node(state, llm)
+        trigger = next(e for e in result["events"] if e.get("type") == "replan_triggered")
+        assert trigger["strategy"] == "llm"
+        assert trigger["trigger_reason"] == "contract_failure"
+        llm.invoke.assert_called_once()

@@ -147,10 +147,15 @@ class TestInit:
         assert "deep_mode" in orchestration
         assert "deep_pro" in orchestration
         assert "consultation" in orchestration
+        assert "subagents" in orchestration
 
         consultation = orchestration["consultation"]
         assert "enabled" in consultation
         assert "allowed_targets" in consultation
+
+        subagents = orchestration["subagents"]
+        assert "enabled" in subagents
+        assert "max_subtasks_per_agent_step" in subagents
 
     def test_init_creates_gitignore(self, tmp_project_dir):
         """Test that init creates or updates .gitignore."""

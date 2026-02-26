@@ -6,6 +6,7 @@ from pathlib import Path
 
 from rigovo.infrastructure.plugins.loader import PluginRegistry, discover_plugins
 from rigovo.infrastructure.plugins.manifest import PluginManifest
+import pytest
 
 
 def test_manifest_auto_capabilities() -> None:
@@ -80,3 +81,14 @@ def test_plugin_registry_honors_enabled_list(tmp_path: Path) -> None:
     assert enabled["plugin-a"] is False
     assert enabled["plugin-b"] is True
 
+
+def test_manifest_rejects_invalid_trust_level() -> None:
+    with pytest.raises(ValueError):
+        PluginManifest.model_validate(
+            {
+                "id": "bad-plugin",
+                "name": "Bad",
+                "version": "1.0.0",
+                "trust_level": "unknown",
+            }
+        )

@@ -41,6 +41,8 @@ class AuditAction(StrEnum):
     ENRICHMENT_COMPLETED = "enrichment_completed"
     MEMORY_STORED = "memory_stored"
     PATTERN_DETECTED = "pattern_detected"
+    REPLAN_TRIGGERED = "replan_triggered"
+    REPLAN_FAILED = "replan_failed"
 
     # System
     SYNC_STARTED = "sync_started"

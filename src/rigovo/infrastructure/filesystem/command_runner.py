@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import shlex
 import subprocess
+import re
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,47 @@ BLOCKED_INLINE_EXEC_FLAGS: dict[str, set[str]] = {
     "perl": {"-e"},
 }
 
+# Commands allowed to run from agents. Keep strict and explicit.
+ALLOWED_COMMANDS = {
+    "python",
+    "python3",
+    "pytest",
+    "uv",
+    "pip",
+    "pip3",
+    "npm",
+    "pnpm",
+    "yarn",
+    "node",
+    "go",
+    "cargo",
+    "rustc",
+    "javac",
+    "java",
+    "mvn",
+    "gradle",
+    "dotnet",
+    "bash",
+    "sh",
+    "zsh",
+    "git",
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "find",
+    "rg",
+    "grep",
+    "sed",
+    "awk",
+    "echo",
+    "sleep",
+    "pwd",
+    "which",
+    "env",
+}
+
 # Max output size (100KB)
 MAX_OUTPUT_SIZE = 102_400
 
@@ -64,8 +106,17 @@ class CommandRunner:
     - No shell=True (argv execution only)
     """
 
-    def __init__(self, project_root: Path) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        allowed_commands: set[str] | None = None,
+    ) -> None:
         self._root = project_root.resolve()
+        self._allowed_commands = {
+            str(cmd).strip().lower()
+            for cmd in (allowed_commands or ALLOWED_COMMANDS)
+            if str(cmd).strip()
+        }
 
     def run(
         self,
@@ -162,11 +213,15 @@ class CommandRunner:
             return "Command cannot be empty"
 
         binary = Path(argv[0]).name.lower()
+        if self._allowed_commands and binary not in self._allowed_commands:
+            return f"Command '{binary}' is not allow-listed"
         if binary in BLOCKED_BINARIES:
             return f"Blocked command: {binary}"
         for flag in argv[1:]:
             if flag in BLOCKED_INLINE_EXEC_FLAGS.get(binary, set()):
                 return f"Blocked inline execution flag '{flag}' for {binary}"
+            if re.search(r"[\n\r]", flag):
+                return "Blocked command argument contains newline characters"
 
         return None
 

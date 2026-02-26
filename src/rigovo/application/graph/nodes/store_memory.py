@@ -41,6 +41,7 @@ async def store_memory_node(
     embedding_provider: EmbeddingProvider | None = None,
 ) -> dict[str, Any]:
     """Extract and store memories from the completed task."""
+    events = list(state.get("events", []))
     agent_outputs = state.get("agent_outputs", {})
 
     # Build context from all agent outputs
@@ -90,6 +91,55 @@ async def store_memory_node(
     workspace_id = _parse_uuid(state.get("workspace_id"))
     source_task_id = _parse_uuid(state.get("task_id"))
     source_project_id = _derive_project_id(state.get("project_root"))
+    learning_metrics = {
+        "retrieved_memory_count": 0,
+        "reinforced_memory_count": 0,
+        "reinforcement_applied": False,
+        "retrieval_success_rate": 0.0,
+    }
+
+    # Reinforce retrieved memories only on successful-quality tasks.
+    retrieval_log = state.get("memory_retrieval_log", {}) or {}
+    reinforce = _should_reinforce_retrieved_memories(state)
+    if memory_repo and workspace_id and isinstance(retrieval_log, dict):
+        retrieved_ids: set[str] = set()
+        for entries in retrieval_log.values():
+            if not isinstance(entries, list):
+                continue
+            for item in entries:
+                if isinstance(item, dict):
+                    memory_id = str(item.get("memory_id", "")).strip()
+                    if memory_id:
+                        retrieved_ids.add(memory_id)
+
+        retrieved_count = len(retrieved_ids)
+        reinforced_count = 0
+        if retrieved_count > 0 and reinforce:
+            existing = await memory_repo.list_by_workspace(workspace_id, limit=5000)
+            by_id = {str(m.id): m for m in existing}
+            for memory_id in sorted(retrieved_ids):
+                memory = by_id.get(memory_id)
+                if memory is None:
+                    continue
+                memory.record_usage(project_id=source_project_id)
+                await memory_repo.save(memory)
+                reinforced_count += 1
+
+        learning_metrics = {
+            "retrieved_memory_count": retrieved_count,
+            "reinforced_memory_count": reinforced_count,
+            "reinforcement_applied": bool(reinforce and retrieved_count > 0),
+            "retrieval_success_rate": (
+                round(reinforced_count / retrieved_count, 3) if retrieved_count else 0.0
+            ),
+        }
+        if retrieved_count:
+            events.append(
+                {
+                    "type": "memory_feedback_recorded",
+                    **learning_metrics,
+                }
+            )
 
     if memory_repo and embedding_provider and workspace_id and parsed_memories:
         existing = await memory_repo.list_by_workspace(workspace_id, limit=500)
@@ -117,15 +167,20 @@ async def store_memory_node(
             await memory_repo.save(memory)
             persisted_count += 1
 
-    return {
-        "memories_to_store": memory_texts,
-        "status": "memories_extracted",
-        "events": state.get("events", []) + [{
+    events.append(
+        {
             "type": "memories_stored",
             "count": len(memory_texts),
             "persisted_count": persisted_count,
             "dedup_skipped": dedup_skipped,
-        }],
+        }
+    )
+
+    return {
+        "memories_to_store": memory_texts,
+        "memory_learning_metrics": learning_metrics,
+        "status": "memories_extracted",
+        "events": events,
     }
 
 
@@ -154,3 +209,15 @@ def _derive_project_id(project_root: Any) -> UUID | None:
     if not root:
         return None
     return uuid5(NAMESPACE_URL, root)
+
+
+def _should_reinforce_retrieved_memories(state: TaskState) -> bool:
+    """Only reinforce retrieved memories when quality outcomes are acceptable."""
+    gate_history = state.get("gate_history", []) or []
+    if isinstance(gate_history, list) and gate_history:
+        return all(bool(entry.get("passed", False)) for entry in gate_history if isinstance(entry, dict))
+    gate_results = state.get("gate_results", {}) or {}
+    if isinstance(gate_results, dict) and gate_results:
+        return bool(gate_results.get("passed", False) or gate_results.get("status") == "skipped")
+    # If no gate data exists, default to conservative no-reinforcement.
+    return False

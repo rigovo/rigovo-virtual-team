@@ -603,6 +603,11 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "parallel_agents": bool(orchestration.parallel_agents),
                 "max_retries": int(orchestration.max_retries),
                 "consultation_enabled": bool(orchestration.consultation.enabled),
+                "subagents": {
+                    "enabled": bool(orchestration.subagents.enabled),
+                    "max_subtasks_per_agent_step": int(orchestration.subagents.max_subtasks_per_agent_step),
+                    "max_subtask_rounds": int(orchestration.subagents.max_subtask_rounds),
+                },
                 "replan": {
                     "enabled": bool(orchestration.replan.enabled),
                     "max_replans_per_task": int(orchestration.replan.max_replans_per_task),
@@ -615,6 +620,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "enable_mcp_tools": bool(plugins.enable_mcp_tools),
                 "enable_action_tools": bool(plugins.enable_action_tools),
                 "min_trust_level": str(plugins.min_trust_level),
+                "allowed_shell_commands": list(plugins.allowed_shell_commands),
                 "dry_run": bool(plugins.dry_run),
             },
             "runtime": {
@@ -626,6 +632,31 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "quality_gate_enabled": True,
                 "memory_learning_enabled": True,
             },
+        }
+
+    @app.get("/v1/memory/metrics")
+    async def memory_metrics() -> dict[str, Any]:
+        """Aggregate memory-learning metrics for cross-run observability."""
+        try:
+            from rigovo.infrastructure.persistence.sqlite_memory_repo import SqliteMemoryRepository
+
+            repo = SqliteMemoryRepository(container.get_db())
+            memories = await repo.list_by_workspace(_workspace_id(), limit=5000)
+        except Exception:
+            memories = []
+
+        total = len(memories)
+        total_usage = sum(int(m.usage_count or 0) for m in memories)
+        used = sum(1 for m in memories if int(m.usage_count or 0) > 0)
+        cross_project_total = sum(int(m.cross_project_usage or 0) for m in memories)
+        return {
+            "total_memories": total,
+            "used_memories": used,
+            "unused_memories": max(total - used, 0),
+            "total_usage_count": total_usage,
+            "cross_project_usage_total": cross_project_total,
+            "avg_usage_per_memory": round(total_usage / total, 3) if total else 0.0,
+            "utilization_rate": round(used / total, 3) if total else 0.0,
         }
 
     @app.get("/v1/control/state")

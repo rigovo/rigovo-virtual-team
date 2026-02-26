@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,8 @@ logger = logging.getLogger(__name__)
 # Maximum characters in a tool result before truncation.
 # Prevents 50KB+ file reads from blowing up context windows.
 MAX_TOOL_RESULT_CHARS = 30_000
+MAX_INTEGRATION_PAYLOAD_CHARS = 20_000
+OPERATION_PATTERN = re.compile(r"^[a-zA-Z0-9_.:-]{1,64}$")
 
 
 def _truncate_result(result_str: str) -> str:
@@ -48,12 +51,22 @@ class ToolExecutor:
         project_root: Path,
         integration_catalog: dict[str, Any] | None = None,
         integration_policy: dict[str, Any] | None = None,
+        worktree_mode: str = "project",
+        worktree_root: str = "",
+        filesystem_sandbox_mode: str = "project_root",
     ) -> None:
-        self._reader = ProjectReader(project_root)
-        self._writer = CodeWriter(project_root)
-        self._runner = CommandRunner(project_root)
         self._integration_catalog = integration_catalog or {}
         self._integration_policy = integration_policy or {}
+        self._project_root = project_root.resolve()
+        self._worktree_mode = str(worktree_mode or "project").strip().lower()
+        self._worktree_root = str(worktree_root or "").strip()
+        self._filesystem_sandbox_mode = str(filesystem_sandbox_mode or "project_root").strip().lower()
+        self._execution_root = self._resolve_execution_root()
+        allowed_commands = set(self._integration_policy.get("allowed_shell_commands", []) or [])
+
+        self._reader = ProjectReader(self._execution_root)
+        self._writer = CodeWriter(self._execution_root)
+        self._runner = CommandRunner(self._execution_root, allowed_commands=allowed_commands or None)
 
         self._handlers: dict[str, Any] = {
             "read_file": self._handle_read_file,
@@ -64,6 +77,32 @@ class ToolExecutor:
             "read_dependencies": self._handle_read_dependencies,
             "invoke_integration": self._handle_invoke_integration,
         }
+
+    def _resolve_execution_root(self) -> Path:
+        """Resolve effective filesystem sandbox root based on worktree policy."""
+        if self._filesystem_sandbox_mode not in {"project_root", "worktree"}:
+            raise ValueError(
+                f"Invalid filesystem_sandbox_mode '{self._filesystem_sandbox_mode}'"
+            )
+        if self._worktree_mode not in {"project", "git_worktree"}:
+            raise ValueError(f"Invalid worktree_mode '{self._worktree_mode}'")
+
+        if self._filesystem_sandbox_mode == "project_root" or self._worktree_mode == "project":
+            return self._project_root
+
+        # worktree sandbox requested
+        if not self._worktree_root:
+            raise ValueError("worktree_root is required when using git_worktree mode")
+        candidate = Path(self._worktree_root).expanduser().resolve()
+        try:
+            candidate.relative_to(self._project_root)
+        except ValueError as exc:
+            raise PermissionError(
+                "worktree_root must stay within project_root sandbox"
+            ) from exc
+        if not candidate.exists() or not candidate.is_dir():
+            raise ValueError(f"Configured worktree_root does not exist: {candidate}")
+        return candidate
 
     async def execute(self, tool_name: str, tool_input: dict[str, Any]) -> str:
         """
@@ -175,7 +214,13 @@ class ToolExecutor:
         operation = str(inputs.get("operation", "")).strip()
         payload = inputs.get("payload", {})
 
-        policy_error = self._validate_integration_policy(kind, plugin_id, target_id)
+        policy_error = self._validate_integration_policy(
+            kind=kind,
+            plugin_id=plugin_id,
+            target_id=target_id,
+            operation=operation,
+            payload=payload,
+        )
         if policy_error:
             return {
                 "error": policy_error,
@@ -200,13 +245,30 @@ class ToolExecutor:
             "message": "Integration request accepted by policy gate.",
         }
 
-    def _validate_integration_policy(self, kind: str, plugin_id: str, target_id: str) -> str | None:
+    def _validate_integration_policy(
+        self,
+        kind: str,
+        plugin_id: str,
+        target_id: str,
+        operation: str,
+        payload: Any,
+    ) -> str | None:
         if kind not in {"connector", "mcp", "action"}:
             return "Invalid integration kind; expected connector|mcp|action"
         if not plugin_id:
             return "Missing required field: plugin_id"
         if not target_id:
             return "Missing required field: target_id"
+        if not operation:
+            return "Missing required field: operation"
+        if not OPERATION_PATTERN.match(operation):
+            return "Invalid operation format; use alnum/._:- and max 64 chars"
+        if not isinstance(payload, dict):
+            return "Payload must be an object"
+        if len(json.dumps(payload, default=str)) > MAX_INTEGRATION_PAYLOAD_CHARS:
+            return (
+                f"Payload too large; max {MAX_INTEGRATION_PAYLOAD_CHARS} chars"
+            )
 
         policy_flag_by_kind = {
             "connector": "enable_connector_tools",
@@ -225,6 +287,12 @@ class ToolExecutor:
             return f"Plugin '{plugin_id}' not found in integration catalog"
         if not bool(plugin.get("enabled", True)):
             return f"Plugin '{plugin_id}' is disabled"
+        declared_capabilities = set(plugin.get("capabilities", []) or [])
+        required_cap = {"connector": "connector", "mcp": "mcp", "action": "action"}[kind]
+        if declared_capabilities and required_cap not in declared_capabilities:
+            return (
+                f"Plugin '{plugin_id}' does not declare '{required_cap}' capability"
+            )
 
         min_trust = str(self._integration_policy.get("min_trust_level", "verified")).lower()
         plugin_trust = str(plugin.get("trust_level", "community")).lower()
@@ -244,4 +312,16 @@ class ToolExecutor:
             return (
                 f"Target '{target_id}' not exposed by plugin '{plugin_id}' for kind '{kind}'"
             )
+        if kind == "connector":
+            connector_ops = plugin.get("connector_operations", {}) or {}
+            allowed_ops = connector_ops.get(target_id, [])
+            if isinstance(allowed_ops, list) and allowed_ops and operation not in set(allowed_ops):
+                return (
+                    f"Operation '{operation}' not allowed for connector target '{target_id}'"
+                )
+        if kind == "action":
+            if operation not in {"run", target_id}:
+                return (
+                    f"Operation '{operation}' not allowed for action target '{target_id}'"
+                )
         return None

@@ -7,6 +7,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 from typing import Any
+from uuid import uuid4
 
 from rigovo.application.graph.nodes.store_memory import store_memory_node
 from rigovo.application.graph.nodes.approval import plan_approval_node, commit_approval_node
@@ -220,6 +221,81 @@ class TestStoreMemoryNode(unittest.IsolatedAsyncioTestCase):
         assert result["events"][0]["dedup_skipped"] == 1
         assert result["events"][0]["persisted_count"] == 1
         assert len(result["memories_to_store"]) == 1
+
+    async def test_store_memory_node_reinforces_retrieved_memories_on_pass(self):
+        memory_id = uuid4()
+        workspace_id = uuid4()
+        source_project_id = uuid4()
+        state: TaskState = {
+            "task_id": str(uuid4()),
+            "workspace_id": str(workspace_id),
+            "project_root": str(source_project_id),
+            "description": "Task",
+            "agent_outputs": {"coder": {"summary": "Done"}},
+            "memory_retrieval_log": {
+                "coder": [{"memory_id": str(memory_id), "score": 0.9}],
+            },
+            "gate_history": [{"role": "coder", "passed": True}],
+            "events": [],
+        }
+        mock_llm = MockLLMProvider(response_content="[]")
+        existing = MagicMock()
+        existing.id = memory_id
+        existing.content = "use retries with backoff"
+        existing.record_usage = MagicMock()
+        memory_repo = AsyncMock()
+        memory_repo.list_by_workspace.return_value = [existing]
+
+        result = await store_memory_node(
+            state,
+            mock_llm,
+            memory_repo=memory_repo,
+            embedding_provider=None,
+        )
+
+        feedback_event = next(e for e in result["events"] if e.get("type") == "memory_feedback_recorded")
+        assert feedback_event["retrieved_memory_count"] == 1
+        assert feedback_event["reinforced_memory_count"] == 1
+        assert result["memory_learning_metrics"]["retrieval_success_rate"] == 1.0
+        existing.record_usage.assert_called_once()
+        # One save for reinforced retrieval; no extracted memories in this test.
+        assert memory_repo.save.await_count == 1
+
+    async def test_store_memory_node_skips_reinforcement_on_failed_gates(self):
+        memory_id = uuid4()
+        workspace_id = uuid4()
+        state: TaskState = {
+            "task_id": str(uuid4()),
+            "workspace_id": str(workspace_id),
+            "description": "Task",
+            "agent_outputs": {"coder": {"summary": "Done"}},
+            "memory_retrieval_log": {
+                "coder": [{"memory_id": str(memory_id), "score": 0.6}],
+            },
+            "gate_history": [{"role": "coder", "passed": False}],
+            "events": [],
+        }
+        mock_llm = MockLLMProvider(response_content="[]")
+        existing = MagicMock()
+        existing.id = memory_id
+        existing.content = "memory"
+        existing.record_usage = MagicMock()
+        memory_repo = AsyncMock()
+        memory_repo.list_by_workspace.return_value = [existing]
+
+        result = await store_memory_node(
+            state,
+            mock_llm,
+            memory_repo=memory_repo,
+            embedding_provider=None,
+        )
+
+        feedback_event = next(e for e in result["events"] if e.get("type") == "memory_feedback_recorded")
+        assert feedback_event["retrieved_memory_count"] == 1
+        assert feedback_event["reinforced_memory_count"] == 0
+        assert result["memory_learning_metrics"]["reinforcement_applied"] is False
+        existing.record_usage.assert_not_called()
+        memory_repo.save.assert_not_awaited()
 
 
 class TestPlanApprovalNode(unittest.IsolatedAsyncioTestCase):

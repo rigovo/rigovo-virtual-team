@@ -4,6 +4,7 @@ import pytest
 
 from rigovo.config_schema import (
     ConsultationSchema,
+    SubAgentSchema,
     RigovoConfig,
     ProjectSchema,
     TeamSchema,
@@ -99,3 +100,24 @@ class TestRigovoConfigDefaults:
 
         assert consult.enabled is True
         assert "reviewer" in consult.allowed_targets
+
+    def test_subagent_schema_defaults(self):
+        """Sub-agent policy defaults should be present and bounded."""
+        subagents = SubAgentSchema()
+
+        assert subagents.enabled is True
+        assert subagents.max_subtasks_per_agent_step == 3
+        assert subagents.max_subtask_rounds == 10
+
+    def test_subagent_policy_from_root_config(self):
+        """Root config should include orchestration subagent defaults."""
+        config = RigovoConfig()
+        subagents = config.orchestration.subagents
+
+        assert subagents.enabled is True
+        assert subagents.max_subtasks_per_agent_step >= 0
+
+    def test_replan_policy_strategy_default(self):
+        """Replan policy should default to deterministic strategy."""
+        config = RigovoConfig()
+        assert config.orchestration.replan.strategy == "deterministic"

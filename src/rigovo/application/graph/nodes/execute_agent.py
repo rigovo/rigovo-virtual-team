@@ -61,6 +61,8 @@ ROLE_MAX_TOKENS: dict[str, int] = {
 
 CONSULT_MAX_QUESTION_CHARS = 1200
 CONSULT_MAX_RESPONSE_CHARS = 1200
+SUBAGENT_MAX_SUBTASKS_PER_STEP = 3
+SUBAGENT_MAX_ROUNDS = 10
 
 # Role-to-role consultation policy. Advisory-only, never full step completion.
 CONSULT_ALLOWED_TARGETS: dict[str, set[str]] = {
@@ -105,6 +107,27 @@ def _resolve_consult_policy(state: TaskState | None) -> tuple[bool, int, int, di
                 allowed_targets = parsed
 
     return enabled, max_question_chars, max_response_chars, allowed_targets
+
+
+def _resolve_subagent_policy(state: TaskState | None) -> tuple[bool, int, int]:
+    """Resolve sub-agent spawn policy from state with safe defaults."""
+    enabled = True
+    max_subtasks = SUBAGENT_MAX_SUBTASKS_PER_STEP
+    max_rounds = SUBAGENT_MAX_ROUNDS
+    if not state:
+        return enabled, max_subtasks, max_rounds
+    raw_policy = state.get("subagent_policy", {}) or {}
+    if not isinstance(raw_policy, dict):
+        return enabled, max_subtasks, max_rounds
+
+    enabled = bool(raw_policy.get("enabled", enabled))
+    raw_max_subtasks = raw_policy.get("max_subtasks_per_agent_step", max_subtasks)
+    if isinstance(raw_max_subtasks, int) and raw_max_subtasks >= 0:
+        max_subtasks = raw_max_subtasks
+    raw_max_rounds = raw_policy.get("max_subtask_rounds", max_rounds)
+    if isinstance(raw_max_rounds, int) and raw_max_rounds > 0:
+        max_rounds = raw_max_rounds
+    return enabled, max_subtasks, max_rounds
 
 
 class BudgetExceededError(Exception):
@@ -276,25 +299,31 @@ async def _resolve_memory_context_for_role(
     memory_repo: MemoryRepository | None,
     embedding_provider: EmbeddingProvider | None,
     memory_retriever: MemoryRetriever | None,
-) -> tuple[str, dict[str, str], list[dict[str, Any]]]:
+) -> tuple[str, dict[str, str], dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
     """Retrieve, rank, and render relevant memory context for one role."""
     existing = state.get("memory_context_by_role", {}) or {}
     memory_context_by_role: dict[str, str] = {}
     if isinstance(existing, dict):
         memory_context_by_role = {str(role): str(text) for role, text in existing.items()}
+    existing_log = state.get("memory_retrieval_log", {}) or {}
+    memory_retrieval_log: dict[str, list[dict[str, Any]]] = {}
+    if isinstance(existing_log, dict):
+        for role, entries in existing_log.items():
+            if isinstance(entries, list):
+                memory_retrieval_log[str(role)] = [e for e in entries if isinstance(e, dict)]
     if current_role in memory_context_by_role:
-        return memory_context_by_role[current_role], memory_context_by_role, []
+        return memory_context_by_role[current_role], memory_context_by_role, memory_retrieval_log, []
 
     if not memory_repo or not embedding_provider:
-        return "", memory_context_by_role, []
+        return "", memory_context_by_role, memory_retrieval_log, []
 
     workspace_id = _parse_state_uuid(state.get("workspace_id"))
     if workspace_id is None:
-        return "", memory_context_by_role, []
+        return "", memory_context_by_role, memory_retrieval_log, []
 
     task_description = str(state.get("description", "")).strip()
     if not task_description:
-        return "", memory_context_by_role, []
+        return "", memory_context_by_role, memory_retrieval_log, []
 
     retriever = memory_retriever or MemoryRetriever()
     events: list[dict[str, Any]] = []
@@ -319,11 +348,14 @@ async def _resolve_memory_context_for_role(
         )
         memory_section_text = retrieved.to_context_section()
         memory_context_by_role[current_role] = memory_section_text
-
-        project_id = _derive_project_id(state.get("project_root"))
-        for scored in retrieved.memories:
-            scored.memory.record_usage(project_id=project_id)
-            await memory_repo.save(scored.memory)
+        memory_retrieval_log[current_role] = [
+            {
+                "memory_id": str(scored.memory.id),
+                "score": round(float(scored.score), 6),
+                "memory_type": scored.memory.memory_type.value,
+            }
+            for scored in retrieved.memories
+        ]
 
         avg_score = (
             sum(sm.score for sm in retrieved.memories) / max(len(retrieved.memories), 1)
@@ -341,7 +373,7 @@ async def _resolve_memory_context_for_role(
                 "top_score": round(top_score, 3),
             }
         )
-        return memory_section_text, memory_context_by_role, events
+        return memory_section_text, memory_context_by_role, memory_retrieval_log, events
     except Exception as exc:
         logger.warning("Memory retrieval failed for role '%s': %s", current_role, exc)
         events.append(
@@ -352,7 +384,7 @@ async def _resolve_memory_context_for_role(
             }
         )
         memory_context_by_role[current_role] = ""
-        return "", memory_context_by_role, events
+        return "", memory_context_by_role, memory_retrieval_log, events
 
 
 def _check_budget_guards(state: TaskState, current_role: str) -> dict[str, Any] | None:
@@ -581,6 +613,7 @@ async def _run_subtask(
     system_prompt: str,
     stream_callback: Any | None = None,
     batch_timeout: int = DEFAULT_BATCH_TIMEOUT,
+    max_rounds: int = SUBAGENT_MAX_ROUNDS,
 ) -> dict[str, Any]:
     """
     Run a sub-agent loop for a spawned subtask.
@@ -622,8 +655,7 @@ async def _run_subtask(
         except Exception as exc:
             logger.debug("Stream callback failed for subtask start: %s", exc)
 
-    # Run a mini agentic loop (max 10 rounds for subtasks)
-    text, inp_tok, out_tok, files = await _run_agentic_loop(
+    text, inp_tok, out_tok, files, _ = await _run_agentic_loop(
         llm=llm,
         messages=sub_messages,
         tool_defs=sub_tool_defs,
@@ -632,7 +664,7 @@ async def _run_subtask(
         role="subtask",
         stream_callback=stream_callback,
         batch_timeout=batch_timeout,
-        max_rounds=10,
+        max_rounds=max_rounds,
     )
 
     return {
@@ -656,7 +688,7 @@ async def _run_agentic_loop(
     stream_callback: Any | None = None,
     batch_timeout: int = DEFAULT_BATCH_TIMEOUT,
     max_rounds: int = MAX_TOOL_ROUNDS,
-) -> tuple[str, int, int, list[str]]:
+) -> tuple[str, int, int, list[str], dict[str, Any]]:
     """
     Run the agentic tool loop: LLM calls tools → execute → feed back → repeat.
 
@@ -666,11 +698,14 @@ async def _run_agentic_loop(
     total_input_tokens = 0
     total_output_tokens = 0
     all_text_parts: list[str] = []
+    subtask_count_ref = {"value": 0}
+    subtask_token_total_ref = {"value": 0}
     agent_messages = agent_messages if agent_messages is not None else []
     events = events if events is not None else []
     temperature = agent_config.get("temperature", DEFAULT_TEMPERATURE)
     # Use per-role max_tokens for smarter token allocation
     max_tokens = agent_config.get("max_tokens") or ROLE_MAX_TOKENS.get(role, DEFAULT_MAX_TOKENS)
+    subagent_enabled, max_subtasks_per_step, max_subtask_rounds = _resolve_subagent_policy(state)
 
     for round_num in range(max_rounds):
         logger.info(
@@ -735,18 +770,63 @@ async def _run_agentic_loop(
 
         async def _exec_single_tool(tc: dict) -> tuple[dict, str]:
             """Execute a single tool call, handling spawn_subtask as a meta-tool."""
+            nonlocal total_input_tokens, total_output_tokens
             if tc["name"] == "spawn_subtask":
-                # Sub-agent spawning — run a child agentic loop
-                sub_result = await _run_subtask(
-                    llm=llm,
-                    tool_executor=tool_executor,
-                    description=tc["input"].get("description", ""),
-                    files_context=tc["input"].get("files_context", []),
-                    system_prompt=agent_config.get("system_prompt", "You are a coding agent."),
-                    stream_callback=stream_callback,
-                    batch_timeout=batch_timeout,
-                )
-                result_str = json.dumps(sub_result, default=str)
+                if not subagent_enabled:
+                    result_str = json.dumps({
+                        "status": "blocked",
+                        "reason": "subagents_disabled_by_policy",
+                    })
+                    events.append({
+                        "type": "subtask_blocked",
+                        "role": role,
+                        "reason": "subagents_disabled_by_policy",
+                    })
+                elif subtask_count_ref["value"] >= max_subtasks_per_step:
+                    result_str = json.dumps({
+                        "status": "blocked",
+                        "reason": "subtask_limit_reached",
+                        "max_subtasks_per_agent_step": max_subtasks_per_step,
+                    })
+                    events.append({
+                        "type": "subtask_blocked",
+                        "role": role,
+                        "reason": "subtask_limit_reached",
+                        "max_subtasks_per_agent_step": max_subtasks_per_step,
+                    })
+                else:
+                    subtask_count_ref["value"] += 1
+                    subtask_description = str(tc["input"].get("description", "")).strip()
+                    events.append({
+                        "type": "subtask_spawned",
+                        "role": role,
+                        "subtask_index": subtask_count_ref["value"],
+                        "description": subtask_description[:140],
+                    })
+                    sub_result = await _run_subtask(
+                        llm=llm,
+                        tool_executor=tool_executor,
+                        description=subtask_description,
+                        files_context=tc["input"].get("files_context", []),
+                        system_prompt=agent_config.get("system_prompt", "You are a coding agent."),
+                        stream_callback=stream_callback,
+                        batch_timeout=batch_timeout,
+                        max_rounds=max_subtask_rounds,
+                    )
+                    sub_in = int(sub_result.get("input_tokens", 0) or 0)
+                    sub_out = int(sub_result.get("output_tokens", 0) or 0)
+                    subtask_token_total_ref["value"] += sub_in + sub_out
+                    total_input_tokens += sub_in
+                    total_output_tokens += sub_out
+                    events.append({
+                        "type": "subtask_complete",
+                        "role": role,
+                        "subtask_index": subtask_count_ref["value"],
+                        "input_tokens": sub_in,
+                        "output_tokens": sub_out,
+                        "files_changed": len(sub_result.get("files_changed", []) or []),
+                    })
+                    result_str = json.dumps(sub_result, default=str)
             elif tc["name"] == "consult_agent":
                 if state is None:
                     result_str = json.dumps(
@@ -831,7 +911,10 @@ async def _run_agentic_loop(
     files_changed = _extract_written_files(messages)
 
     final_text = "\n".join(all_text_parts)
-    return final_text, total_input_tokens, total_output_tokens, files_changed
+    return final_text, total_input_tokens, total_output_tokens, files_changed, {
+        "subtask_count": subtask_count_ref["value"],
+        "subtask_tokens": subtask_token_total_ref["value"],
+    }
 
 
 def _extract_written_files(messages: list[dict[str, Any]]) -> list[str]:
@@ -925,7 +1008,7 @@ async def execute_agent_node(
         return budget_error
 
     # --- Memory retrieval and context assembly ---
-    memory_section_text, memory_context_by_role, memory_events = await _resolve_memory_context_for_role(
+    memory_section_text, memory_context_by_role, memory_retrieval_log, memory_events = await _resolve_memory_context_for_role(
         state=state,
         current_role=current_role,
         memory_repo=memory_repo,
@@ -952,6 +1035,9 @@ async def execute_agent_node(
         project_root,
         integration_catalog=state.get("integration_catalog", {}),
         integration_policy=state.get("integration_policy", {}),
+        worktree_mode=str(state.get("worktree_mode", "project")),
+        worktree_root=str(state.get("worktree_root", "")),
+        filesystem_sandbox_mode=str(state.get("filesystem_sandbox_mode", "project_root")),
     )
 
     # --- LLM setup ---
@@ -976,7 +1062,7 @@ async def execute_agent_node(
             # --- Agentic tool loop (for agents with tools) ---
             # Always use batch invoke for tool-calling agents.
             # This is the standard pattern: invoke → tools → invoke → tools → done.
-            final_text, input_tokens, output_tokens, files_changed = await _run_agentic_loop(
+            final_text, input_tokens, output_tokens, files_changed, subtask_metrics = await _run_agentic_loop(
                 llm=llm,
                 messages=messages,
                 tool_defs=tool_defs,
@@ -1012,6 +1098,7 @@ async def execute_agent_node(
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
             )
+            subtask_metrics = {"subtask_count": 0, "subtask_tokens": 0}
         else:
             # --- Batch mode for text-only agents (no tools, no streaming) ---
             response = await asyncio.wait_for(
@@ -1030,6 +1117,7 @@ async def execute_agent_node(
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
             )
+            subtask_metrics = {"subtask_count": 0, "subtask_tokens": 0}
 
     except asyncio.TimeoutError:
         duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)
@@ -1064,6 +1152,8 @@ async def execute_agent_node(
         "tokens": total_tokens,
         "cost": cost,
         "duration_ms": duration_ms,
+        "subtask_count": int(subtask_metrics.get("subtask_count", 0) or 0),
+        "subtask_tokens": int(subtask_metrics.get("subtask_tokens", 0) or 0),
     }
 
     # --- Contract guards (output) ---
@@ -1089,6 +1179,7 @@ async def execute_agent_node(
         "duration_ms": duration_ms,
         "files_changed": files_changed,
         "summary": final_text,
+        "subtask_count": int(subtask_metrics.get("subtask_count", 0) or 0),
     })
 
     return {
@@ -1106,6 +1197,7 @@ async def execute_agent_node(
         "status": f"agent_{current_role}_complete",
         "agent_messages": agent_messages_log,
         "memory_context_by_role": memory_context_by_role,
+        "memory_retrieval_log": memory_retrieval_log,
         "events": events,
     }
 
@@ -1193,6 +1285,7 @@ async def execute_agents_parallel(
         role_state["agent_outputs"] = dict(base.get("agent_outputs", {}))
         role_state["cost_accumulator"] = dict(base.get("cost_accumulator", {}))
         role_state["memory_context_by_role"] = dict(base.get("memory_context_by_role", {}))
+        role_state["memory_retrieval_log"] = dict(base.get("memory_retrieval_log", {}))
         return role_state
 
     tasks = []
@@ -1216,6 +1309,7 @@ async def execute_agents_parallel(
     merged_outputs = dict(state.get("agent_outputs", {}))
     merged_costs = dict(state.get("cost_accumulator", {}))
     merged_memory_context = dict(state.get("memory_context_by_role", {}))
+    merged_memory_log = dict(state.get("memory_retrieval_log", {}))
     merged_events = list(state.get("events", []))
 
     for i, result in enumerate(results):
@@ -1246,6 +1340,28 @@ async def execute_agents_parallel(
                     "cost": merged_outputs[role].get("cost", 0.0),
                 }
             merged_memory_context.update(result.get("memory_context_by_role", {}))
+            role_memory_log = result.get("memory_retrieval_log", {})
+            if isinstance(role_memory_log, dict):
+                for role_key, entries in role_memory_log.items():
+                    if not isinstance(entries, list):
+                        continue
+                    existing_entries = merged_memory_log.get(role_key, [])
+                    if not isinstance(existing_entries, list):
+                        existing_entries = []
+                    seen = {
+                        str(e.get("memory_id", ""))
+                        for e in existing_entries
+                        if isinstance(e, dict)
+                    }
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        mem_id = str(entry.get("memory_id", ""))
+                        if not mem_id or mem_id in seen:
+                            continue
+                        existing_entries.append(entry)
+                        seen.add(mem_id)
+                    merged_memory_log[role_key] = existing_entries
 
             # Child role states start with events=[], so this extends only new events.
             merged_events.extend(result.get("events", []))
@@ -1254,6 +1370,7 @@ async def execute_agents_parallel(
         "agent_outputs": merged_outputs,
         "cost_accumulator": merged_costs,
         "memory_context_by_role": merged_memory_context,
+        "memory_retrieval_log": merged_memory_log,
         "events": merged_events,
         "status": "parallel_complete",
     }

@@ -103,12 +103,20 @@ class TestYAMLIO:
         assert "deep_pro" in orchestration
         assert "budget" in orchestration
         assert "consultation" in orchestration
+        assert "subagents" in orchestration
+        assert "replan" in orchestration
 
         consultation = orchestration["consultation"]
         assert "enabled" in consultation
         assert "max_question_chars" in consultation
         assert "max_response_chars" in consultation
         assert "allowed_targets" in consultation
+
+        subagents = orchestration["subagents"]
+        assert "enabled" in subagents
+        assert "max_subtasks_per_agent_step" in subagents
+        assert "max_subtask_rounds" in subagents
+        assert orchestration["replan"]["strategy"] == "deterministic"
 
         assert "database" in reloaded
         database = reloaded["database"]

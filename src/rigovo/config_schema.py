@@ -161,6 +161,7 @@ class ReplanSchema(BaseModel):
     trigger_retry_count: int = 3
     trigger_gate_violation_count: int = 5
     trigger_contract_failures: bool = True
+    strategy: str = "deterministic"  # deterministic|llm
 
 
 class OrchestrationSchema(BaseModel):
@@ -174,6 +175,7 @@ class OrchestrationSchema(BaseModel):
     deep_mode: str = "final"              # never|final|ci|always|critical_only
     deep_pro: bool = False                # Use larger deep model when deep is enabled
     consultation: ConsultationSchema = Field(default_factory=lambda: ConsultationSchema())
+    subagents: SubAgentSchema = Field(default_factory=lambda: SubAgentSchema())
     replan: ReplanSchema = Field(default_factory=lambda: ReplanSchema())
 
     budget: BudgetSchema = Field(default_factory=BudgetSchema)
@@ -195,6 +197,14 @@ class ConsultationSchema(BaseModel):
         "sre": ["devops", "security", "reviewer", "lead"],
         "lead": ["planner", "coder", "reviewer", "security", "qa", "devops", "sre"],
     })
+
+
+class SubAgentSchema(BaseModel):
+    """Dynamic sub-agent spawning policy for agentic tool loops."""
+
+    enabled: bool = True
+    max_subtasks_per_agent_step: int = 3
+    max_subtask_rounds: int = 10
 
 
 class CloudSchema(BaseModel):
@@ -243,6 +253,7 @@ class PluginsSchema(BaseModel):
     enable_action_tools: bool = False
     min_trust_level: str = "verified"  # community|verified|internal
     allowed_plugin_ids: list[str] = Field(default_factory=list)
+    allowed_shell_commands: list[str] = Field(default_factory=list)
     dry_run: bool = True
 
 
