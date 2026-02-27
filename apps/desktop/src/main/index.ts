@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { ChildProcess, spawn } from "node:child_process";
-import { statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 
 /* ------------------------------------------------------------------ */
 /*  Engine lifecycle – same semantics as the old Tauri Rust backend   */
@@ -39,10 +39,21 @@ function sanitizeEnginePort(raw?: number): number {
   return raw;
 }
 
+const ALLOWED_EXTERNAL_PROTOCOLS = new Set([
+  "https:",
+  "http:",
+  "vscode:",
+  "cursor:",
+  "zed:",
+  "windsurf:",
+  "phpstorm:",
+  "idea:",
+]);
+
 function isSafeExternalUrl(raw: string): boolean {
   try {
     const u = new URL(raw);
-    return u.protocol === "https:" || u.protocol === "http:";
+    return ALLOWED_EXTERNAL_PROTOCOLS.has(u.protocol);
   } catch {
     return false;
   }
@@ -131,6 +142,46 @@ function stopEngine(): EngineStatus {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Project file scanner                                              */
+/* ------------------------------------------------------------------ */
+
+const SCAN_EXCLUDE = new Set([
+  "node_modules", ".git", ".hg", ".svn",
+  "__pycache__", ".venv", "venv", "env",
+  "dist", "build", ".next", ".nuxt", ".output",
+  ".rigovo", ".rigour", ".turbo", ".cache",
+  "coverage", ".nyc_output", "tmp", ".tmp",
+]);
+
+function walkProjectFiles(
+  root: string,
+  dir: string,
+  results: string[],
+  depth: number,
+  maxDepth: number,
+  maxFiles: number,
+): void {
+  if (depth > maxDepth || results.length >= maxFiles) return;
+  let entries: ReturnType<typeof readdirSync>;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (results.length >= maxFiles) break;
+    if (entry.name.startsWith(".") && entry.name !== ".env") continue;
+    if (SCAN_EXCLUDE.has(entry.name)) continue;
+    const fullPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkProjectFiles(root, fullPath, results, depth + 1, maxDepth, maxFiles);
+    } else if (entry.isFile()) {
+      results.push(relative(root, fullPath));
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  IPC handlers                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -156,6 +207,19 @@ function registerIpc(): void {
       throw new Error("Blocked unsafe external URL");
     }
     return shell.openExternal(url);
+  });
+
+  // List files in a project directory (for @ mention autocomplete)
+  ipcMain.handle("fs:list-project-files", (_event, projectPath: string) => {
+    try {
+      const stats = statSync(projectPath);
+      if (!stats.isDirectory()) return [];
+      const results: string[] = [];
+      walkProjectFiles(projectPath, projectPath, results, 0, 5, 800);
+      return results;
+    } catch {
+      return [];
+    }
   });
 
   // Folder picker dialog — user selects a project directory

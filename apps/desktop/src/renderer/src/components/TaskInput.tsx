@@ -1,6 +1,3 @@
-/* ------------------------------------------------------------------ */
-/*  TaskInput — premium fixed input dock, Codex-inspired               */
-/* ------------------------------------------------------------------ */
 import {
   FormEvent,
   useRef,
@@ -10,6 +7,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import type { Tier } from "../types";
 
 export interface TaskInputHandle {
   focus: () => void;
@@ -31,22 +29,25 @@ interface TaskInputProps {
   onOpenSettings: () => void;
   onAddFiles: () => void;
   mentionFiles: string[];
+  taskTier?: Tier;
+  onTierChange?: (tier: Tier) => void;
 }
 
-type SlashCommand = {
-  id: string;
-  description: string;
-};
+type SlashCommand = { id: string; description: string };
 
 const SLASH_COMMANDS: SlashCommand[] = [
-  { id: "new-thread", description: "Start a fresh thread" },
-  { id: "settings", description: "Open settings" },
-  { id: "skills", description: "Open skills page" },
+  { id: "new-thread",   description: "Start a fresh thread" },
+  { id: "settings",    description: "Open settings" },
+  { id: "skills",      description: "Open skills page" },
   { id: "automations", description: "Open automations page" },
-  { id: "documents", description: "Open documents page" },
-  { id: "language", description: "Open language page" },
   { id: "open-folder", description: "Open project folder picker" },
-  { id: "help", description: "Show available slash commands" },
+  { id: "help",        description: "Show available slash commands" },
+];
+
+const TIER_OPTIONS: Array<{ value: Tier; label: string; desc: string; icon: string }> = [
+  { value: "auto",    label: "Auto",    icon: "⚡", desc: "Agent acts without waiting for approval" },
+  { value: "notify",  label: "Notify",  icon: "🔔", desc: "Agent notifies you but keeps working" },
+  { value: "approve", label: "Approve", icon: "✋", desc: "Agent waits for approval before risky actions" },
 ];
 
 const TaskInput = forwardRef<TaskInputHandle, TaskInputProps>(
@@ -65,19 +66,23 @@ const TaskInput = forwardRef<TaskInputHandle, TaskInputProps>(
       modelLabel,
       effortLabel,
       onOpenSettings,
-      onAddFiles,
       mentionFiles,
+      taskTier = "auto",
+      onTierChange,
     },
     ref,
   ) => {
     const textareaRef = useRef<HTMLTextAreaElement>(null);
-    const [activeIdx, setActiveIdx] = useState(0);
+    const [activeSlashIdx, setActiveSlashIdx] = useState(0);
+    const [activeAtIdx, setActiveAtIdx]       = useState(0);
+    const [tierOpen, setTierOpen]             = useState(false);
+    const tierRef = useRef<HTMLDivElement>(null);
 
     useImperativeHandle(ref, () => ({
       focus: () => textareaRef.current?.focus(),
     }));
 
-    /* auto-resize textarea */
+    /* auto-resize */
     useEffect(() => {
       const el = textareaRef.current;
       if (!el) return;
@@ -85,61 +90,75 @@ const TaskInput = forwardRef<TaskInputHandle, TaskInputProps>(
       el.style.height = Math.min(el.scrollHeight, 130) + "px";
     }, [value]);
 
-    const isError =
-      message.toLowerCase().startsWith("fail") ||
-      message.toLowerCase().startsWith("cannot");
-    const isSuccess = message.toLowerCase().includes("created");
+    /* Close tier popover on outside click */
+    useEffect(() => {
+      if (!tierOpen) return;
+      const handler = (e: MouseEvent) => {
+        if (tierRef.current && !tierRef.current.contains(e.target as Node)) {
+          setTierOpen(false);
+        }
+      };
+      window.addEventListener("mousedown", handler);
+      return () => window.removeEventListener("mousedown", handler);
+    }, [tierOpen]);
 
-    const selectionStart =
-      textareaRef.current?.selectionStart ?? value.length;
-    const beforeCaret = value.slice(0, selectionStart);
-    const triggerMatch = beforeCaret.match(/(?:^|\s)([@/])([^\s]*)$/);
-    const trigger = triggerMatch?.[1] ?? null;
-    const query = triggerMatch?.[2] ?? "";
-    const triggerToken = triggerMatch ? `${trigger}${query}` : "";
+    /* ── Token detection — match at end of current value ── */
+    const beforeCaret = value;
 
-    const fileSuggestions = useMemo(() => {
-      if (trigger !== "@") return [];
-      const q = query.toLowerCase();
-      return mentionFiles.filter((f) => f.toLowerCase().includes(q)).slice(0, 8);
-    }, [trigger, query, mentionFiles]);
+    /* Slash commands: /query */
+    const slashMatch   = beforeCaret.match(/(?:^|\s)(\/)([\w-]*)$/);
+    const slashQuery   = slashMatch?.[2] ?? null;
+    const slashToken   = slashMatch ? `/${slashMatch[2]}` : "";
+
+    /* @ file mentions: @query */
+    const atMatch  = beforeCaret.match(/(?:^|\s|,)(@)([\w.\-/\\]*)$/);
+    const atQuery  = atMatch?.[2] ?? null;
+    const atToken  = atMatch ? `@${atMatch[2]}` : "";
 
     const commandSuggestions = useMemo(() => {
-      if (trigger !== "/") return [];
-      const q = query.toLowerCase();
-      return SLASH_COMMANDS.filter((c) =>
-        c.id.toLowerCase().includes(q),
-      ).slice(0, 8);
-    }, [trigger, query]);
+      if (slashQuery === null) return [];
+      const q = slashQuery.toLowerCase();
+      return SLASH_COMMANDS.filter((c) => c.id.startsWith(q)).slice(0, 6);
+    }, [slashQuery]);
 
-    const hasSuggestions =
-      fileSuggestions.length > 0 || commandSuggestions.length > 0;
+    const fileSuggestions = useMemo(() => {
+      if (atQuery === null || mentionFiles.length === 0) return [];
+      const q = atQuery.toLowerCase();
+      return mentionFiles
+        .filter((f) => f.toLowerCase().includes(q))
+        .slice(0, 8);
+    }, [atQuery, mentionFiles]);
 
-    useEffect(() => {
-      setActiveIdx(0);
-    }, [trigger, query]);
+    const hasSlashSuggestions = commandSuggestions.length > 0;
+    const hasAtSuggestions    = fileSuggestions.length > 0;
+    const hasSuggestions      = hasSlashSuggestions || hasAtSuggestions;
 
-    function replaceActiveToken(replacement: string): void {
-      const currentValue = value;
-      const caretPos =
-        textareaRef.current?.selectionStart ?? currentValue.length;
-      const left = currentValue.slice(0, caretPos);
-      const right = currentValue.slice(caretPos);
-      const nextLeft = left.replace(
-        new RegExp(
-          `${triggerToken.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
-        ),
-        replacement,
-      );
-      const next = `${nextLeft}${right}`;
+    useEffect(() => { setActiveSlashIdx(0); }, [slashQuery]);
+    useEffect(() => { setActiveAtIdx(0); }, [atQuery]);
+
+    function replaceToken(token: string, replacement: string): void {
+      const escapedToken = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const next = value.replace(new RegExp(`${escapedToken}$`), replacement);
       onChange(next);
       window.requestAnimationFrame(() => {
         const el = textareaRef.current;
         if (!el) return;
-        const pos = nextLeft.length;
         el.focus();
-        el.setSelectionRange(pos, pos);
+        el.setSelectionRange(next.length, next.length);
       });
+    }
+
+    function pickSlash(): void {
+      const picked = commandSuggestions[activeSlashIdx];
+      if (picked) replaceToken(slashToken, `/${picked.id} `);
+    }
+
+    function pickAt(): void {
+      const picked = fileSuggestions[activeAtIdx];
+      if (picked) {
+        // Insert full relative path so the engine can locate the file
+        replaceToken(atToken, `@${picked} `);
+      }
     }
 
     function executeSubmit(e: FormEvent): void {
@@ -150,82 +169,64 @@ const TaskInput = forwardRef<TaskInputHandle, TaskInputProps>(
       onSubmit(e);
     }
 
-    function pickSuggestion(): void {
-      if (trigger === "@") {
-        const picked = fileSuggestions[activeIdx];
-        if (picked) replaceActiveToken(`@${picked} `);
-        return;
-      }
-      if (trigger === "/") {
-        const picked = commandSuggestions[activeIdx];
-        if (picked) replaceActiveToken(`/${picked.id} `);
-      }
-    }
+    const isError =
+      message.toLowerCase().startsWith("fail") ||
+      message.toLowerCase().startsWith("cannot");
+
+    const activeTier = TIER_OPTIONS.find((t) => t.value === taskTier) ?? TIER_OPTIONS[0];
 
     return (
       <div className="input-dock">
-        {/* Error / success banner */}
-        {message && isError && (
-          <div className="feedback-banner error mb-2 flex items-center justify-between animate-fadeup text-xs">
+        {/* Message banner */}
+        {message && (
+          <div className={`feedback mb-2 animate-fadeup flex items-center justify-between text-xs ${isError ? "feedback-error" : "feedback-success"}`}>
             <span>{message}</span>
             <button
               type="button"
               onClick={onDismissMessage}
-              className="ml-3 text-xs font-medium opacity-50 hover:opacity-80"
+              className="ml-3 opacity-50 hover:opacity-80"
+              aria-label="Dismiss"
             >
-              &#10005;
+              ×
             </button>
-          </div>
-        )}
-        {message && isSuccess && (
-          <div className="feedback-banner success mb-2 animate-fadeup text-xs">
-            {message}
           </div>
         )}
 
         {/* Input form */}
-        <form
-          onSubmit={(e) => executeSubmit(e)}
-          className={`input-bar px-4 py-3${isSuccess ? " !border-emerald-400/20" : ""}`}
-        >
+        <form onSubmit={(e) => executeSubmit(e)} className="input-bar px-4 py-3">
           <textarea
             ref={textareaRef}
             rows={1}
             className="w-full resize-none bg-transparent text-sm outline-none leading-snug"
-            style={{
-              color: "var(--ui-text)",
-              caretColor: "var(--ui-text)",
-            }}
-            placeholder="Ask Codex anything, @ to add files, / for commands"
+            style={{ color: "var(--t1)", caretColor: "var(--t1)" }}
+            placeholder="Describe a task, or / for commands, @ for files"
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={(e) => {
-              if (
-                (e.key === "ArrowDown" || e.key === "ArrowUp") &&
-                hasSuggestions
-              ) {
+              if ((e.key === "ArrowDown" || e.key === "ArrowUp") && hasSuggestions) {
                 e.preventDefault();
-                const listSize =
-                  trigger === "@"
-                    ? fileSuggestions.length
-                    : commandSuggestions.length;
-                setActiveIdx((prev) => {
-                  if (e.key === "ArrowDown") return (prev + 1) % listSize;
-                  return (prev - 1 + listSize) % listSize;
-                });
+                if (hasSlashSuggestions) {
+                  setActiveSlashIdx((prev) =>
+                    e.key === "ArrowDown"
+                      ? (prev + 1) % commandSuggestions.length
+                      : (prev - 1 + commandSuggestions.length) % commandSuggestions.length,
+                  );
+                } else if (hasAtSuggestions) {
+                  setActiveAtIdx((prev) =>
+                    e.key === "ArrowDown"
+                      ? (prev + 1) % fileSuggestions.length
+                      : (prev - 1 + fileSuggestions.length) % fileSuggestions.length,
+                  );
+                }
                 return;
               }
-
-              if (
-                (e.key === "Tab" || e.key === "Enter") &&
-                hasSuggestions
-              ) {
+              if ((e.key === "Tab" || e.key === "Enter") && hasSuggestions) {
                 if (e.key === "Enter" && e.shiftKey) return;
                 e.preventDefault();
-                pickSuggestion();
+                if (hasSlashSuggestions) pickSlash();
+                else if (hasAtSuggestions) pickAt();
                 return;
               }
-
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 executeSubmit(e as unknown as FormEvent);
@@ -234,47 +235,44 @@ const TaskInput = forwardRef<TaskInputHandle, TaskInputProps>(
             disabled={creating}
           />
 
-          {/* File suggestions */}
-          {trigger === "@" && fileSuggestions.length > 0 && (
-            <div className="composer-suggest">
-              {fileSuggestions.map((file, idx) => (
-                <button
-                  key={file}
-                  type="button"
-                  className={`composer-suggest-item${idx === activeIdx ? " active" : ""}`}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    replaceActiveToken(`@${file} `);
-                  }}
-                >
-                  <span className="composer-suggest-title">@{file}</span>
-                  <span className="composer-suggest-copy">
-                    Attach file reference
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Command suggestions */}
-          {trigger === "/" && commandSuggestions.length > 0 && (
+          {/* Slash command suggestions */}
+          {hasSlashSuggestions && (
             <div className="composer-suggest">
               {commandSuggestions.map((cmd, idx) => (
                 <button
                   key={cmd.id}
                   type="button"
-                  className={`composer-suggest-item${idx === activeIdx ? " active" : ""}`}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    replaceActiveToken(`/${cmd.id} `);
-                  }}
+                  className={`composer-suggest-item${idx === activeSlashIdx ? " active" : ""}`}
+                  onMouseDown={(e) => { e.preventDefault(); replaceToken(slashToken, `/${cmd.id} `); }}
                 >
                   <span className="composer-suggest-title">/{cmd.id}</span>
-                  <span className="composer-suggest-copy">
-                    {cmd.description}
-                  </span>
+                  <span className="composer-suggest-copy">{cmd.description}</span>
                 </button>
               ))}
+            </div>
+          )}
+
+          {/* @ file mention suggestions */}
+          {hasAtSuggestions && (
+            <div className="composer-suggest">
+              {fileSuggestions.map((file, idx) => {
+                const basename = file.split("/").pop() ?? file;
+                const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "";
+                return (
+                  <button
+                    key={file}
+                    type="button"
+                    className={`composer-suggest-item${idx === activeAtIdx ? " active" : ""}`}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      replaceToken(atToken, `@${file} `);
+                    }}
+                  >
+                    <span className="composer-suggest-title">@{basename}</span>
+                    {dir && <span className="composer-suggest-copy">{dir}</span>}
+                  </button>
+                );
+              })}
             </div>
           )}
 
@@ -283,90 +281,59 @@ const TaskInput = forwardRef<TaskInputHandle, TaskInputProps>(
             <div className="composer-toolbar-left">
               <button
                 type="button"
-                className="composer-icon-btn"
-                onClick={onAddFiles}
-                aria-label="Add files"
-              >
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <path
-                    d="M7 3v8M3 7h8"
-                    stroke="currentColor"
-                    strokeWidth="1.4"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-              <button
-                type="button"
                 className="composer-select-btn"
                 onClick={onOpenSettings}
+                aria-label="Model settings"
               >
                 {modelLabel}
-                <svg
-                  width="10"
-                  height="10"
-                  viewBox="0 0 10 10"
-                  fill="none"
-                  className="ml-1 opacity-40"
-                >
-                  <path
-                    d="M2.5 3.5l2.5 3 2.5-3"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="ml-1 opacity-40">
+                  <path d="M2.5 3.5l2.5 3 2.5-3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
-              <button
-                type="button"
-                className="composer-select-btn"
-                onClick={onOpenSettings}
-              >
-                {effortLabel}
-                <svg
-                  width="10"
-                  height="10"
-                  viewBox="0 0 10 10"
-                  fill="none"
-                  className="ml-1 opacity-40"
+
+              {/* Tier / permission dropdown */}
+              <div className="relative" ref={tierRef}>
+                <button
+                  type="button"
+                  className="composer-select-btn"
+                  onClick={() => setTierOpen((v) => !v)}
+                  aria-label="Permission tier"
+                  aria-expanded={tierOpen}
                 >
-                  <path
-                    d="M2.5 3.5l2.5 3 2.5-3"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
+                  <span className="mr-1">{activeTier.icon}</span>
+                  {activeTier.label}
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="ml-1 opacity-40">
+                    <path d="M2.5 3.5l2.5 3 2.5-3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+
+                {tierOpen && (
+                  <div className="tier-popover">
+                    {TIER_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        className={`tier-option${taskTier === opt.value ? " active" : ""}`}
+                        onClick={() => { onTierChange?.(opt.value); setTierOpen(false); }}
+                      >
+                        <span className="tier-option-label">
+                          <span className="mr-1.5">{opt.icon}</span>{opt.label}
+                        </span>
+                        <span className="tier-option-desc">{opt.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
+
             <div className="composer-toolbar-right">
               {apiReachable === false && (
-                <span
-                  className="inline-flex items-center gap-1 text-xs"
-                  style={{ color: "var(--ui-text-subtle)" }}
-                  title="API unreachable"
-                >
-                  <span
-                    className="inline-block h-1.5 w-1.5 rounded-full animate-pulse"
-                    style={{ background: "#ef4444" }}
-                  />
+                <span className="inline-flex items-center gap-1 text-xs" style={{ color: "var(--t4)" }} title="API unreachable">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full animate-pulse" style={{ background: "var(--s-failed)" }} />
                   Offline
                 </span>
               )}
-              {/* Mic button */}
-              <button
-                type="button"
-                className="composer-icon-btn"
-                aria-label="Voice input"
-              >
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <rect x="5" y="1.5" width="4" height="7" rx="2" stroke="currentColor" strokeWidth="1.2" />
-                  <path d="M3 7a4 4 0 008 0M7 11v2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-                </svg>
-              </button>
-              {/* Send button */}
               <button
                 type="submit"
                 disabled={creating || !value.trim()}
@@ -377,10 +344,7 @@ const TaskInput = forwardRef<TaskInputHandle, TaskInputProps>(
                   <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
                 ) : (
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <path
-                      d="M2 12V8.5l9-1.5-9-1.5V2l12 5-12 5z"
-                      fill="white"
-                    />
+                    <path d="M2 12V8.5l9-1.5-9-1.5V2l12 5-12 5z" fill="white" />
                   </svg>
                 )}
               </button>
@@ -388,15 +352,17 @@ const TaskInput = forwardRef<TaskInputHandle, TaskInputProps>(
           </div>
         </form>
 
-        {/* Meta row */}
+        {/* Context meta row — subtle status bar */}
         <div className="composer-meta-row">
           <div className="composer-meta-group">
             <span className="composer-meta-item strong">{runtimeLabel}</span>
+            <span className="composer-meta-sep">·</span>
             <span className="composer-meta-item">{permissionsLabel}</span>
           </div>
           <div className="composer-meta-group">
-            <span className="composer-meta-item">{modelLabel}</span>
             <span className="composer-meta-item">{effortLabel}</span>
+            <span className="composer-meta-sep">·</span>
+            <span className="composer-meta-item">{modelLabel}</span>
           </div>
         </div>
       </div>

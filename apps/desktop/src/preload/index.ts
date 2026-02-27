@@ -15,6 +15,7 @@ export interface ElectronAPI {
   stopEngine: () => Promise<{ running: boolean; pid: number | null; apiUrl: string }>;
   openExternal: (url: string) => Promise<void>;
   openFolder: () => Promise<string | null>;
+  listProjectFiles: (projectPath: string) => Promise<string[]>;
 }
 
 const api: ElectronAPI = {
@@ -24,6 +25,7 @@ const api: ElectronAPI = {
   stopEngine: () => ipcRenderer.invoke("engine:stop"),
   openExternal: (url: string) => ipcRenderer.invoke("shell:open-external", url),
   openFolder: () => ipcRenderer.invoke("dialog:open-folder"),
+  listProjectFiles: (projectPath: string) => ipcRenderer.invoke("fs:list-project-files", projectPath),
 };
 
 contextBridge.exposeInMainWorld("electronAPI", Object.freeze(api));

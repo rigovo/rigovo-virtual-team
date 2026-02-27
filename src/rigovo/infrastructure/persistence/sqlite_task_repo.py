@@ -51,17 +51,18 @@ class SqliteTaskRepository(TaskRepository):
         await asyncio.sleep(0)
         self._db.execute(
             """INSERT OR REPLACE INTO tasks
-            (id, workspace_id, project_id, team_id, description, task_type,
+            (id, workspace_id, project_id, team_id, tier, description, task_type,
              complexity, status, current_checkpoint, approval_data,
              pipeline_steps, total_tokens, total_cost_usd, duration_ms,
              retries, langgraph_thread_id, rejected_at, user_feedback,
              error, started_at, completed_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 str(task.id),
                 str(task.workspace_id),
                 str(task.project_id) if task.project_id else None,
                 str(task.team_id) if task.team_id else None,
+                getattr(task, "tier", "auto") or "auto",
                 task.description,
                 task.task_type.value if task.task_type else None,
                 task.complexity.value if task.complexity else None,
@@ -136,6 +137,10 @@ class SqliteTaskRepository(TaskRepository):
         )
         task.project_id = UUID(row["project_id"]) if row["project_id"] else None
         task.team_id = UUID(row["team_id"]) if row["team_id"] else None
+        try:
+            task.tier = row["tier"] or "auto"
+        except (IndexError, KeyError):
+            task.tier = "auto"  # column missing in old DBs — safe fallback
         task.task_type = TaskType(row["task_type"]) if row["task_type"] else None
         task.complexity = TaskComplexity(row["complexity"]) if row["complexity"] else None
         task.status = TaskStatus(row["status"])

@@ -15,7 +15,6 @@ import EmptyState from "./components/EmptyState";
 import TaskInput, { type TaskInputHandle } from "./components/TaskInput";
 import TaskDetail from "./components/TaskDetail";
 import Settings from "./components/Settings";
-import WorkspaceStrip from "./components/WorkspaceStrip";
 import { UI_LABELS, buildPermissionLabel, type WorkspaceControls } from "./ui/tokens";
 import AutomationsPage from "./components/pages/AutomationsPage";
 import SkillsPage from "./components/pages/SkillsPage";
@@ -52,6 +51,7 @@ export default function App(): JSX.Element {
   const [apiReachable, setApiReachable] = useState<boolean | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
+  const [projectFiles, setProjectFiles] = useState<string[]>([]);
   const [projectLoading, setProjectLoading] = useState(false);
   const [taskInput, setTaskInput] = useState("");
   const [taskCreating, setTaskCreating] = useState(false);
@@ -67,6 +67,7 @@ export default function App(): JSX.Element {
   const [settingsSnapshot, setSettingsSnapshot] = useState<SettingsSnapshot | null>(null);
   const [uiLanguage, setUiLanguage] = useState("en-US");
   const [newThreadMode, setNewThreadMode] = useState(true);
+  const [taskTier, setTaskTier] = useState<"auto" | "notify" | "approve">("auto");
   const [workspaceControls, setWorkspaceControls] = useState<WorkspaceControls>({
     runtime: UI_LABELS.runtimeLocal,
     permissions: UI_LABELS.defaultPermissions,
@@ -173,15 +174,8 @@ export default function App(): JSX.Element {
     void (async () => {
       const settings = await readJson<SettingsSnapshot>(`${API_BASE}/v1/settings`);
 
-      let runtime: string = electronAPI ? UI_LABELS.runtimeLocal : UI_LABELS.runtimeCloud;
-      if (electronAPI?.engineRuntimeConfig) {
-        try {
-          const rt = await electronAPI.engineRuntimeConfig();
-          runtime = rt.worktreeMode ? UI_LABELS.runtimeLocal : UI_LABELS.runtimeCloud;
-        } catch {
-          runtime = electronAPI ? UI_LABELS.runtimeLocal : UI_LABELS.runtimeCloud;
-        }
-      }
+      // Always show "Local" when running in Electron — we never use a remote cloud runtime
+      const runtime: string = electronAPI ? UI_LABELS.runtimeLocal : UI_LABELS.runtimeCloud;
 
       if (!active) return;
       setSettingsSnapshot(settings || null);
@@ -277,7 +271,7 @@ export default function App(): JSX.Element {
     if (!desc) return;
     setTaskCreating(true); setTaskMsg("");
     try {
-      const res = await fetch(`${API_BASE}/v1/tasks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc }) });
+      const res = await fetch(`${API_BASE}/v1/tasks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc, tier: taskTier, project_id: activeProject?.id ?? "" }) });
       if (res.ok) {
         const d = await res.json();
         const taskId = d.task_id as string;
@@ -286,7 +280,7 @@ export default function App(): JSX.Element {
           id: taskId,
           title: desc,
           source: "manual",
-          tier: "auto",
+          tier: taskTier,
           status: "classifying",
           team: "default",
           updatedAt: "just now"
@@ -383,10 +377,19 @@ export default function App(): JSX.Element {
   const userEmail = authSession?.email || "";
   const userInitials = userName.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2);
   const selectedTask = useMemo(() => inbox.find((t) => t.id === selected) ?? null, [inbox, selected]);
+  // Load project files when active project changes (for @ mention autocomplete)
+  useEffect(() => {
+    if (!activeProject?.path || !electronAPI) { setProjectFiles([]); return; }
+    void electronAPI.listProjectFiles(activeProject.path).then((files) => {
+      setProjectFiles(files);
+    }).catch(() => setProjectFiles([]));
+  }, [activeProject?.path]);
+
   const mentionFiles = useMemo(() => {
     const fromSteps = taskDetail?.steps?.flatMap((step) => step.files_changed) ?? [];
-    return [...new Set(fromSteps)].sort();
-  }, [taskDetail]);
+    // Merge project files (for new threads) + task-changed files (for active tasks)
+    return [...new Set([...projectFiles, ...fromSteps])].sort();
+  }, [projectFiles, taskDetail]);
   const availableLanguages = useMemo(() => {
     const languages = Array.from(new Set([...(navigator.languages || []), navigator.language, "en-US"].filter(Boolean)));
     return languages.length ? languages : ["en-US"];
@@ -414,8 +417,17 @@ export default function App(): JSX.Element {
   /* ================================================================ */
   /*  MAIN — 2-panel layout                                            */
   /* ================================================================ */
+  const pageTitle =
+    workspacePage === "settings"   ? "Settings"
+    : workspacePage === "automations" ? "Automations"
+    : workspacePage === "skills"      ? "Skills"
+    : workspacePage === "documents"   ? "Documents"
+    : workspacePage === "language"    ? "Language"
+    : selectedTask                    ? selectedTask.title
+    : "New thread";
+
   return (
-    <div className="two-panel">
+    <div className="shell">
       <Sidebar
         userName={userName}
         userEmail={userEmail}
@@ -452,36 +464,21 @@ export default function App(): JSX.Element {
       />
 
       <main className="main-panel">
-        <WorkspaceStrip
-          title={
-            workspacePage === "settings"
-              ? "Settings"
-              : workspacePage === "automations"
-                ? "Automations"
-                : workspacePage === "skills"
-                  ? "Skills"
-                  : workspacePage === "documents"
-                    ? "Documents"
-                    : workspacePage === "language"
-                      ? "Language"
-                      : selectedTask
-                        ? "Task thread"
-                        : "New thread"
-          }
-          subtitle={activeProject ? activeProject.path : "No project connected"}
-          onOpenFolder={() => void openProject()}
-          onOpenSettings={() => { setShowSettings(true); setWorkspacePage("settings"); }}
-        />
+        {/* Drag region — minimal header, replaces WorkspaceStrip */}
+        <div className="panel-header">
+          <span className="panel-header-title">{pageTitle}</span>
+        </div>
+
         {showSettings || workspacePage === "settings" ? (
-          <div className="content-scroll">
+          <div className="content-area flush">
             <Settings onBack={() => { setShowSettings(false); setWorkspacePage("threads"); }} />
           </div>
         ) : workspacePage === "automations" ? (
-          <div className="content-scroll px-6 py-5">
+          <div className="content-area">
             <AutomationsPage inbox={inbox} approvals={approvals} policy={controlState?.policy || null} />
           </div>
         ) : workspacePage === "skills" ? (
-          <div className="content-scroll px-6 py-5">
+          <div className="content-area">
             <SkillsPage
               agentModels={settingsSnapshot?.agent_models || {}}
               agentTools={settingsSnapshot?.agent_tools || {}}
@@ -490,7 +487,7 @@ export default function App(): JSX.Element {
             />
           </div>
         ) : workspacePage === "documents" ? (
-          <div className="content-scroll px-6 py-5">
+          <div className="content-area">
             <DocumentsPage
               projectName={activeProject?.name}
               projectPath={activeProject?.path}
@@ -499,7 +496,7 @@ export default function App(): JSX.Element {
             />
           </div>
         ) : workspacePage === "language" ? (
-          <div className="content-scroll px-6 py-5">
+          <div className="content-area">
             <LanguagePage
               selectedLanguage={uiLanguage}
               availableLanguages={availableLanguages}
@@ -512,13 +509,20 @@ export default function App(): JSX.Element {
         ) : (
           <>
             {/* Scrollable content zone */}
-            <div className="content-scroll px-6 py-5">
+            <div className="content-area">
               {!selectedTask && (
                 <EmptyState onSelectExample={(text) => { setTaskInput(text); taskInputRef.current?.focus(); }} />
               )}
 
               {selectedTask && (
-                <TaskDetail task={selectedTask} detail={taskDetail} onAction={act} actionMsg={actionMsg} />
+                <TaskDetail
+                  task={selectedTask}
+                  detail={taskDetail}
+                  onAction={act}
+                  actionMsg={actionMsg}
+                  projectPath={activeProject?.path}
+                  onOpenInEditor={(url) => electronAPI?.openExternal(url)}
+                />
               )}
             </div>
 
@@ -540,6 +544,8 @@ export default function App(): JSX.Element {
               onOpenSettings={() => { setShowSettings(true); setWorkspacePage("settings"); }}
               onAddFiles={() => { void openProject(); }}
               mentionFiles={mentionFiles}
+              taskTier={taskTier}
+              onTierChange={setTaskTier}
             />
           </>
         )}

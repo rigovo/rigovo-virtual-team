@@ -9,7 +9,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """\
 -- Schema version tracking
@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     workspace_id TEXT NOT NULL,
     project_id TEXT,
     team_id TEXT,
+    tier TEXT DEFAULT 'auto',
     description TEXT NOT NULL,
     task_type TEXT,
     complexity TEXT,
@@ -190,6 +191,16 @@ class LocalDatabase:
             )
             conn.commit()
             logger.info("Database schema v%d applied at %s", SCHEMA_VERSION, self._db_path)
+
+        # Safe column migrations for existing databases (idempotent)
+        for _col_sql in [
+            "ALTER TABLE tasks ADD COLUMN tier TEXT DEFAULT 'auto'",
+        ]:
+            try:
+                conn.execute(_col_sql)
+                conn.commit()
+            except Exception:
+                pass  # Column already exists — safe to ignore
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:

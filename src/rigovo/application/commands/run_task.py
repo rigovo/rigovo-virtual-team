@@ -140,6 +140,8 @@ class RunTaskCommand:
         team_name: str | None = None,
         resume_thread_id: str | None = None,
         task_id: str | UUID | None = None,
+        project_id: str | UUID | None = None,
+        tier: str = "auto",
     ) -> dict[str, Any]:
         """
         Execute a task end-to-end.
@@ -150,6 +152,8 @@ class RunTaskCommand:
             resume_thread_id: Optional thread ID to resume from checkpoint (item 3).
             task_id: Optional pre-assigned task ID (from API create/resume).
                      If None, a new UUID is generated.
+            project_id: Optional project UUID to associate this task with.
+            tier: Approval tier — "auto" | "notify" | "approve".
 
         Returns:
             Final state dict with status, costs, files changed, etc.
@@ -174,6 +178,13 @@ class RunTaskCommand:
                 description=description,
                 id=task_id,
             )
+            # Store project context and approval tier for resume durability
+            if project_id:
+                try:
+                    task.project_id = UUID(str(project_id))
+                except (ValueError, AttributeError):
+                    pass
+            task.tier = tier if tier in ("auto", "notify", "approve") else "auto"
             task.start()
             if self._task_repo:
                 await self._task_repo.save(task)

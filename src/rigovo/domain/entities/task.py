@@ -93,6 +93,7 @@ class Task:
     id: UUID = field(default_factory=uuid4)
     project_id: UUID | None = None
     team_id: UUID | None = None
+    tier: str = "auto"  # "auto" | "notify" | "approve" — persisted so resume restores it
 
     # Classification (set by Master Agent)
     task_type: TaskType | None = None

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import secrets
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,6 +38,61 @@ from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskReposit
 # fall back to persisted pipeline_steps in SQLite.
 _live_agent_progress: dict[str, dict[str, dict]] = {}  # task_id -> {role -> step_data}
 _live_task_events: dict[str, list[dict[str, Any]]] = {}  # task_id -> rolling runtime events
+
+# ── Human-in-the-loop approval synchronization ─────────────────────
+# When tier="approve" the graph pauses at each checkpoint and calls the
+# approval_handler (blocking, runs in a thread-pool via asyncio.to_thread).
+# The handler blocks on a threading.Event until the /approve or /deny API
+# endpoint unblocks it with the human's decision.
+_APPROVAL_TIMEOUT_SECS = 86_400  # 24 h — after this auto-approve to unblock graph
+_approval_events: dict[str, threading.Event] = {}     # task_id → event
+_approval_decisions: dict[str, dict[str, Any]] = {}   # task_id → decision payload
+
+
+def _make_approval_handler(
+    task_id: str,
+    main_loop: asyncio.AbstractEventLoop,
+) -> Any:
+    """Return a synchronous approval_handler suitable for asyncio.to_thread.
+
+    Lifecycle:
+      1. Called by the graph node *inside* a thread-pool thread.
+      2. Writes AWAITING_APPROVAL to DB via the main event loop.
+      3. Blocks on a threading.Event until /approve or /deny is called.
+      4. Returns {"approval_status": "approved"|"rejected", "approval_feedback": "..."}.
+    """
+    def handler(state: dict[str, Any]) -> dict[str, Any]:
+        checkpoint = (state.get("events") or [{}])[-1].get("checkpoint", "checkpoint")
+
+        # ── 1. Persist AWAITING_APPROVAL status so the UI shows the banner ──
+        async def _set_awaiting() -> None:
+            task_repo = SqliteTaskRepository(container.get_db())
+            task = await task_repo.get(UUID(task_id))
+            if task and not task.is_terminal:
+                task.await_approval(checkpoint, state.get("approval_data") or {})
+                await task_repo.update_status(task)
+
+        fut = asyncio.run_coroutine_threadsafe(_set_awaiting(), main_loop)
+        try:
+            fut.result(timeout=10)
+        except Exception:
+            pass  # best-effort — UI poll will still reflect the node state
+
+        # ── 2. Block until human decision (or timeout) ───────────────────
+        event = threading.Event()
+        _approval_events[task_id] = event
+        signalled = event.wait(timeout=_APPROVAL_TIMEOUT_SECS)
+
+        decision = _approval_decisions.pop(task_id, {})
+        _approval_events.pop(task_id, None)
+
+        if not signalled:
+            # Timeout: auto-approve so the graph is never permanently stuck
+            return {"approval_status": "approved", "approval_feedback": "auto-approved after timeout"}
+
+        return decision
+
+    return handler
 
 
 def _on_agent_event(event: dict) -> None:
@@ -116,6 +172,7 @@ class CreateTaskRequest(BaseModel):
     team: str = ""
     tier: str = "auto"
     approve: bool = False
+    project_id: str = ""  # UUID of the active project (optional but used for agent context)
 
 
 class RegisterProjectRequest(BaseModel):
@@ -623,8 +680,22 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             )
         )
 
-    async def _resume_task_async(task_id: str, description: str, use_task_id: str | None = None) -> None:
-        """Run a task in background. use_task_id ensures the DB record is reused, not duplicated."""
+    async def _resume_task_async(
+        task_id: str,
+        description: str,
+        use_task_id: str | None = None,
+        tier: str = "auto",
+        project_id: str = "",
+    ) -> None:
+        """Run a task in background. use_task_id ensures the DB record is reused, not duplicated.
+
+        tier controls the human-in-the-loop behaviour:
+          "auto"    → run freely, no approval gates
+          "notify"  → run freely but record audit entries at each gate (future: push notification)
+          "approve" → pause at plan_approval and commit_approval; block until human decision
+
+        project_id is stored on the task record so agents know which repo they work on.
+        """
         import logging as _logging
         _bg_logger = _logging.getLogger("rigovo.api.background")
         real_task_id = use_task_id or task_id
@@ -635,15 +706,65 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "orchestration", None,
             )
             parallel = getattr(enable_parallel, "parallel_agents", True) if enable_parallel else True
+
+            # ── @file mention injection ───────────────────────────────────────
+            # Parse @filepath tokens in the description and prepend file contents
+            # so the master agent has the full context without manual copy-paste.
+            enriched_description = description
+            try:
+                import re as _re
+                from pathlib import Path as _Path
+                at_mentions = _re.findall(r'@([\w.\-/\\]+)', description)
+                if at_mentions:
+                    project_root = getattr(
+                        getattr(container, "config", None), "project_root", None
+                    )
+                    if project_root:
+                        file_blocks: list[str] = []
+                        for mention in at_mentions:
+                            fpath = _Path(str(project_root)) / mention
+                            try:
+                                if fpath.is_file() and fpath.stat().st_size < 200_000:
+                                    content = fpath.read_text(encoding="utf-8", errors="replace")
+                                    ext = fpath.suffix.lstrip(".") or "text"
+                                    file_blocks.append(
+                                        f'<file path="{mention}">\n```{ext}\n{content}\n```\n</file>'
+                                    )
+                            except OSError:
+                                pass
+                        if file_blocks:
+                            enriched_description = (
+                                description
+                                + "\n\n### Referenced Files\n\n"
+                                + "\n\n".join(file_blocks)
+                            )
+                            _bg_logger.debug(
+                                "Injected %d file(s) into task %s description",
+                                len(file_blocks), real_task_id,
+                            )
+            except Exception as _inj_err:
+                _bg_logger.warning("@file injection failed (non-fatal): %s", _inj_err)
+
+            # ── Translate tier → graph builder flags ─────────────────────────
+            auto_approve = tier != "approve"  # "auto" and "notify" both run freely
+            approval_handler = None
+            if tier == "approve":
+                main_loop = asyncio.get_event_loop()
+                approval_handler = _make_approval_handler(real_task_id, main_loop)
+
             cmd = container.build_run_task_command(
                 offline=False,
                 enable_parallel=parallel,
                 enable_streaming=True,
+                auto_approve=auto_approve,
+                approval_handler=approval_handler,
             )
             await cmd.execute(
-                description=description,
+                description=enriched_description,
                 resume_thread_id=task_id,
                 task_id=real_task_id,
+                project_id=project_id or None,
+                tier=tier,
             )
         except Exception as exc:
             _bg_logger.error("Task %s failed in background: %s", real_task_id, exc, exc_info=True)
@@ -1589,15 +1710,26 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                         )
 
         task_id = str(uuid4())
+        safe_tier = req.tier if req.tier in ("auto", "notify", "approve") else "auto"
+        safe_project_id = req.project_id.strip() if req.project_id else ""
         import logging as _logging
         _logging.getLogger("rigovo.audit").info(
-            "Task created: id=%s desc=%r", task_id, req.description.strip()[:100],
+            "Task created: id=%s tier=%s project=%s desc=%r",
+            task_id, safe_tier, safe_project_id or "none", req.description.strip()[:100],
         )
-        background_tasks.add_task(_resume_task_async, task_id, req.description.strip(), task_id)
+        background_tasks.add_task(
+            _resume_task_async,
+            task_id,
+            req.description.strip(),
+            task_id,
+            safe_tier,
+            safe_project_id,
+        )
         return {
             "status": "created",
             "task_id": task_id,
             "description": req.description.strip(),
+            "tier": safe_tier,
         }
 
     @app.post("/v1/tasks/{task_id}/abort")
@@ -1631,9 +1763,39 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             metadata={"source": "api.approve"},
             actor=req.actor,
         )
-        if req.resume_now:
+        # If the graph is blocking on an approval_handler event, unblock it now.
+        # This covers the tier="approve" path where the graph is paused inside
+        # asyncio.to_thread; /approve both updates DB AND signals the handler.
+        if task_id in _approval_events:
+            _approval_decisions[task_id] = {"approval_status": "approved", "approval_feedback": ""}
+            _approval_events[task_id].set()
+        elif req.resume_now:
+            # Legacy / tier="auto" path: no blocking handler; restart the graph
             background_tasks.add_task(_resume_task_async, task_id, task.description, task_id)
-        return {"status": "approved", "task_id": task_id, "resuming": bool(req.resume_now)}
+        return {"status": "approved", "task_id": task_id}
+
+    @app.post("/v1/tasks/{task_id}/deny")
+    async def deny_task(task_id: str, req: TaskActionRequest) -> dict:
+        """Reject/deny a task at an approval gate.  Transitions task → REJECTED."""
+        task_repo, task = await _load_task(task_id)
+        feedback = req.reason or "Rejected by operator"
+        task.reject(feedback)
+        await task_repo.update_status(task)
+        await _append_audit(
+            AuditAction.APPROVAL_DENIED,
+            task,
+            summary=f"Approval denied: {feedback}",
+            metadata={"source": "api.deny", "feedback": feedback},
+            actor=req.actor,
+        )
+        # Unblock the blocking approval_handler so the graph can route to "rejected"
+        if task_id in _approval_events:
+            _approval_decisions[task_id] = {
+                "approval_status": "rejected",
+                "approval_feedback": feedback,
+            }
+            _approval_events[task_id].set()
+        return {"status": "rejected", "task_id": task_id}
 
     @app.post("/v1/tasks/{task_id}/resume")
     async def resume_task(
@@ -1647,14 +1809,24 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         if task.status in (TaskStatus.RUNNING, TaskStatus.ASSEMBLING, TaskStatus.ROUTING, TaskStatus.CLASSIFYING, TaskStatus.QUALITY_CHECK):
             return {"status": "already_running", "task_id": task_id}
 
+        # Restore the original tier so approval gates behave identically to first run
+        restored_tier = getattr(task, "tier", "auto") or "auto"
+        restored_project_id = str(task.project_id) if getattr(task, "project_id", None) else ""
         await _append_audit(
             AuditAction.TASK_STARTED,
             task,
             summary="Resume requested via control plane",
-            metadata={"source": "api.resume"},
+            metadata={"source": "api.resume", "tier": restored_tier},
             actor=req.actor,
         )
-        background_tasks.add_task(_resume_task_async, task_id, task.description, task_id)
+        background_tasks.add_task(
+            _resume_task_async,
+            task_id,
+            task.description,
+            task_id,
+            restored_tier,
+            restored_project_id,
+        )
         return {"status": "resuming", "task_id": task_id}
 
     # ── Task enrichment endpoints ──────────────────────────────────

@@ -188,6 +188,7 @@ export interface ElectronAPI {
   stopEngine: () => Promise<EngineStatus>;
   openExternal: (url: string) => Promise<void>;
   openFolder: () => Promise<string | null>;
+  listProjectFiles: (projectPath: string) => Promise<string[]>;
 }
 
 declare global {

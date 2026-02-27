@@ -1,122 +1,93 @@
-/* ------------------------------------------------------------------ */
-/*  EmptyState — premium centered onboarding, Codex-inspired           */
-/* ------------------------------------------------------------------ */
-
 interface EmptyStateProps {
   onSelectExample: (text: string) => void;
 }
 
 const EXAMPLES = [
   {
-    emoji: "\uD83D\uDC1B",
-    title: "Build a classic Snake game in this repo.",
-    color: "#e8e8e6",
+    icon: "⚡",
+    title: "Review and fix all failing tests in this repo.",
+    iconBg: "rgba(99,102,241,0.10)",
   },
   {
-    emoji: "\uD83D\uDCC4",
-    title: "Create a one-page $pdf that summarizes this app.",
-    color: "#fce4e4",
+    icon: "🔒",
+    title: "Audit the auth module for security issues and fix them.",
+    iconBg: "rgba(217,119,6,0.10)",
   },
   {
-    emoji: "\u270F\uFE0F",
-    title: "Create a plan to refactor the auth module.",
-    color: "#fef3cd",
+    icon: "📐",
+    title: "Refactor the API layer to follow REST best practices.",
+    iconBg: "rgba(22,163,74,0.10)",
   },
 ];
 
 export default function EmptyState({ onSelectExample }: EmptyStateProps) {
   return (
     <div className="flex h-full flex-col items-center justify-center animate-fadeup">
-      {/* Icon */}
-      <div className="mb-5 flex h-12 w-12 items-center justify-center">
-        <svg
-          width="40"
-          height="40"
-          viewBox="0 0 40 40"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          <circle
-            cx="20"
-            cy="20"
-            r="18"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeDasharray="4 3"
-            opacity="0.25"
-          />
-          <circle cx="20" cy="20" r="3" fill="currentColor" opacity="0.5" />
-          <path
-            d="M20 12v-2M20 30v-2M28 20h2M10 20h2"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            opacity="0.25"
-          />
+      {/* Logo mark */}
+      <div
+        className="mb-3 flex h-10 w-10 items-center justify-center rounded-2xl"
+        style={{ background: "rgba(99,102,241,0.10)" }}
+      >
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <circle cx="10" cy="10" r="3.5" fill="var(--accent)" opacity="0.85" />
+          <path d="M10 3v2.5M10 14.5V17M3 10h2.5M14.5 10H17" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" opacity="0.5" />
         </svg>
       </div>
 
-      {/* Heading */}
       <h2
-        className="text-2xl font-semibold tracking-tight"
-        style={{ color: "var(--ui-text)" }}
+        className="text-[17px] font-semibold tracking-tight"
+        style={{ color: "var(--t1)" }}
       >
-        Let&apos;s build
+        Rigovo
       </h2>
-
-      {/* Dropdown hint */}
-      <button
-        type="button"
-        className="mt-1 flex items-center gap-1 text-base transition-colors"
-        style={{ color: "var(--ui-text-muted)" }}
+      <p
+        className="mt-1.5 max-w-xs text-center text-sm leading-relaxed"
+        style={{ color: "var(--t3)" }}
       >
-        Documents
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-          <path
-            d="M3 4.5l3 3 3-3"
-            stroke="currentColor"
-            strokeWidth="1.3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
+        Your AI team. Describe any engineering task — agents plan, build, and ship it for you.
+      </p>
 
-      {/* Spacer */}
-      <div className="flex-1" />
+      <div className="flex-1" style={{ minHeight: 24 }} />
 
-      {/* Explore more */}
-      <div className="mb-3 self-end px-2">
-        <span
-          className="text-xs"
-          style={{ color: "var(--ui-text-subtle)" }}
-        >
-          Explore more
-        </span>
+      {/* Suggestion cards */}
+      <div
+        className="mb-2.5 self-start text-xs font-semibold tracking-widest uppercase"
+        style={{ color: "var(--t4)" }}
+      >
+        Try an example
       </div>
 
-      {/* Suggestion cards — Codex style */}
-      <div className="w-full grid grid-cols-3 gap-3 px-2">
+      <div className="w-full grid grid-cols-3 gap-2.5">
         {EXAMPLES.map((ex) => (
           <button
             key={ex.title}
             type="button"
-            className="group rounded-2xl border px-4 py-4 text-left transition-all hover:shadow-card"
+            className="group text-left transition-all"
             style={{
-              borderColor: "var(--ui-border)",
-              background: "var(--ui-panel)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--r-xl)",
+              background: "var(--overlay)",
+              padding: "14px 16px",
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLElement).style.borderColor = "rgba(99,102,241,0.30)";
+              (e.currentTarget as HTMLElement).style.boxShadow = "0 2px 8px rgba(99,102,241,0.08)";
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLElement).style.borderColor = "var(--border)";
+              (e.currentTarget as HTMLElement).style.boxShadow = "none";
             }}
             onClick={() => onSelectExample(ex.title)}
           >
             <div
-              className="mb-3 flex h-8 w-8 items-center justify-center rounded-lg text-base"
-              style={{ background: ex.color }}
+              className="mb-3 flex h-7 w-7 items-center justify-center rounded-lg text-sm"
+              style={{ background: ex.iconBg }}
             >
-              {ex.emoji}
+              {ex.icon}
             </div>
             <span
-              className="text-sm leading-snug transition-colors group-hover:text-[var(--ui-text)]"
-              style={{ color: "var(--ui-text-secondary)" }}
+              className="text-[13px] leading-snug"
+              style={{ color: "var(--t2)" }}
             >
               {ex.title}
             </span>

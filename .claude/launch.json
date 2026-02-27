@@ -4,8 +4,9 @@
     {
       "name": "desktop-renderer",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--config", "apps/desktop/electron.vite.config.ts", "--mode", "development"],
-      "port": 5173
+      "runtimeArgs": ["vite", "--config", "apps/desktop/vite.renderer.preview.mjs"],
+      "port": 5173,
+      "autoPort": true
     }
   ]
 }
