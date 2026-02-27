@@ -403,6 +403,49 @@
     background: var(--canvas);
   }
 
+  /* Engine error banner */
+  .engine-error-banner {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: #3b1a1a;
+    border-bottom: 1px solid #6b2020;
+    color: #f87171;
+    font-size: 12px;
+    -webkit-app-region: no-drag;
+  }
+
+  .engine-error-icon {
+    flex-shrink: 0;
+    font-size: 14px;
+  }
+
+  .engine-error-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .engine-error-retry,
+  .engine-error-dismiss {
+    flex-shrink: 0;
+    background: transparent;
+    border: 1px solid #6b2020;
+    color: #f87171;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .engine-error-retry:hover,
+  .engine-error-dismiss:hover {
+    background: #4b1e1e;
+  }
+
   /* Panel header — minimal, draggable */
   .panel-header {
     flex-shrink: 0;

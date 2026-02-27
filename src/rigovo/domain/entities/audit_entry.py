@@ -35,6 +35,7 @@ class AuditAction(StrEnum):
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_GRANTED = "approval_granted"
     APPROVAL_DENIED = "approval_denied"
+    GATE_NOTIFICATION = "gate_notification"  # notify-tier: auto-approved, user informed
 
     # Master Agent
     ENRICHMENT_STARTED = "enrichment_started"

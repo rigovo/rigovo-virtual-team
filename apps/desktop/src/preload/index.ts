@@ -13,6 +13,7 @@ export interface ElectronAPI {
     projectDir?: string;
   }) => Promise<{ running: boolean; pid: number | null; apiUrl: string }>;
   stopEngine: () => Promise<{ running: boolean; pid: number | null; apiUrl: string }>;
+  engineLastError: () => Promise<string>;
   openExternal: (url: string) => Promise<void>;
   openFolder: () => Promise<string | null>;
   listProjectFiles: (projectPath: string) => Promise<string[]>;
@@ -23,6 +24,7 @@ const api: ElectronAPI = {
   engineRuntimeConfig: () => ipcRenderer.invoke("engine:runtime-config"),
   startEngine: (args) => ipcRenderer.invoke("engine:start", args),
   stopEngine: () => ipcRenderer.invoke("engine:stop"),
+  engineLastError: () => ipcRenderer.invoke("engine:last-error"),
   openExternal: (url: string) => ipcRenderer.invoke("shell:open-external", url),
   openFolder: () => ipcRenderer.invoke("dialog:open-folder"),
   listProjectFiles: (projectPath: string) => ipcRenderer.invoke("fs:list-project-files", projectPath),

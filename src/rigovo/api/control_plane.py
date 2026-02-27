@@ -95,6 +95,51 @@ def _make_approval_handler(
     return handler
 
 
+def _make_notify_handler(
+    task_id: str,
+    main_loop: asyncio.AbstractEventLoop,
+    db_factory: Any,      # callable → LocalDatabase  (e.g. container.get_db)
+    workspace_uuid: UUID, # pre-resolved workspace ID
+) -> Any:
+    """Return a non-blocking approval_handler for tier='notify'.
+
+    The graph calls this just like _make_approval_handler, but instead of
+    blocking on a threading.Event it immediately approves and records a
+    GATE_NOTIFICATION audit entry so the UI can surface it as an info card.
+
+    db_factory and workspace_uuid are passed explicitly so this module-level
+    function does not rely on create_app-scoped variables.
+    """
+    def handler(state: dict[str, Any]) -> dict[str, Any]:
+        checkpoint = (state.get("events") or [{}])[-1].get("checkpoint", "checkpoint")
+        summary = state.get("approval_data", {}).get("summary") or f"Gate reached: {checkpoint}"
+
+        async def _record_notification() -> None:
+            try:
+                audit_repo = SqliteAuditRepository(db_factory())
+                entry = AuditEntry(
+                    workspace_id=workspace_uuid,
+                    action=AuditAction.GATE_NOTIFICATION,
+                    summary=summary,
+                    task_id=UUID(task_id) if task_id else None,
+                    metadata={"checkpoint": checkpoint, "tier": "notify"},
+                )
+                await audit_repo.append(entry)
+            except Exception:
+                pass  # best-effort — never block task execution
+
+        fut = asyncio.run_coroutine_threadsafe(_record_notification(), main_loop)
+        try:
+            fut.result(timeout=5)
+        except Exception:
+            pass
+
+        # Immediately approve — notify tier never blocks
+        return {"approval_status": "approved", "approval_feedback": "auto-approved (notify tier)"}
+
+    return handler
+
+
 def _on_agent_event(event: dict) -> None:
     """Handle agent_started / agent_complete events from the graph."""
     etype = event.get("type", "")
@@ -746,11 +791,22 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 _bg_logger.warning("@file injection failed (non-fatal): %s", _inj_err)
 
             # ── Translate tier → graph builder flags ─────────────────────────
-            auto_approve = tier != "approve"  # "auto" and "notify" both run freely
-            approval_handler = None
-            if tier == "approve":
-                main_loop = asyncio.get_event_loop()
+            # "auto"    → auto_approve=True,  no handler (gate skipped entirely)
+            # "notify"  → auto_approve=False, non-blocking handler records audit entry
+            # "approve" → auto_approve=False, blocking handler waits for human decision
+            main_loop = asyncio.get_event_loop()
+            if tier == "notify":
+                auto_approve = False
+                approval_handler = _make_notify_handler(
+                    real_task_id, main_loop,
+                    container.get_db, _workspace_id(),
+                )
+            elif tier == "approve":
+                auto_approve = False
                 approval_handler = _make_approval_handler(real_task_id, main_loop)
+            else:
+                auto_approve = True
+                approval_handler = None
 
             cmd = container.build_run_task_command(
                 offline=False,
@@ -1485,20 +1541,44 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
 
     @app.get("/v1/ui/approvals")
     async def ui_approvals(limit: int = 25) -> list[dict]:
-        repo = SqliteTaskRepository(container.get_db())
-        tasks = await repo.list_by_workspace(_workspace_id(), limit=limit)
+        items: list[dict] = []
+
+        # ── 1. Blocking approval requests (tier="approve") ────────────────
+        task_repo = SqliteTaskRepository(container.get_db())
+        tasks = await task_repo.list_by_workspace(_workspace_id(), limit=limit)
         pending = [t for t in tasks if t.status == TaskStatus.AWAITING_APPROVAL]
-        return [
-            {
+        for t in pending:
+            items.append({
                 "id": f"apv_{str(t.id)[:8]}",
                 "taskId": str(t.id),
                 "summary": t.approval_data.get("summary", "Pending human approval"),
                 "tier": "approve",
                 "requestedBy": "master-agent",
                 "age": _relative(t.started_at or t.created_at),
-            }
-            for t in pending
-        ]
+            })
+
+        # ── 2. Non-blocking gate notifications (tier="notify") ───────────
+        # Show the most recent GATE_NOTIFICATION audit entries as info cards.
+        try:
+            audit_repo = SqliteAuditRepository(container.get_db())
+            all_entries = await audit_repo.list_by_workspace(_workspace_id(), limit=100)
+            notify_entries = [
+                e for e in all_entries
+                if e.action == AuditAction.GATE_NOTIFICATION
+            ][:limit]
+            for e in notify_entries:
+                items.append({
+                    "id": f"ntf_{str(e.id)[:8]}",
+                    "taskId": str(e.task_id) if e.task_id else "",
+                    "summary": e.summary or "Gate passed (notify tier)",
+                    "tier": "notify",
+                    "requestedBy": "master-agent",
+                    "age": _relative(e.created_at),
+                })
+        except Exception:
+            pass  # audit log query failure must not break approve items
+
+        return items
 
     @app.get("/v1/ui/workforce")
     def ui_workforce() -> list[dict]:

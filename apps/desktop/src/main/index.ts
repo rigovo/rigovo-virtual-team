@@ -8,6 +8,7 @@ import { readdirSync, statSync } from "node:fs";
 /* ------------------------------------------------------------------ */
 
 let engineProcess: ChildProcess | null = null;
+let _lastEngineError = "";
 
 interface EngineStatus {
   running: boolean;
@@ -112,6 +113,7 @@ function startEngine(
   if (safeProjectDir) opts.cwd = safeProjectDir;
   const runtime = runtimeConfig();
 
+  _lastEngineError = "";
   engineProcess = spawn(rigovoBin, args, {
     ...opts,
     env: {
@@ -119,14 +121,34 @@ function startEngine(
       RIGOVO_WORKTREE_MODE: runtime.worktreeMode,
       RIGOVO_WORKTREE_ROOT: runtime.worktreeRoot,
     },
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "pipe"],
     detached: false
   });
 
-  engineProcess.on("error", () => {
+  // Capture stderr so startup failures are surfaced to the UI
+  const stderrChunks: string[] = [];
+  engineProcess.stderr?.on("data", (chunk: Buffer) => {
+    const text = chunk.toString("utf8");
+    stderrChunks.push(text);
+    // Keep last 4 KB — enough to diagnose any startup error
+    const joined = stderrChunks.join("");
+    if (joined.length > 4096) {
+      stderrChunks.splice(0, stderrChunks.length, joined.slice(-4096));
+    }
+    _lastEngineError = stderrChunks.join("").trim();
+  });
+
+  engineProcess.on("error", (err: Error) => {
+    _lastEngineError = `Failed to start engine process: ${err.message}`;
     engineProcess = null;
   });
-  engineProcess.on("exit", () => {
+  engineProcess.on("exit", (code: number | null) => {
+    if (code !== 0 && code !== null) {
+      const stderr = stderrChunks.join("").trim();
+      _lastEngineError = stderr
+        ? `Engine exited (code ${code}):\n${stderr}`
+        : `Engine process exited unexpectedly (code ${code}). Check that the 'rigovo' binary is installed and your API keys are configured.`;
+    }
     engineProcess = null;
   });
 
@@ -200,6 +222,7 @@ function registerIpc(): void {
   );
 
   ipcMain.handle("engine:stop", () => stopEngine());
+  ipcMain.handle("engine:last-error", () => _lastEngineError);
 
   // Open URL in system browser (for WorkOS AuthKit redirect flow)
   ipcMain.handle("shell:open-external", (_event, url: string) => {

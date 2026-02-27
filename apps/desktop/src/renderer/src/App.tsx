@@ -48,6 +48,7 @@ export default function App(): JSX.Element {
   const [selected, setSelected] = useState("");
   const [, setMode] = useState<"live" | "fallback">("fallback");
   const [engine, setEngine] = useState<EngineStatus>({ running: false, pid: null, apiUrl: API_BASE });
+  const [engineError, setEngineError] = useState<string>("");
   const [apiReachable, setApiReachable] = useState<boolean | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
@@ -78,13 +79,48 @@ export default function App(): JSX.Element {
   /* ---- Engine management ---- */
   const startEngine = useCallback(async (projectDir?: string): Promise<void> => {
     if (!electronAPI) return;
-    try { setEngine(await electronAPI.startEngine({ host: parsedApi.host, port: parsedApi.port, projectDir: projectDir || "." })); } catch { /* swallow */ }
+    try {
+      setEngineError("");
+      const s = await electronAPI.startEngine({ host: parsedApi.host, port: parsedApi.port, projectDir: projectDir || "." });
+      setEngine(s);
+    } catch (err) {
+      setEngineError(err instanceof Error ? err.message : String(err));
+    }
   }, [parsedApi.host, parsedApi.port]);
 
   useEffect(() => {
     if (!electronAPI) return;
-    void (async () => { try { const s = await electronAPI.engineStatus(); setEngine(s); if (!s.running) await startEngine(); } catch { /* swallow */ } })();
+    void (async () => {
+      try {
+        const s = await electronAPI.engineStatus();
+        setEngine(s);
+        if (!s.running) await startEngine();
+      } catch (err) {
+        setEngineError(err instanceof Error ? err.message : String(err));
+      }
+    })();
   }, [startEngine]);
+
+  // Poll engine last-error when engine is not running, so startup failures surface automatically
+  useEffect(() => {
+    if (!electronAPI?.engineLastError) return;
+    let cancelled = false;
+    const poll = async (): Promise<void> => {
+      if (cancelled) return;
+      try {
+        const s = await electronAPI!.engineStatus();
+        setEngine(s);
+        if (!s.running) {
+          const err = await electronAPI!.engineLastError!();
+          if (!cancelled) setEngineError(err || "");
+        } else {
+          if (!cancelled) setEngineError("");
+        }
+      } catch { /* best-effort */ }
+    };
+    const id = window.setInterval(() => { void poll(); }, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
 
   /* ---- Boot — auth check, fallback to demo mode if API down ---- */
   useEffect(() => {
@@ -464,6 +500,28 @@ export default function App(): JSX.Element {
       />
 
       <main className="main-panel">
+        {/* Engine error banner — shown when engine failed to start */}
+        {engineError && !engine.running && (
+          <div className="engine-error-banner" role="alert">
+            <span className="engine-error-icon">⚠</span>
+            <span className="engine-error-text">Engine offline: {engineError.split("\n")[0]}</span>
+            <button
+              className="engine-error-retry"
+              onClick={() => { void startEngine(activeProject?.path); }}
+              aria-label="Retry engine start"
+            >
+              Retry
+            </button>
+            <button
+              className="engine-error-dismiss"
+              onClick={() => setEngineError("")}
+              aria-label="Dismiss error"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Drag region — minimal header, replaces WorkspaceStrip */}
         <div className="panel-header">
           <span className="panel-header-title">{pageTitle}</span>

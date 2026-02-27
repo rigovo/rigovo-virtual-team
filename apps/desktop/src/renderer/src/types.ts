@@ -186,6 +186,7 @@ export interface ElectronAPI {
     projectDir?: string;
   }) => Promise<EngineStatus>;
   stopEngine: () => Promise<EngineStatus>;
+  engineLastError: () => Promise<string>;
   openExternal: (url: string) => Promise<void>;
   openFolder: () => Promise<string | null>;
   listProjectFiles: (projectPath: string) => Promise<string[]>;
