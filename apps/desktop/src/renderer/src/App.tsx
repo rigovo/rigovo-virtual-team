@@ -31,6 +31,185 @@ type SettingsSnapshot = {
   plugins_policy?: { min_trust_level?: string };
 };
 
+/* ---- Utility: derive a short label from a filesystem path ---- */
+function pathLabel(p: string): string {
+  if (!p) return "";
+  const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts[parts.length - 1] || p;
+}
+
+/* ---- Utility: derive repo name from git URL ---- */
+function repoNameFromUrl(url: string): string {
+  try {
+    const clean = url.trim().replace(/\.git\s*$/, "");
+    const parts = clean.split(/[/\\]/).filter(Boolean);
+    return parts[parts.length - 1] || "repo";
+  } catch {
+    return "repo";
+  }
+}
+
+/* ================================================================== */
+/*  WorkspaceStrip — shown above TaskInput in new-thread mode         */
+/* ================================================================== */
+interface WorkspaceStripProps {
+  workspacePath: string;
+  workspaceLabel: string;
+  onChangeFolder: () => void;
+  onCloneRepo: () => void;
+}
+
+function WorkspaceStrip({ workspacePath, workspaceLabel, onChangeFolder, onCloneRepo }: WorkspaceStripProps): JSX.Element {
+  const displayLabel = workspaceLabel || (workspacePath ? pathLabel(workspacePath) : "");
+  return (
+    <div className="workspace-strip" role="region" aria-label="Workspace context">
+      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" width="12" height="12" className="ws-icon" aria-hidden="true">
+        <path d="M1.5 4.5h11v7a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-7zM1.5 4.5l1-2H6l1 1.5h4.5" />
+      </svg>
+      <span className="ws-path" title={workspacePath || undefined}>
+        {displayLabel || <span className="ws-path-empty">No workspace</span>}
+      </span>
+      <div className="ws-actions">
+        <button type="button" className="ws-btn" onClick={onChangeFolder} title="Select local folder">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" width="11" height="11" aria-hidden="true">
+            <path d="M1.5 4.5h11v7a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-7zM1.5 4.5l1-2H6l1 1.5h4.5" />
+          </svg>
+          Open folder
+        </button>
+        <button type="button" className="ws-btn ws-btn-clone" onClick={onCloneRepo} title="Clone a git repository">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" width="11" height="11" aria-hidden="true">
+            <circle cx="3" cy="3" r="1.5" />
+            <circle cx="11" cy="3" r="1.5" />
+            <circle cx="7" cy="11" r="1.5" />
+            <path d="M3 4.5v1.5a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V4.5" />
+            <path d="M7 7.5V9.5" />
+          </svg>
+          Clone repo
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  CloneModal — git clone URL + destination picker                    */
+/* ================================================================== */
+interface CloneModalProps {
+  onClose: () => void;
+  onCloned: (path: string, label: string) => void;
+}
+
+function CloneModal({ onClose, onCloned }: CloneModalProps): JSX.Element {
+  const [url, setUrl] = useState("");
+  const [destParent, setDestParent] = useState("");
+  const [cloning, setCloning] = useState(false);
+  const [error, setError] = useState("");
+  const urlInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => { urlInputRef.current?.focus(); }, []);
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: globalThis.KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const repoName = repoNameFromUrl(url);
+  const destPath = destParent ? `${destParent}/${repoName}` : "";
+
+  const handlePickDest = async () => {
+    const dir = electronAPI?.pickCloneDest ? await electronAPI.pickCloneDest() : window.prompt("Enter destination parent directory:");
+    if (dir) setDestParent(dir);
+  };
+
+  const handleClone = async () => {
+    const trimUrl = url.trim();
+    if (!trimUrl) { setError("Enter a git URL."); return; }
+    if (!destParent) { setError("Choose a destination folder."); return; }
+    setCloning(true);
+    setError("");
+    const dest = `${destParent}/${repoName}`;
+    try {
+      if (electronAPI?.gitClone) {
+        await electronAPI.gitClone(trimUrl, dest);
+      } else {
+        // Web preview fallback — simulate success
+        await new Promise((res) => window.setTimeout(res, 800));
+      }
+      onCloned(dest, repoName);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Clone failed");
+    }
+    setCloning(false);
+  };
+
+  return (
+    <div className="clone-modal-overlay" role="dialog" aria-modal="true" aria-label="Clone repository">
+      <div className="clone-modal">
+        <div className="clone-modal-header">
+          <span className="clone-modal-title">Clone a repository</span>
+          <button type="button" className="clone-modal-close" onClick={onClose} aria-label="Close">
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" width="12" height="12">
+              <path d="M2 2l8 8M10 2l-8 8" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="clone-modal-body">
+          <label className="clone-field-label" htmlFor="clone-url">Repository URL</label>
+          <input
+            id="clone-url"
+            ref={urlInputRef}
+            className="clone-input"
+            type="url"
+            placeholder="https://github.com/owner/repo.git"
+            value={url}
+            onChange={(e) => { setUrl(e.target.value); setError(""); }}
+            disabled={cloning}
+          />
+
+          <label className="clone-field-label" style={{ marginTop: 12 }}>Destination</label>
+          <div className="clone-dest-row">
+            <button type="button" className="clone-dest-btn" onClick={() => void handlePickDest()} disabled={cloning}>
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" width="11" height="11" aria-hidden="true">
+                <path d="M1.5 4.5h11v7a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-7zM1.5 4.5l1-2H6l1 1.5h4.5" />
+              </svg>
+              Choose folder
+            </button>
+            {destPath ? (
+              <span className="clone-dest-preview" title={destPath}>{destPath}</span>
+            ) : (
+              <span className="clone-dest-placeholder">No folder selected</span>
+            )}
+          </div>
+        </div>
+
+        {error && <div className="clone-error">{error}</div>}
+
+        <div className="clone-modal-footer">
+          <button type="button" className="clone-cancel-btn" onClick={onClose} disabled={cloning}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="clone-action-btn"
+            onClick={() => void handleClone()}
+            disabled={cloning || !url.trim() || !destParent}
+          >
+            {cloning ? (
+              <>
+                <span className="clone-spinner" aria-hidden="true" />
+                Cloning…
+              </>
+            ) : "Clone"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ================================================================== */
 /*  App — thin shell: state + effects + component composition          */
 /* ================================================================== */
@@ -75,6 +254,11 @@ export default function App(): JSX.Element {
     model: "Default model",
     effort: UI_LABELS.defaultEffort,
   });
+
+  /* ---- Workspace (folder / git clone) for new tasks ---- */
+  const [taskWorkspacePath, setTaskWorkspacePath] = useState("");
+  const [taskWorkspaceLabel, setTaskWorkspaceLabel] = useState("");
+  const [cloneModalOpen, setCloneModalOpen] = useState(false);
 
   /* ---- Engine management ---- */
   const startEngine = useCallback(async (projectDir?: string): Promise<void> => {
@@ -300,6 +484,29 @@ export default function App(): JSX.Element {
     setProjectLoading(false);
   };
 
+  /* ---- Handle workspace folder selection for new tasks ---- */
+  const handleChangeWorkspace = async () => {
+    const folderPath = electronAPI?.openFolder ? await electronAPI.openFolder() : window.prompt("Enter workspace folder path:");
+    if (!folderPath) return;
+    setTaskWorkspacePath(folderPath);
+    setTaskWorkspaceLabel(pathLabel(folderPath));
+  };
+
+  /* ---- Rename a thread ---- */
+  const renameTask = useCallback(async (id: string, title: string) => {
+    // Optimistic update
+    setInbox((prev) => prev.map((t) => t.id === id ? { ...t, title } : t));
+    try {
+      await fetch(`${API_BASE}/v1/tasks/${id}/rename`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+    } catch {
+      // Non-fatal — the optimistic label is shown; will be reverted on next poll
+    }
+  }, []);
+
   /* ---- Create task ---- */
   const createTask = async (e: FormEvent) => {
     e.preventDefault();
@@ -307,7 +514,20 @@ export default function App(): JSX.Element {
     if (!desc) return;
     setTaskCreating(true); setTaskMsg("");
     try {
-      const res = await fetch(`${API_BASE}/v1/tasks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc, tier: taskTier, project_id: activeProject?.id ?? "" }) });
+      const body: Record<string, unknown> = {
+        description: desc,
+        tier: taskTier,
+        project_id: activeProject?.id ?? "",
+      };
+      if (taskWorkspacePath) {
+        body.workspace_path = taskWorkspacePath;
+        body.workspace_label = taskWorkspaceLabel || pathLabel(taskWorkspacePath);
+      }
+      const res = await fetch(`${API_BASE}/v1/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
       if (res.ok) {
         const d = await res.json();
         const taskId = d.task_id as string;
@@ -319,7 +539,9 @@ export default function App(): JSX.Element {
           tier: taskTier,
           status: "classifying",
           team: "default",
-          updatedAt: "just now"
+          updatedAt: "just now",
+          workspacePath: taskWorkspacePath || undefined,
+          workspaceLabel: taskWorkspaceLabel || undefined,
         };
         setInbox((prev) => [optimisticTask, ...prev.filter((t) => t.id !== taskId)]);
         setNewThreadMode(false);
@@ -335,7 +557,17 @@ export default function App(): JSX.Element {
     } catch {
       // Demo mode — create a local task so user sees something happen
       const demoId = `demo-local-${Date.now()}`;
-      const newTask: InboxTask = { id: demoId, title: desc, source: "manual", tier: "auto", status: "classifying", team: "default", updatedAt: "just now" };
+      const newTask: InboxTask = {
+        id: demoId,
+        title: desc,
+        source: "manual",
+        tier: "auto",
+        status: "classifying",
+        team: "default",
+        updatedAt: "just now",
+        workspacePath: taskWorkspacePath || undefined,
+        workspaceLabel: taskWorkspaceLabel || undefined,
+      };
       setInbox((prev) => [newTask, ...prev]);
       setNewThreadMode(false);
       setWorkspacePage("threads");
@@ -497,6 +729,7 @@ export default function App(): JSX.Element {
         onOpenSkills={() => { setShowSettings(false); setNewThreadMode(false); setWorkspacePage("skills"); setSelected(""); }}
         onOpenDocuments={() => { setShowSettings(false); setNewThreadMode(false); setWorkspacePage("documents"); setSelected(""); }}
         onOpenLanguage={() => { setShowSettings(false); setNewThreadMode(false); setWorkspacePage("language"); setSelected(""); }}
+        onRenameTask={(id, title) => void renameTask(id, title)}
       />
 
       <main className="main-panel">
@@ -522,7 +755,7 @@ export default function App(): JSX.Element {
           </div>
         )}
 
-        {/* Drag region — minimal header, replaces WorkspaceStrip */}
+        {/* Drag region — minimal header */}
         <div className="panel-header">
           <span className="panel-header-title">{pageTitle}</span>
         </div>
@@ -584,6 +817,16 @@ export default function App(): JSX.Element {
               )}
             </div>
 
+            {/* Workspace context strip — only in new-thread mode */}
+            {newThreadMode && (
+              <WorkspaceStrip
+                workspacePath={taskWorkspacePath}
+                workspaceLabel={taskWorkspaceLabel}
+                onChangeFolder={() => void handleChangeWorkspace()}
+                onCloneRepo={() => setCloneModalOpen(true)}
+              />
+            )}
+
             {/* Fixed input dock — always at bottom, no scroll */}
             <TaskInput
               ref={taskInputRef}
@@ -608,6 +851,18 @@ export default function App(): JSX.Element {
           </>
         )}
       </main>
+
+      {/* Git clone modal — rendered outside main for proper z-index */}
+      {cloneModalOpen && (
+        <CloneModal
+          onClose={() => setCloneModalOpen(false)}
+          onCloned={(clonedPath, label) => {
+            setTaskWorkspacePath(clonedPath);
+            setTaskWorkspaceLabel(label);
+            setCloneModalOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }

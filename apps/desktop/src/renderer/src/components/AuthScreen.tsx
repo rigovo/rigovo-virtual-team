@@ -1,6 +1,67 @@
 /* ------------------------------------------------------------------ */
-/*  AuthScreen — light themed sign-in / sign-up                        */
+/*  AuthScreen — Rigovo sign-in/sign-up, Warm Ink theme               */
 /* ------------------------------------------------------------------ */
+
+/** Rigovo brand mark — target/crosshair with checkmark, dark navy bg.
+ *  Recreated as inline SVG from the official app icon.
+ */
+function RigovoLogo({ size = 64 }: { size?: number }): JSX.Element {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 64 64"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-label="Rigovo logo"
+      role="img"
+    >
+      {/* Dark navy rounded background */}
+      <rect width="64" height="64" rx="16" fill="#0D1117" />
+
+      {/* Outer ring */}
+      <circle cx="32" cy="32" r="20" stroke="#3B82F6" strokeWidth="1.5" opacity="0.7" />
+
+      {/* Inner filled circle (blue gradient) */}
+      <circle cx="32" cy="32" r="12" fill="url(#rg-grad)" />
+
+      {/* Center checkmark circle */}
+      <circle cx="32" cy="32" r="7" fill="#1D4ED8" />
+
+      {/* Checkmark */}
+      <path
+        d="M27.5 32.5l3 3 6-6"
+        stroke="#FFFFFF"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+
+      {/* Crosshair notches — top */}
+      <line x1="32" y1="8"  x2="32" y2="12" stroke="#3B82F6" strokeWidth="1.5" strokeLinecap="round" />
+      {/* bottom */}
+      <line x1="32" y1="52" x2="32" y2="56" stroke="#3B82F6" strokeWidth="1.5" strokeLinecap="round" />
+      {/* left */}
+      <line x1="8"  y1="32" x2="12" y2="32" stroke="#3B82F6" strokeWidth="1.5" strokeLinecap="round" />
+      {/* right */}
+      <line x1="52" y1="32" x2="56" y2="32" stroke="#3B82F6" strokeWidth="1.5" strokeLinecap="round" />
+
+      {/* Gap lines to ring — inner crosshair guides */}
+      <line x1="32" y1="14" x2="32" y2="18" stroke="#3B82F6" strokeWidth="1" strokeLinecap="round" opacity="0.5" />
+      <line x1="32" y1="46" x2="32" y2="50" stroke="#3B82F6" strokeWidth="1" strokeLinecap="round" opacity="0.5" />
+      <line x1="14" y1="32" x2="18" y2="32" stroke="#3B82F6" strokeWidth="1" strokeLinecap="round" opacity="0.5" />
+      <line x1="46" y1="32" x2="50" y2="32" stroke="#3B82F6" strokeWidth="1" strokeLinecap="round" opacity="0.5" />
+
+      <defs>
+        <radialGradient id="rg-grad" cx="50%" cy="38%" r="60%" fx="50%" fy="38%">
+          <stop offset="0%"   stopColor="#60A5FA" />
+          <stop offset="100%" stopColor="#1E40AF" />
+        </radialGradient>
+      </defs>
+    </svg>
+  );
+}
+
 interface AuthScreenProps {
   onSignIn: () => void;
   onSignUp: () => void;
@@ -10,43 +71,89 @@ interface AuthScreenProps {
   apiStatus: boolean | null;
 }
 
-export default function AuthScreen({ onSignIn, onSignUp, waiting, onCancel, message, apiStatus }: AuthScreenProps) {
+export default function AuthScreen({
+  onSignIn,
+  onSignUp,
+  waiting,
+  onCancel,
+  message,
+  apiStatus,
+}: AuthScreenProps) {
+  const statusClass =
+    apiStatus === null ? "checking" : apiStatus ? "connected" : "disconnected";
+  const statusLabel =
+    apiStatus === null ? "Checking connection…" : apiStatus ? "Connected" : "API unreachable";
+
   return (
-    <div className="flex min-h-screen items-center justify-center p-6" style={{ background: "var(--ui-bg)" }}>
-      <section className="card w-full max-w-sm text-center animate-fadeup">
+    <div className="auth-screen">
+      <div className="auth-card">
         {/* Logo */}
-        <div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-2xl text-2xl font-bold text-white shadow-lg" style={{ background: "var(--ui-text)" }}>
-          R
+        <div className="auth-logo">
+          <div className="auth-logo-icon">
+            <RigovoLogo size={64} />
+          </div>
         </div>
-        <h1 className="text-xl font-bold text-[var(--ui-text)]">Welcome to Rigovo</h1>
-        <p className="mt-1.5 text-sm text-[var(--ui-text-muted)]">Your virtual engineering team.</p>
+
+        <h1 className="auth-title">Welcome to Rigovo</h1>
+        <p className="auth-subtitle">
+          Your virtual engineering team.<br />
+          Sign in to start working with your agents.
+        </p>
 
         {waiting ? (
-          <div className="mt-8 space-y-3">
-            <div className="mx-auto h-9 w-9 animate-spin rounded-full border-[3px] border-[var(--ui-border)] border-t-[var(--ui-text)]" />
-            <p className="text-sm text-[var(--ui-text-muted)]">Completing sign-in in your browser...</p>
-            <button type="button" className="ghost-btn text-xs" onClick={onCancel}>Cancel</button>
+          /* Waiting for browser OAuth redirect */
+          <div className="auth-waiting">
+            <div className="auth-waiting-spinner" aria-label="Loading" />
+            <p className="auth-waiting-text">
+              Completing sign-in in your browser…<br />
+              Switch back here once you&apos;re done.
+            </p>
+            <button type="button" className="auth-cancel-btn" onClick={onCancel}>
+              Cancel
+            </button>
           </div>
         ) : (
-          <div className="mt-8 flex flex-col gap-3">
-            <button type="button" className="primary-btn w-full py-3 text-base" onClick={onSignIn}>
+          <div className="auth-actions">
+            <button
+              type="button"
+              className="auth-primary-btn"
+              onClick={onSignIn}
+              aria-label="Sign in to Rigovo"
+            >
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" width="15" height="15" aria-hidden="true">
+                <path d="M10 3h3a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-3" />
+                <path d="M7 11l4-3-4-3" />
+                <path d="M11 8H3" />
+              </svg>
               Sign in
             </button>
-            <button type="button" className="ghost-btn w-full" onClick={onSignUp}>
+
+            <div className="auth-divider">or</div>
+
+            <button
+              type="button"
+              className="auth-secondary-btn"
+              onClick={onSignUp}
+              aria-label="Create a Rigovo account"
+            >
               Create account
             </button>
           </div>
         )}
 
-        {message && <p className="mt-4 text-sm text-rose-600">{message}</p>}
+        {/* Error message */}
+        {message && (
+          <div className="auth-error" role="alert">
+            {message}
+          </div>
+        )}
 
-        <div className="mt-6 flex items-center justify-center gap-2 text-xs text-[var(--ui-text-muted)]">
-          <span className={`h-2 w-2 rounded-full ${
-            apiStatus === null ? "bg-[var(--ui-text-subtle)]" : apiStatus ? "bg-emerald-500" : "bg-rose-500"
-          }`} />
-          {apiStatus === null ? "Checking..." : apiStatus ? "Connected" : "API unreachable"}
+        {/* Connection status */}
+        <div className="auth-status">
+          <span className={`auth-status-dot ${statusClass}`} aria-hidden="true" />
+          <span>{statusLabel}</span>
         </div>
-      </section>
+      </div>
     </div>
   );
 }

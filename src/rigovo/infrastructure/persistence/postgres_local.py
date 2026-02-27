@@ -221,6 +221,18 @@ class PostgresDatabase:
                 conn.commit()
                 logger.info("Postgres schema v%d applied", SCHEMA_VERSION)
 
+            # Idempotent column migrations (safe on existing databases)
+            for _col_sql in [
+                "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS custom_title TEXT",
+                "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_path TEXT",
+                "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_label TEXT",
+            ]:
+                try:
+                    cur.execute(_col_sql)
+                    conn.commit()
+                except Exception:
+                    pass  # column already exists
+
     def execute(self, sql: str, params: tuple[Any, ...] = ()):
         conn = self._get_conn()
         cur = conn.cursor()

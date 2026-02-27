@@ -195,6 +195,10 @@ class LocalDatabase:
         # Safe column migrations for existing databases (idempotent)
         for _col_sql in [
             "ALTER TABLE tasks ADD COLUMN tier TEXT DEFAULT 'auto'",
+            # v3 — workspace & rename support
+            "ALTER TABLE tasks ADD COLUMN custom_title TEXT",
+            "ALTER TABLE tasks ADD COLUMN workspace_path TEXT",
+            "ALTER TABLE tasks ADD COLUMN workspace_label TEXT",
         ]:
             try:
                 conn.execute(_col_sql)

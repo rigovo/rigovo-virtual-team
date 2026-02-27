@@ -108,6 +108,15 @@ interface IntegrationsPolicyResponse {
   }>;
 }
 
+interface GovPolicyResponse {
+  authMode: string;
+  defaultTier: string;
+  deepRigour: boolean;
+  requireApprovalHighRisk: boolean;
+  requireApprovalProdSecrets: boolean;
+  notifyChannels: string[];
+}
+
 interface SettingsProps { onBack: () => void }
 
 const ROLE_META: Record<string, { label: string; desc: string; icon: string }> = {
@@ -172,6 +181,25 @@ export default function Settings({ onBack }: SettingsProps) {
   const [ymlView, setYmlView] = useState<"friendly" | "raw">("friendly");
   const ymlRef = useRef<HTMLTextAreaElement>(null);
 
+  /* ---- Orchestration settings (editable, patched into yml_raw on save) ---- */
+  const [orchSettings, setOrchSettings] = useState({
+    parallelAgents: false,
+    consultationEnabled: false,
+    replanEnabled: false,
+    replanMaxReplans: 2,
+    qualityGateEnabled: true,
+  });
+
+  /* ---- Governance policy (POST /v1/control/policy) ---- */
+  const [govPolicy, setGovPolicy] = useState<GovPolicyResponse>({
+    authMode: "email_only",
+    defaultTier: "notify",
+    deepRigour: true,
+    requireApprovalHighRisk: true,
+    requireApprovalProdSecrets: true,
+    notifyChannels: ["slack", "email"],
+  });
+
   const load = useCallback(async () => {
     setLoading(true);
     const res = await readJson<SettingsData>(`${API_BASE}/v1/settings`);
@@ -199,18 +227,70 @@ export default function Settings({ onBack }: SettingsProps) {
       if (caps) setRuntimeCaps(caps);
       const integrations = await readJson<IntegrationsPolicyResponse>(`${API_BASE}/v1/integrations/policy`);
       if (integrations) setIntegrationsView(integrations);
+      const policy = await readJson<GovPolicyResponse>(`${API_BASE}/v1/control/policy`);
+      if (policy) setGovPolicy(policy);
       if (window.electronAPI?.engineRuntimeConfig) {
         try { setEngineRuntime(await window.electronAPI.engineRuntimeConfig()); } catch { /* */ }
       }
     })();
   }, []);
 
+  /*
+   * Parse orchestration and quality values directly from the raw YAML.
+   * Key mapping (config_schema.py):
+   *   parallel_agents  → orchestration.parallel_agents          (flat, unique key)
+   *   consultation     → orchestration.consultation.enabled     (nested block)
+   *   replan           → orchestration.replan.{enabled, max_replans_per_task} (nested)
+   *   quality gate     → quality.rigour_enabled                 (different top-level section)
+   * debate_enabled / memory_learning_enabled have NO YAML key — engine-managed.
+   */
+  const parseOrchFromYml = useCallback((raw: string) => {
+    const boolFlat = (key: string): boolean | null => {
+      const m = raw.match(new RegExp(`^[ \\t]*${key}:[ \\t]*(true|false)`, "m"));
+      return m ? m[1] === "true" : null;
+    };
+    const boolInBlock = (blockKey: string, childKey: string): boolean | null => {
+      const blockMatch = raw.match(new RegExp(`^[ \\t]*${blockKey}:[\\t ]*\\n((?:[ \\t]+.+\\n?)*)`, "m"));
+      if (!blockMatch) return null;
+      const m = blockMatch[1].match(new RegExp(`^[ \\t]*${childKey}:[ \\t]*(true|false)`, "m"));
+      return m ? m[1] === "true" : null;
+    };
+    const numInBlock = (blockKey: string, childKey: string): number | null => {
+      const blockMatch = raw.match(new RegExp(`^[ \\t]*${blockKey}:[\\t ]*\\n((?:[ \\t]+.+\\n?)*)`, "m"));
+      if (!blockMatch) return null;
+      const m = blockMatch[1].match(new RegExp(`^[ \\t]*${childKey}:[ \\t]*(\\d+)`, "m"));
+      return m ? parseInt(m[1], 10) : null;
+    };
+    return {
+      parallelAgents:      boolFlat("parallel_agents"),
+      consultationEnabled: boolInBlock("consultation", "enabled"),
+      replanEnabled:       boolInBlock("replan", "enabled"),
+      replanMaxReplans:    numInBlock("replan", "max_replans_per_task"),
+      qualityGateEnabled:  boolInBlock("quality", "rigour_enabled"),
+    };
+  }, []);
+
+  /* Sync orchSettings when yml_raw loads (preferred source of truth).
+     runtimeCaps is used as fallback only for parallel_agents and consultation
+     since those come from the capabilities endpoint faithfully. */
+  useEffect(() => {
+    if (!ymlRaw && !runtimeCaps) return;
+    const yml = parseOrchFromYml(ymlRaw);
+    setOrchSettings({
+      parallelAgents:      yml.parallelAgents      ?? runtimeCaps?.orchestration.parallel_agents             ?? false,
+      consultationEnabled: yml.consultationEnabled ?? runtimeCaps?.orchestration.consultation_enabled         ?? false,
+      replanEnabled:       yml.replanEnabled       ?? runtimeCaps?.orchestration.replan.enabled               ?? false,
+      replanMaxReplans:    yml.replanMaxReplans    ?? runtimeCaps?.orchestration.replan.max_replans_per_task  ?? 2,
+      qualityGateEnabled:  yml.qualityGateEnabled  ?? true,
+    });
+  }, [ymlRaw, runtimeCaps, parseOrchFromYml]);
+
   const showToast = (msg: string, type: "success" | "error") => {
     setToast({ msg, type });
     window.setTimeout(() => setToast(null), type === "error" ? 8000 : 4000);
   };
 
-  const save = async (payload: Record<string, unknown>) => {
+  const save = async (payload: Record<string, unknown>, successMsg?: string) => {
     setSaving(true);
     try {
       const res = await fetch(`${API_BASE}/v1/settings`, {
@@ -220,7 +300,7 @@ export default function Settings({ onBack }: SettingsProps) {
       });
       if (res.ok) {
         const d = await res.json();
-        showToast(`Saved. ${d.note || ""}`, "success");
+        showToast(successMsg ?? `Saved. ${d.note || ""}`, "success");
         void load();
       } else {
         let detail = `HTTP ${res.status}`;
@@ -243,9 +323,17 @@ export default function Settings({ onBack }: SettingsProps) {
     setKeyEditing(null);
     setKeys((prev) => ({ ...prev, [provider]: "" }));
   };
-  const saveAgentModels = () => void save({ default_model: defaultModel, agent_models: agentModels });
+  const saveAgentModels = () => void save(
+    { default_model: defaultModel, agent_models: agentModels },
+    "Agent models saved. Restart the engine for changes to take effect.",
+  );
   const parseCsvList = (v: string): string[] => v.split(",").map((x) => x.trim()).filter(Boolean);
-  const saveCapabilities = () => { if (pluginPolicy) void save({ agent_tools: agentTools, plugin_policy: pluginPolicy }); };
+  const saveCapabilities = () => {
+    if (pluginPolicy) void save(
+      { agent_tools: agentTools, plugin_policy: pluginPolicy },
+      "Capability policy saved. Restart the engine for changes to take effect.",
+    );
+  };
   const saveEndpoints = () => {
     const payload: Record<string, unknown> = {};
     if (customBaseUrl !== (data?.custom_base_url || "")) payload.custom_base_url = customBaseUrl;
@@ -260,6 +348,103 @@ export default function Settings({ onBack }: SettingsProps) {
     if (dbBackend === "postgres") setDbUrl("");
   };
   const saveYml = () => void save({ yml_raw: ymlRaw });
+
+  /**
+   * Patch a flat `key: value` line anywhere in the YAML.
+   * Works for top-level or uniquely-named keys like `parallel_agents`.
+   */
+  const patchYmlLine = (raw: string, key: string, value: boolean | number): string => {
+    const strVal = typeof value === "boolean" ? (value ? "true" : "false") : String(value);
+    return raw.replace(new RegExp(`^([ \\t]*${key}:[ \\t]*).*$`, "m"), `$1${strVal}`);
+  };
+
+  /**
+   * Patch `childKey: value` inside the first `parentKey:` block.
+   * Handles nested YAML like:
+   *   quality.rigour_enabled, orchestration.consultation.enabled,
+   *   orchestration.replan.enabled, orchestration.replan.max_replans_per_task
+   *
+   * If the child key is absent from the block it is appended.
+   * If the parent block itself is absent it is INSERTED at the end of the
+   * YAML (instead of a no-op) so toggles always take effect even on sparse
+   * YAML files created before the section was added to the schema.
+   */
+  const patchYmlInBlock = (raw: string, parentKey: string, childKey: string, value: boolean | number): string => {
+    const strVal = typeof value === "boolean" ? (value ? "true" : "false") : String(value);
+    const parentRe = new RegExp(`^([ \\t]*)${parentKey}:[ \\t]*$`, "m");
+    const parentMatch = parentRe.exec(raw);
+
+    if (!parentMatch) {
+      // Block missing — append it at the end of the YAML
+      const trimmed = raw.trimEnd();
+      return `${trimmed}\n${parentKey}:\n  ${childKey}: ${strVal}\n`;
+    }
+
+    const parentIndent = parentMatch[1];
+    const headerEnd = parentMatch.index + parentMatch[0].length;
+    const afterHeader = raw.slice(headerEnd + 1); // skip newline
+
+    // Block body ends at the next line with same/less indentation (= next sibling key)
+    const siblingRe = new RegExp(`^${parentIndent}[^ \\t\\n]`, "m");
+    const siblingMatch = siblingRe.exec(afterHeader);
+    const blockEnd = siblingMatch ? siblingMatch.index : afterHeader.length;
+
+    const blockBody = afterHeader.slice(0, blockEnd);
+    const rest = afterHeader.slice(blockEnd);
+
+    const childRe = new RegExp(`^([ \\t]*${childKey}:[ \\t]*).*$`, "m");
+    const patchedBody = childRe.test(blockBody)
+      ? blockBody.replace(childRe, `$1${strVal}`)
+      : blockBody + `${parentIndent}  ${childKey}: ${strVal}\n`;
+
+    return raw.slice(0, headerEnd + 1) + patchedBody + rest;
+  };
+
+  const saveOrchestration = () => {
+    let yml = ymlRaw;
+
+    // parallel_agents is a flat key inside the orchestration block (unique key name)
+    yml = patchYmlLine(yml, "parallel_agents", orchSettings.parallelAgents);
+
+    // Nested keys — use context-aware block patcher
+    yml = patchYmlInBlock(yml, "consultation", "enabled", orchSettings.consultationEnabled);
+    yml = patchYmlInBlock(yml, "replan",       "enabled", orchSettings.replanEnabled);
+    yml = patchYmlInBlock(yml, "replan",       "max_replans_per_task", orchSettings.replanMaxReplans);
+
+    // Quality gate maps to quality.rigour_enabled (not quality_gate_enabled)
+    yml = patchYmlInBlock(yml, "quality", "rigour_enabled", orchSettings.qualityGateEnabled);
+
+    setYmlRaw(yml);
+    /* The engine reads rigovo.yml once at startup — a restart is required
+       for orchestration changes to take effect in the running engine. */
+    void save(
+      { yml_raw: yml },
+      "Orchestration saved. Restart the engine for changes to take effect.",
+    );
+  };
+
+  /** Save governance policy via POST /v1/control/policy */
+  const saveGovPolicy = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/v1/control/policy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(govPolicy),
+      });
+      if (res.ok) {
+        showToast("Governance policy saved.", "success");
+      } else {
+        let detail = `HTTP ${res.status}`;
+        try { const b = await res.json(); if (typeof b?.detail === "string") detail = b.detail; } catch { /* */ }
+        showToast(`Save failed: ${detail}`, "error");
+      }
+    } catch (e) {
+      showToast(`Cannot reach API (${e instanceof Error ? e.message : "unknown"})`, "error");
+    }
+    setSaving(false);
+  };
+
   const parseYmlSections = (raw: string): { key: string; value: string }[] => {
     if (!raw.trim()) return [];
     const sections: { key: string; value: string }[] = [];
@@ -615,13 +800,18 @@ export default function Settings({ onBack }: SettingsProps) {
         <div className="space-y-4">
           <p className="text-sm" style={{ color: "var(--ui-text-muted)" }}>
             Configure where task history, audit logs, and memory artifacts are stored.
+            Storage changes require an engine restart to take effect.
           </p>
 
+          {/* Backend selector */}
           <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Database backend</p>
-                <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>Switch between local SQLite and external PostgreSQL.</p>
+                <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>
+                  SQLite for local dev — zero setup, single file.
+                  PostgreSQL for teams / production — shared state, concurrent agents.
+                </p>
               </div>
               <select value={dbBackend} onChange={(e) => setDbBackend(e.target.value === "postgres" ? "postgres" : "sqlite")}
                 className="rounded-lg border bg-white px-3 py-2 text-sm outline-none cursor-pointer min-w-[180px]"
@@ -630,18 +820,22 @@ export default function Settings({ onBack }: SettingsProps) {
                 <option value="postgres">PostgreSQL (DSN)</option>
               </select>
             </div>
-            <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "rgba(0,0,0,0.02)", color: "var(--ui-text-muted)" }}>
-              Current: <span style={{ color: "var(--ui-text)" }}>{data.database.backend}</span>
+            <div className="rounded-lg px-3 py-2 text-xs flex items-center gap-2" style={{ background: "rgba(0,0,0,0.02)", color: "var(--ui-text-muted)" }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: data.database.backend === "postgres" ? "#8b5cf6" : "#22c55e", display: "inline-block", flexShrink: 0 }} />
+              Currently active: <span style={{ color: "var(--ui-text)", fontWeight: 600, marginLeft: 4 }}>{data.database.backend}</span>
+              {dbBackend !== data.database.backend && (
+                <span style={{ marginLeft: "auto", color: "#b45309", fontWeight: 600 }}>⚠ Restart required to switch</span>
+              )}
             </div>
           </div>
 
-          {/* Fix 2: show only the relevant field for the selected backend */}
+          {/* SQLite path */}
           {dbBackend === "sqlite" ? (
             <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
               <div>
                 <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>SQLite file path</p>
                 <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
-                  Relative to project root. The file is created automatically on first run.
+                  Path relative to project root. Created automatically on first run.
                 </p>
               </div>
               <input type="text" value={dbLocalPath} onChange={(e) => setDbLocalPath(e.target.value)}
@@ -649,21 +843,37 @@ export default function Settings({ onBack }: SettingsProps) {
             </div>
           ) : (
             <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
-              <div>
-                <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>PostgreSQL connection string</p>
-                <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
-                  Stored encrypted. Existing SQLite data is not migrated automatically.
-                </p>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>PostgreSQL connection string</p>
+                  <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
+                    Saved to <code className="rounded px-1 py-0.5 text-[11px]" style={{ background: "rgba(0,0,0,0.04)" }}>.env</code> as{" "}
+                    <code className="rounded px-1 py-0.5 text-[11px]" style={{ background: "rgba(0,0,0,0.04)" }}>RIGOVO_DB_URL</code>.
+                    Existing SQLite data is not migrated automatically.
+                  </p>
+                </div>
+                <span className="text-[10px] font-medium px-2 py-0.5 rounded ml-3 flex-shrink-0"
+                  style={{ background: "rgba(139,92,246,0.08)", color: "#6d28d9" }}>
+                  fully wired ✓
+                </span>
               </div>
               <input type="password" value={dbUrl} onChange={(e) => setDbUrl(e.target.value)}
                 placeholder="postgresql://user:pass@host:5432/dbname" className={INPUT_CLS} style={inputBorder} />
               <p className="text-xs" style={{ color: "var(--ui-text-subtle)" }}>
-                Current: {data.database.dsn_configured ? data.database.dsn_masked : "not configured"}
+                Current DSN: {data.database.dsn_configured ? <strong>{data.database.dsn_masked}</strong> : "not configured"}
               </p>
+              {/* psycopg install hint */}
+              <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "rgba(139,92,246,0.04)", border: "1px solid rgba(139,92,246,0.15)", color: "var(--ui-text-muted)" }}>
+                Requires <code style={{ background: "rgba(0,0,0,0.06)", padding: "0 4px", borderRadius: 3 }}>psycopg[binary]</code> installed in the engine environment:{" "}
+                <code style={{ background: "rgba(0,0,0,0.06)", padding: "0 4px", borderRadius: 3 }}>pip install "psycopg[binary]"</code>
+              </div>
             </div>
           )}
 
-          <div className="flex justify-end">
+          <div className="flex items-center justify-between pt-1">
+            <p className="text-xs" style={{ color: "var(--ui-text-subtle)" }}>
+              ⚙ Engine restart required for storage changes to apply.
+            </p>
             <button type="button" disabled={saving} onClick={saveDatabase} className="primary-btn">
               {saving ? "Saving..." : "Save storage settings"}
             </button>
@@ -674,18 +884,235 @@ export default function Settings({ onBack }: SettingsProps) {
       {/* ──────────── Config ──────────── */}
       {tab === "config" && (
         <div className="space-y-4">
+
+          {/* ── Governance policy ────────────────────────────────────── */}
+          <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Governance</p>
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+                style={{ background: "rgba(79,70,229,0.08)", color: "#4338ca" }}>
+                Human-in-the-loop
+              </span>
+            </div>
+            <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>
+              Control which AI decisions require human approval before proceeding.
+              This is Rigovo's "brain" — the policy that prevents runaway autonomous action.
+            </p>
+
+            {/* Default tier */}
+            <div className="rounded-lg border px-4 py-3" style={{ borderColor: "var(--ui-border)", background: "rgba(0,0,0,0.01)" }}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium" style={{ color: "var(--ui-text)" }}>Default approval tier</p>
+                  <p className="text-[11px] mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
+                    <strong>auto</strong> — fully autonomous &nbsp;|&nbsp;
+                    <strong>notify</strong> — proceed but alert &nbsp;|&nbsp;
+                    <strong>approve</strong> — require human sign-off
+                  </p>
+                </div>
+                <select value={govPolicy.defaultTier}
+                  onChange={(e) => setGovPolicy((p) => ({ ...p, defaultTier: e.target.value }))}
+                  className="rounded-lg border bg-white px-3 py-1.5 text-xs outline-none cursor-pointer min-w-[110px]"
+                  style={{ borderColor: "var(--ui-border)", color: "var(--ui-text-secondary)" }}>
+                  <option value="auto">auto</option>
+                  <option value="notify">notify</option>
+                  <option value="approve">approve</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Toggles */}
+            <div className="space-y-2">
+              {([
+                ["deepRigour",               "Deep rigour mode",             "Run the larger Rigour model for quality analysis — slower but more thorough."],
+                ["requireApprovalHighRisk",  "Require approval: high-risk",  "Pause and ask before any operation flagged high-risk (infra changes, prod deploys)."],
+                ["requireApprovalProdSecrets","Require approval: secrets",   "Pause and ask before accessing or writing production secrets."],
+              ] as Array<[keyof GovPolicyResponse, string, string]>).map(([key, label, desc]) => (
+                <div key={key} className="rounded-lg border px-4 py-3 flex items-center justify-between gap-3"
+                  style={{ borderColor: "var(--ui-border)", background: "rgba(0,0,0,0.01)" }}>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium" style={{ color: "var(--ui-text)" }}>{label}</p>
+                    <p className="text-[11px] mt-0.5" style={{ color: "var(--ui-text-muted)" }}>{desc}</p>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer flex-shrink-0">
+                    <input type="checkbox" checked={Boolean(govPolicy[key])}
+                      onChange={(e) => setGovPolicy((p) => ({ ...p, [key]: e.target.checked }))} />
+                    <span className="text-xs w-5 text-right" style={{ color: "var(--ui-text-secondary)" }}>
+                      {govPolicy[key] ? "on" : "off"}
+                    </span>
+                  </label>
+                </div>
+              ))}
+            </div>
+
+            {/* Notify channels — preference stored, dispatch not yet wired */}
+            <div className="rounded-lg border px-4 py-3" style={{ borderColor: "var(--ui-border)", background: "rgba(0,0,0,0.01)" }}>
+              <div className="flex items-center gap-2 mb-2">
+                <p className="text-xs font-medium" style={{ color: "var(--ui-text)" }}>Notify channels</p>
+                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+                  style={{ background: "rgba(245,158,11,0.08)", color: "#b45309" }}>
+                  coming soon
+                </span>
+              </div>
+              <p className="text-[11px] mb-2" style={{ color: "var(--ui-text-muted)" }}>
+                Select where governance alerts are delivered. Dispatch is being wired — preferences are saved and will activate automatically when enabled.
+              </p>
+              <div className="flex gap-4 opacity-50 pointer-events-none">
+                {(["slack", "email", "webhook"] as const).map((ch) => (
+                  <label key={ch} className="flex items-center gap-1.5 text-xs" style={{ color: "var(--ui-text-secondary)" }}>
+                    <input type="checkbox" readOnly
+                      checked={govPolicy.notifyChannels.includes(ch)} />
+                    {ch}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-1">
+              <button type="button" disabled={saving} onClick={() => void saveGovPolicy()} className="primary-btn">
+                {saving ? "Saving..." : "Save governance policy"}
+              </button>
+            </div>
+          </div>
+
+          {/* ── Orchestration — editable (YAML-backed keys) ──────────── */}
+          <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Orchestration</p>
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+                style={{ background: "rgba(79,70,229,0.08)", color: "#4338ca" }}>
+                Rigovo differentiators
+              </span>
+            </div>
+            <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>
+              These controls shape how Rigovo's multi-agent system collaborates and recovers.
+              Changes are persisted to <code className="rounded px-1 py-0.5 text-[11px]" style={{ background: "rgba(0,0,0,0.04)" }}>rigovo.yml</code>{" "}
+              and take effect after an engine restart.
+            </p>
+
+            <div className="space-y-2">
+
+              {/* Always-on / engine-managed features */}
+              <div className="rounded-lg border px-4 py-3 space-y-2"
+                style={{ borderColor: "var(--ui-border)", background: "rgba(0,0,0,0.01)" }}>
+                <p className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--ui-text-subtle)" }}>
+                  Always on · engine-managed
+                </p>
+                {([
+                  ["Debate loop",       "Agents argue their output before passing to the next stage — reduces hallucination."],
+                  ["Memory learning",   "Lessons from completed tasks persist — agents improve across projects over time."],
+                ] as [string, string][]).map(([label, desc]) => (
+                  <div key={label} className="flex items-center justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium" style={{ color: "var(--ui-text)" }}>{label}</p>
+                      <p className="text-[11px]" style={{ color: "var(--ui-text-muted)" }}>{desc}</p>
+                    </div>
+                    <span className="text-[10px] px-2 py-0.5 rounded font-medium flex-shrink-0"
+                      style={{ background: "rgba(16,185,129,0.08)", color: "#047857" }}>always on</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Parallel agents */}
+              <div className="rounded-lg border px-4 py-3 flex items-center justify-between gap-3"
+                style={{ borderColor: "var(--ui-border)", background: "rgba(0,0,0,0.01)" }}>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium" style={{ color: "var(--ui-text)" }}>Parallel agents</p>
+                  <p className="text-[11px] mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
+                    Run reviewer, QA, and security checks concurrently for faster feedback.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer flex-shrink-0">
+                  <input type="checkbox" checked={orchSettings.parallelAgents}
+                    onChange={(e) => setOrchSettings((p) => ({ ...p, parallelAgents: e.target.checked }))} />
+                  <span className="text-xs w-5 text-right" style={{ color: "var(--ui-text-secondary)" }}>
+                    {orchSettings.parallelAgents ? "on" : "off"}
+                  </span>
+                </label>
+              </div>
+
+              {/* Consultation */}
+              <div className="rounded-lg border px-4 py-3 flex items-center justify-between gap-3"
+                style={{ borderColor: "var(--ui-border)", background: "rgba(0,0,0,0.01)" }}>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium" style={{ color: "var(--ui-text)" }}>Consultation</p>
+                  <p className="text-[11px] mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
+                    Lead agent consults specialists before finalising architecture decisions.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer flex-shrink-0">
+                  <input type="checkbox" checked={orchSettings.consultationEnabled}
+                    onChange={(e) => setOrchSettings((p) => ({ ...p, consultationEnabled: e.target.checked }))} />
+                  <span className="text-xs w-5 text-right" style={{ color: "var(--ui-text-secondary)" }}>
+                    {orchSettings.consultationEnabled ? "on" : "off"}
+                  </span>
+                </label>
+              </div>
+
+              {/* Replan */}
+              <div className="rounded-lg border px-4 py-3"
+                style={{ borderColor: "var(--ui-border)", background: "rgba(0,0,0,0.01)" }}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium" style={{ color: "var(--ui-text)" }}>Replan on failure</p>
+                    <p className="text-[11px] mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
+                      If a step fails, re-evaluate the plan rather than abort the task.
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer flex-shrink-0">
+                    <input type="checkbox" checked={orchSettings.replanEnabled}
+                      onChange={(e) => setOrchSettings((p) => ({ ...p, replanEnabled: e.target.checked }))} />
+                    <span className="text-xs w-5 text-right" style={{ color: "var(--ui-text-secondary)" }}>
+                      {orchSettings.replanEnabled ? "on" : "off"}
+                    </span>
+                  </label>
+                </div>
+                {orchSettings.replanEnabled && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-[11px]" style={{ color: "var(--ui-text-muted)" }}>Max replans per task</span>
+                    <input type="number" min={1} max={5} value={orchSettings.replanMaxReplans}
+                      onChange={(e) => setOrchSettings((p) => ({ ...p, replanMaxReplans: Math.max(1, Math.min(5, Number(e.target.value))) }))}
+                      className="w-16 rounded border text-xs text-center px-2 py-1" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }} />
+                  </div>
+                )}
+              </div>
+
+              {/* Quality gates — maps to quality.rigour_enabled in YAML */}
+              <div className="rounded-lg border px-4 py-3 flex items-center justify-between gap-3"
+                style={{ borderColor: "var(--ui-border)", background: "rgba(0,0,0,0.01)" }}>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium" style={{ color: "var(--ui-text)" }}>Quality gates</p>
+                  <p className="text-[11px] mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
+                    Enforce coverage, lint, type checks, and security scans between agent steps.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer flex-shrink-0">
+                  <input type="checkbox" checked={orchSettings.qualityGateEnabled}
+                    onChange={(e) => setOrchSettings((p) => ({ ...p, qualityGateEnabled: e.target.checked }))} />
+                  <span className="text-xs w-5 text-right" style={{ color: "var(--ui-text-secondary)" }}>
+                    {orchSettings.qualityGateEnabled ? "on" : "off"}
+                  </span>
+                </label>
+              </div>
+
+            </div>
+
+            <div className="flex justify-end pt-1">
+              <button type="button" disabled={saving} onClick={saveOrchestration} className="primary-btn">
+                {saving ? "Saving..." : "Save orchestration"}
+              </button>
+            </div>
+          </div>
+
+          {/* ── Runtime environment — read-only system info ───────────── */}
           <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--ui-border)" }}>
-            <p className="text-xs font-medium uppercase tracking-wider mb-2" style={{ color: "var(--ui-text-subtle)" }}>Runtime Guardrails</p>
+            <p className="text-xs font-medium uppercase tracking-wider mb-2" style={{ color: "var(--ui-text-subtle)" }}>Runtime environment</p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
               {[
                 ["Electron sandbox", engineRuntime?.electronSandbox ? "enabled" : "disabled"],
                 ["Worktree mode", engineRuntime?.worktreeMode ?? runtimeCaps?.runtime.worktree_mode ?? "project"],
                 ["File sandbox", runtimeCaps?.runtime.filesystem_sandbox ?? "project_root"],
                 ["Plugin trust floor", runtimeCaps?.plugins.min_trust_level ?? "verified"],
-                ["Parallel agents", runtimeCaps?.orchestration.parallel_agents ? "on" : "off"],
-                ["Consultation", runtimeCaps?.orchestration.consultation_enabled ? "on" : "off"],
-                ["Replan policy", runtimeCaps?.orchestration.replan.enabled ? "enabled" : "disabled"],
-                ["Debate loop", runtimeCaps?.runtime.debate_enabled ? `on (max ${runtimeCaps.runtime.debate_max_rounds})` : "off"],
                 ["DB backend", runtimeCaps?.database?.backend ?? data.database.backend],
               ].map(([label, val]) => (
                 <div key={label} className="rounded-lg px-3 py-2" style={{ background: "rgba(0,0,0,0.02)", color: "var(--ui-text-muted)" }}>

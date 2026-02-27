@@ -256,6 +256,35 @@ function registerIpc(): void {
     if (result.canceled || !result.filePaths.length) return null;
     return result.filePaths[0];
   });
+
+  // Git clone — shallow-clone a remote repo to a local destination
+  ipcMain.handle("git:clone", async (_event, url: string, destDir: string) => {
+    return new Promise<string>((resolve, reject) => {
+      const stderr: string[] = [];
+      const proc = spawn("git", ["clone", "--depth=1", url, destDir], {
+        stdio: ["ignore", "ignore", "pipe"],
+        detached: false,
+      });
+      proc.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk.toString("utf8")));
+      proc.on("close", (code) => {
+        if (code === 0) resolve(destDir);
+        else reject(new Error(`git clone failed (code ${code}): ${stderr.join("").trim()}`));
+      });
+      proc.on("error", reject);
+    });
+  });
+
+  // Pick a parent directory for git clone destination
+  ipcMain.handle("dialog:pick-clone-dest", async () => {
+    const focusedWindow = BrowserWindow.getFocusedWindow();
+    const result = await dialog.showOpenDialog(focusedWindow ?? BrowserWindow.getAllWindows()[0], {
+      title: "Choose Clone Destination",
+      properties: ["openDirectory", "createDirectory"],
+      buttonLabel: "Clone Here",
+    });
+    if (result.canceled || !result.filePaths.length) return null;
+    return result.filePaths[0];
+  });
 }
 
 /* ------------------------------------------------------------------ */

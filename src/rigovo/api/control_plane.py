@@ -217,7 +217,13 @@ class CreateTaskRequest(BaseModel):
     team: str = ""
     tier: str = "auto"
     approve: bool = False
-    project_id: str = ""  # UUID of the active project (optional but used for agent context)
+    project_id: str = ""          # UUID of the active project (optional)
+    workspace_path: str = ""      # Absolute path of the target repo/folder for this task
+    workspace_label: str = ""     # Human-readable name shown in sidebar (e.g. folder/repo name)
+
+
+class RenameTaskRequest(BaseModel):
+    title: str  # Custom display title; overrides description in the inbox/sidebar
 
 
 class RegisterProjectRequest(BaseModel):
@@ -1526,18 +1532,43 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         items = []
         for task in tasks:
             updated = task.completed_at or task.started_at or task.created_at
+            # custom_title wins over raw description (set via PATCH /v1/tasks/{id}/rename)
+            display_title = getattr(task, "custom_title", None) or task.description
+            workspace_path = getattr(task, "workspace_path", None) or ""
+            workspace_label = getattr(task, "workspace_label", None) or ""
+            # Derive label from path basename if not explicitly set
+            if workspace_path and not workspace_label:
+                import os
+                workspace_label = os.path.basename(workspace_path.rstrip("/\\"))
             items.append(
                 {
                     "id": str(task.id),
-                    "title": task.description,
+                    "title": display_title,
                     "source": "rigovo",
                     "tier": _tier_from_task(task),
                     "status": task.status.value,
                     "team": str(task.team_id)[:8] if task.team_id else "unassigned",
                     "updatedAt": _relative(updated),
+                    "workspacePath": workspace_path,
+                    "workspaceLabel": workspace_label,
                 }
             )
         return items
+
+    @app.patch("/v1/tasks/{task_id}/rename")
+    async def rename_task(task_id: str, req: RenameTaskRequest) -> dict[str, str]:
+        """Set a custom display title for a task (shown in sidebar, overrides description)."""
+        title = req.title.strip()[:200]
+        if not title:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+        db = container.get_db()
+        db.execute(
+            "UPDATE tasks SET custom_title = ? WHERE id = ?",
+            (title, task_id),
+        )
+        db.commit()
+        return {"status": "ok", "task_id": task_id, "title": title}
 
     @app.get("/v1/ui/approvals")
     async def ui_approvals(limit: int = 25) -> list[dict]:
@@ -2469,15 +2500,26 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             agent_models[role] = override or DEFAULT_MODELS.get(role, "claude-sonnet-4-6")
             agent_tools[role] = tools_override
 
-        # Read rigovo.yml raw for the config editor — generate defaults if missing
+        # Return a fully-normalised YAML string so the Settings editor always
+        # shows every section (even on projects created before a section was
+        # added to the schema).  We load the on-disk file (if it exists) through
+        # RigovoConfig so missing keys receive their schema defaults, then
+        # serialise back to a human-readable string WITHOUT writing to disk.
+        from rigovo.config_schema import (
+            RigovoConfig,
+            load_rigovo_yml,
+            rigovo_yml_to_string,
+            save_rigovo_yml,
+        )
         yml_path = root / "rigovo.yml"
         if yml_path.exists():
-            yml_raw = yml_path.read_text(encoding="utf-8")
+            # Merge on-disk values with current schema defaults (fills any gaps)
+            merged_cfg = load_rigovo_yml(root)
         else:
-            from rigovo.config_schema import RigovoConfig, save_rigovo_yml
-            default_cfg = RigovoConfig()
-            save_rigovo_yml(default_cfg, root)
-            yml_raw = yml_path.read_text(encoding="utf-8")
+            # First run — create the file so the engine can start from it
+            merged_cfg = RigovoConfig()
+            save_rigovo_yml(merged_cfg, root)
+        yml_raw = rigovo_yml_to_string(merged_cfg)
 
         return {
             "providers": providers,

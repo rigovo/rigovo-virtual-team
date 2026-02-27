@@ -17,6 +17,10 @@ export interface ElectronAPI {
   openExternal: (url: string) => Promise<void>;
   openFolder: () => Promise<string | null>;
   listProjectFiles: (projectPath: string) => Promise<string[]>;
+  /** Shallow-clone a git repo to destDir. Resolves with destDir on success. */
+  gitClone: (url: string, destDir: string) => Promise<string>;
+  /** Open a folder picker for choosing clone destination parent. */
+  pickCloneDest: () => Promise<string | null>;
 }
 
 const api: ElectronAPI = {
@@ -28,6 +32,8 @@ const api: ElectronAPI = {
   openExternal: (url: string) => ipcRenderer.invoke("shell:open-external", url),
   openFolder: () => ipcRenderer.invoke("dialog:open-folder"),
   listProjectFiles: (projectPath: string) => ipcRenderer.invoke("fs:list-project-files", projectPath),
+  gitClone: (url: string, destDir: string) => ipcRenderer.invoke("git:clone", url, destDir),
+  pickCloneDest: () => ipcRenderer.invoke("dialog:pick-clone-dest"),
 };
 
 contextBridge.exposeInMainWorld("electronAPI", Object.freeze(api));

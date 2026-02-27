@@ -31,6 +31,10 @@ export interface InboxTask {
   status: string;
   team: string;
   updatedAt: string;
+  /** Absolute path to the workspace folder this task runs against (optional). */
+  workspacePath?: string;
+  /** Human-readable label derived from workspacePath basename (optional). */
+  workspaceLabel?: string;
 }
 
 export interface ApprovalItem {
@@ -190,6 +194,10 @@ export interface ElectronAPI {
   openExternal: (url: string) => Promise<void>;
   openFolder: () => Promise<string | null>;
   listProjectFiles: (projectPath: string) => Promise<string[]>;
+  /** Shallow-clone a git repo to destDir. Resolves with destDir on success. */
+  gitClone: (url: string, destDir: string) => Promise<string>;
+  /** Open folder picker for selecting clone destination parent directory. */
+  pickCloneDest: () => Promise<string | null>;
 }
 
 declare global {
