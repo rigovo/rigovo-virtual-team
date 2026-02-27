@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rigovo"
-version = "0.1.0"
+version = "1.0.0"
 description = "Virtual Engineering Team as a Service — AI-powered multi-agent CLI for software development"
 readme = "README.md"
 requires-python = ">=3.10"
