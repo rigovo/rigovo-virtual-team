@@ -122,6 +122,14 @@ const ROLE_META: Record<string, { label: string; desc: string; icon: string }> =
   docs:     { label: "Docs",     desc: "Documentation",         icon: "\uD83D\uDCD6" },
 };
 
+/* Fix 4 — human-readable tier labels for model selects */
+const TIER_LABEL: Record<string, string> = {
+  premium: "most capable",
+  standard: "balanced",
+  fast: "fastest",
+  local: "local",
+};
+
 type TabId = "keys" | "agents" | "capabilities" | "storage" | "config" | "logs";
 const TAB_LABELS: Record<TabId, string> = {
   keys: "API Keys",
@@ -150,6 +158,7 @@ export default function Settings({ onBack }: SettingsProps) {
 
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [keyEditing, setKeyEditing] = useState<string | null>(null);
+  const [defaultModel, setDefaultModel] = useState("");
   const [agentModels, setAgentModels] = useState<Record<string, string>>({});
   const [agentTools, setAgentTools] = useState<Record<string, string[]>>({});
   const [pluginPolicy, setPluginPolicy] = useState<SettingsData["plugins_policy"] | null>(null);
@@ -168,6 +177,7 @@ export default function Settings({ onBack }: SettingsProps) {
     const res = await readJson<SettingsData>(`${API_BASE}/v1/settings`);
     if (res) {
       setData(res);
+      setDefaultModel(res.default_model || "");
       setAgentModels({ ...res.agent_models });
       setAgentTools({ ...res.agent_tools });
       setPluginPolicy({ ...res.plugins_policy });
@@ -233,7 +243,7 @@ export default function Settings({ onBack }: SettingsProps) {
     setKeyEditing(null);
     setKeys((prev) => ({ ...prev, [provider]: "" }));
   };
-  const saveAgentModels = () => void save({ agent_models: agentModels });
+  const saveAgentModels = () => void save({ default_model: defaultModel, agent_models: agentModels });
   const parseCsvList = (v: string): string[] => v.split(",").map((x) => x.trim()).filter(Boolean);
   const saveCapabilities = () => { if (pluginPolicy) void save({ agent_tools: agentTools, plugin_policy: pluginPolicy }); };
   const saveEndpoints = () => {
@@ -325,30 +335,27 @@ export default function Settings({ onBack }: SettingsProps) {
             API keys are encrypted at rest in your local database. Never sent to Rigovo's servers.
           </p>
 
-          {providerEntries.map(([provider, info]) => {
+          {/* Fix 5: skip the Ollama provider card — it has no key input and confuses users.
+              Ollama is handled by its own URL card below. */}
+          {providerEntries.filter(([provider]) => provider !== "ollama").map(([provider, info]) => {
             const isEditing = keyEditing === provider;
-            const isOllama = provider === "ollama";
             return (
               <div key={provider} className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--ui-border)" }}>
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2.5">
-                    <div className={`h-2 w-2 rounded-full ${isOllama ? "bg-blue-500" : info.configured ? "bg-emerald-500" : "bg-[rgba(0,0,0,0.15)]"}`} />
+                    <div className={`h-2 w-2 rounded-full ${info.configured ? "bg-emerald-500" : "bg-[rgba(0,0,0,0.15)]"}`} />
                     <span className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>{info.label}</span>
-                    {info.configured && !isOllama && (
+                    {info.configured && (
                       <span className="text-[10px] font-medium px-1.5 py-0.5 rounded" style={{ background: "rgba(16,185,129,0.08)", color: "#047857" }}>active</span>
                     )}
                   </div>
                   <a href={info.link} target="_blank" rel="noreferrer"
                     className="text-xs font-medium transition-colors hover:underline" style={{ color: "var(--ui-text-muted)" }}>
-                    {isOllama ? "Install \u2197" : "Get key \u2197"}
+                    Get key ↗
                   </a>
                 </div>
 
-                {isOllama ? (
-                  <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>
-                    Run models locally. Install Ollama, pull a model, and set agent models to <code className="rounded px-1 py-0.5 text-[11px]" style={{ background: "rgba(0,0,0,0.04)" }}>llama3</code> etc.
-                  </p>
-                ) : !isEditing ? (
+                {!isEditing ? (
                   <div className="flex items-center gap-3">
                     <div className="flex-1 rounded-lg px-3 py-2 text-sm font-mono" style={{ background: "rgba(0,0,0,0.03)", color: info.configured ? "var(--ui-text-secondary)" : "var(--ui-text-subtle)" }}>
                       {info.configured ? info.masked : "Not configured"}
@@ -395,11 +402,24 @@ export default function Settings({ onBack }: SettingsProps) {
             </div>
           </div>
 
-          {/* Ollama URL */}
+          {/* Fix 5: Ollama as a first-class provider card with URL field */}
           <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--ui-border)" }}>
-            <div className="flex items-center gap-2.5 mb-2">
-              <span className="text-sm font-medium" style={{ color: "var(--ui-text-muted)" }}>Ollama URL</span>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2.5">
+                <div className={`h-2 w-2 rounded-full ${ollamaUrl && ollamaUrl !== "http://localhost:11434" ? "bg-emerald-500" : "bg-[rgba(0,0,0,0.15)]"}`} />
+                <span className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Ollama</span>
+                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded" style={{ background: "rgba(0,0,0,0.04)", color: "var(--ui-text-subtle)" }}>local</span>
+              </div>
+              <a href="https://ollama.com" target="_blank" rel="noreferrer"
+                className="text-xs font-medium transition-colors hover:underline" style={{ color: "var(--ui-text-muted)" }}>
+                Install ↗
+              </a>
             </div>
+            <p className="text-xs mb-3" style={{ color: "var(--ui-text-muted)" }}>
+              Run models locally — no API key needed. Install Ollama, pull a model (e.g.{" "}
+              <code className="rounded px-1 py-0.5 text-[11px]" style={{ background: "rgba(0,0,0,0.04)" }}>ollama pull llama3</code>),
+              then set agent models to <code className="rounded px-1 py-0.5 text-[11px]" style={{ background: "rgba(0,0,0,0.04)" }}>llama3</code> in the Agents tab.
+            </p>
             <div className="flex items-center gap-2">
               <input type="url" placeholder="http://localhost:11434" value={ollamaUrl}
                 onChange={(e) => setOllamaUrl(e.target.value)} className={INPUT_CLS} style={inputBorder} />
@@ -413,11 +433,36 @@ export default function Settings({ onBack }: SettingsProps) {
       {tab === "agents" && (
         <div className="space-y-3">
           <p className="text-sm mb-2" style={{ color: "var(--ui-text-muted)" }}>
-            Choose which LLM powers each agent role.
+            Choose which LLM powers each agent role. The default model is used for any role without an override.
           </p>
+
+          {/* Default model — Fix 1: was fetched but never shown */}
+          <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--ui-border)" }}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Default model</p>
+                <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
+                  Fallback for any agent that has no role-specific override below.
+                </p>
+              </div>
+              <select
+                value={defaultModel}
+                onChange={(e) => setDefaultModel(e.target.value)}
+                className="rounded-lg border bg-white px-3 py-2 text-sm outline-none transition-colors min-w-[200px] cursor-pointer"
+                style={{ borderColor: "var(--ui-border)", color: "var(--ui-text-secondary)" }}
+              >
+                {data.available_models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}{TIER_LABEL[m.tier] ? ` — ${TIER_LABEL[m.tier]}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           {Object.entries(ROLE_META).map(([role, meta]) => {
-            const current = agentModels[role] || data.default_agent_models[role] || "claude-sonnet-4-6";
-            const isDefault = current === data.default_agent_models[role];
+            const current = agentModels[role] || data.default_agent_models[role] || defaultModel || "claude-sonnet-4-6";
+            const isDefault = !agentModels[role] || agentModels[role] === data.default_agent_models[role];
             return (
               <div key={role} className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--ui-border)" }}>
                 <div className="flex items-center gap-3">
@@ -436,7 +481,9 @@ export default function Settings({ onBack }: SettingsProps) {
                     className="rounded-lg border bg-white px-3 py-2 text-sm outline-none transition-colors min-w-[180px] cursor-pointer"
                     style={{ borderColor: "var(--ui-border)", color: "var(--ui-text-secondary)" }}>
                     {data.available_models.map((m) => (
-                      <option key={m.id} value={m.id}>{m.label} ({m.tier})</option>
+                      <option key={m.id} value={m.id}>
+                        {m.label}{TIER_LABEL[m.tier] ? ` — ${TIER_LABEL[m.tier]}` : ""}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -588,20 +635,33 @@ export default function Settings({ onBack }: SettingsProps) {
             </div>
           </div>
 
-          <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
-            <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>SQLite path</p>
-            <input type="text" value={dbLocalPath} onChange={(e) => setDbLocalPath(e.target.value)}
-              placeholder=".rigovo/local.db" className={INPUT_CLS} style={inputBorder} />
-          </div>
-
-          <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
-            <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>PostgreSQL DSN</p>
-            <input type="password" value={dbUrl} onChange={(e) => setDbUrl(e.target.value)}
-              placeholder="postgresql://user:pass@host:5432/dbname" className={INPUT_CLS} style={inputBorder} />
-            <p className="text-xs" style={{ color: "var(--ui-text-subtle)" }}>
-              Current: {data.database.dsn_configured ? data.database.dsn_masked : "not configured"}
-            </p>
-          </div>
+          {/* Fix 2: show only the relevant field for the selected backend */}
+          {dbBackend === "sqlite" ? (
+            <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
+              <div>
+                <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>SQLite file path</p>
+                <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
+                  Relative to project root. The file is created automatically on first run.
+                </p>
+              </div>
+              <input type="text" value={dbLocalPath} onChange={(e) => setDbLocalPath(e.target.value)}
+                placeholder=".rigovo/local.db" className={INPUT_CLS} style={inputBorder} />
+            </div>
+          ) : (
+            <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
+              <div>
+                <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>PostgreSQL connection string</p>
+                <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
+                  Stored encrypted. Existing SQLite data is not migrated automatically.
+                </p>
+              </div>
+              <input type="password" value={dbUrl} onChange={(e) => setDbUrl(e.target.value)}
+                placeholder="postgresql://user:pass@host:5432/dbname" className={INPUT_CLS} style={inputBorder} />
+              <p className="text-xs" style={{ color: "var(--ui-text-subtle)" }}>
+                Current: {data.database.dsn_configured ? data.database.dsn_masked : "not configured"}
+              </p>
+            </div>
+          )}
 
           <div className="flex justify-end">
             <button type="button" disabled={saving} onClick={saveDatabase} className="primary-btn">
@@ -653,6 +713,15 @@ export default function Settings({ onBack }: SettingsProps) {
 
           {ymlView === "friendly" ? (
             <div className="space-y-2">
+              {/* Fix 3: make read-only nature explicit + give clear path to editing */}
+              <div className="rounded-lg px-3 py-2 flex items-center justify-between text-xs"
+                style={{ background: "rgba(0,0,0,0.02)", color: "var(--ui-text-muted)" }}>
+                <span>Read-only preview. Switch to Raw YAML to edit.</span>
+                <button type="button" onClick={() => setYmlView("raw")}
+                  className="underline font-medium" style={{ color: "var(--ui-text-secondary)" }}>
+                  Edit in Raw YAML →
+                </button>
+              </div>
               {parseYmlSections(ymlRaw).filter(({ key }) => !key.startsWith("#")).map(({ key, value }) => (
                 <details key={key} className="rounded-xl border bg-white group" style={{ borderColor: "var(--ui-border)" }}>
                   <summary className="cursor-pointer px-4 py-3 flex items-center gap-2 text-sm font-medium transition-colors" style={{ color: "var(--ui-text)" }}>

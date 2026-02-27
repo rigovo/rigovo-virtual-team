@@ -1097,8 +1097,92 @@
     border-radius: var(--r-xl);
     background: rgba(217, 119, 6, 0.05);
     padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
   .approval-card p { color: var(--t1) !important; }
+
+  .approval-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+  }
+  .approval-card-age,
+  .approval-card-by {
+    color: var(--t3);
+  }
+  .approval-card-summary {
+    font-size: 13px;
+    color: var(--t1);
+    line-height: 1.5;
+    margin: 0;
+  }
+  .approval-card-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  /* Notify card — blue tint, informational only */
+  .notify-card {
+    border: 1.5px solid rgba(59, 130, 246, 0.3);
+    border-radius: var(--r-xl);
+    background: rgba(59, 130, 246, 0.05);
+    padding: 14px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: relative;
+  }
+  .notify-card-dismiss {
+    align-self: flex-end;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 11px;
+    color: var(--t3);
+    cursor: pointer;
+  }
+  .notify-card-dismiss:hover {
+    color: var(--t1);
+    border-color: var(--t3);
+  }
+
+  /* Approvals section container */
+  .approvals-section {
+    margin-bottom: 20px;
+  }
+  .approvals-section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--t2);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .approvals-count {
+    background: rgba(217, 119, 6, 0.15);
+    color: #b45309;
+    border-radius: 100px;
+    padding: 1px 8px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .approvals-count.notify {
+    background: rgba(59, 130, 246, 0.12);
+    color: #3b82f6;
+  }
+  .approvals-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
 
   /* ================================================================
      CONTROL PLANE — mission stats, pipeline track, approval banner
