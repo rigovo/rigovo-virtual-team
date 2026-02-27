@@ -278,7 +278,12 @@ export default function App(): JSX.Element {
       try {
         const s = await electronAPI.engineStatus();
         setEngine(s);
-        if (!s.running) await startEngine();
+        // Only auto-start if engine isn't running AND the API isn't reachable
+        // (avoids conflicting with an externally-started API from e2e_desktop.sh)
+        if (!s.running) {
+          const alreadyHealthy = await isApiHealthy(API_BASE);
+          if (!alreadyHealthy) await startEngine();
+        }
       } catch (err) {
         setEngineError(err instanceof Error ? err.message : String(err));
       }
@@ -321,14 +326,9 @@ export default function App(): JSX.Element {
       setApiReachable(healthy);
 
       if (!healthy) {
-        // Demo mode — skip auth, show UI with demo data immediately
-        setAuthSession({ signed_in: true, email: "demo@rigovo.dev", full_name: "Demo User", first_name: "Demo", last_name: "User", role: "admin", organization_id: "demo", organization_name: "Rigovo Demo", workspace: { name: "Demo", slug: "demo", admin_email: "demo@rigovo.dev", region: "local" } });
-        setInbox(fallbackInbox);
-        setSelected("");
-        setNewThreadMode(true);
-        setMode("fallback");
-        setRoute("control");
-        setWorkspacePage("threads");
+        // API unreachable — stay on auth screen, show a warning so the user
+        // knows the engine is not running (do NOT auto-login as demo user).
+        setRoute("auth");
         return;
       }
 

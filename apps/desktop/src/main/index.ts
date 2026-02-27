@@ -294,6 +294,20 @@ function registerIpc(): void {
 function createWindow(): void {
   const runtime = runtimeConfig();
   const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
+
+  // Resolve icon path — works in both dev (source tree) and production (resources)
+  const iconPath = (() => {
+    const candidates = [
+      join(__dirname, "../../resources/icon.png"),   // dev: out/main/ → resources/
+      join(__dirname, "../../../resources/icon.png"), // fallback
+      join(app.getAppPath(), "resources/icon.png"),   // production bundle
+    ];
+    for (const c of candidates) {
+      try { if (statSync(c).isFile()) return c; } catch { /* skip */ }
+    }
+    return undefined;
+  })();
+
   const mainWindow = new BrowserWindow({
     width: 1480,
     height: 920,
@@ -302,6 +316,7 @@ function createWindow(): void {
     title: "Rigovo Control Plane",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 14, y: 14 },
+    ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: runtime.electronSandbox
@@ -352,9 +367,14 @@ async function bootstrapDesktop(): Promise<void> {
     return;
   }
 
-  // Free port 8787 if occupied by a stale process from a previous run
-  // (port 8787 is required for WorkOS redirect URI to match)
-  killPort(8787);
+  const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
+
+  // In production: free port 8787 if occupied by a stale process from a previous run.
+  // In dev mode: skip — the e2e script manages the API process externally; killing
+  // it here would cause demo-mode fallback in the renderer (API unreachable).
+  if (!isDev) {
+    killPort(8787);
+  }
 
   await app.whenReady();
   registerIpc();
