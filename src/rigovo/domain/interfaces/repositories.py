@@ -14,13 +14,13 @@ DEFAULT_PAGE_SIZE = 50
 DEFAULT_MEMORY_SEARCH_LIMIT = 10
 DEFAULT_AUDIT_PAGE_SIZE = 100
 
-from rigovo.domain.entities.workspace import Workspace
-from rigovo.domain.entities.team import Team
 from rigovo.domain.entities.agent import Agent, EnrichmentContext
-from rigovo.domain.entities.task import Task
-from rigovo.domain.entities.memory import Memory, MemoryType
+from rigovo.domain.entities.audit_entry import AuditEntry
 from rigovo.domain.entities.cost_entry import CostEntry
-from rigovo.domain.entities.audit_entry import AuditEntry, AuditAction
+from rigovo.domain.entities.memory import Memory, MemoryType
+from rigovo.domain.entities.task import Task
+from rigovo.domain.entities.team import Team
+from rigovo.domain.entities.workspace import Workspace
 
 
 class WorkspaceRepository(ABC):
@@ -80,7 +80,9 @@ class AgentRepository(ABC):
 
     @abstractmethod
     async def update_enrichment(
-        self, agent_id: UUID, enrichment: EnrichmentContext,
+        self,
+        agent_id: UUID,
+        enrichment: EnrichmentContext,
     ) -> None:
         raise NotImplementedError
 
@@ -98,13 +100,17 @@ class TaskRepository(ABC):
 
     @abstractmethod
     async def list_by_workspace(
-        self, workspace_id: UUID, limit: int = DEFAULT_PAGE_SIZE,
+        self,
+        workspace_id: UUID,
+        limit: int = DEFAULT_PAGE_SIZE,
     ) -> list[Task]:
         raise NotImplementedError
 
     @abstractmethod
     async def list_by_team(
-        self, team_id: UUID, limit: int = DEFAULT_PAGE_SIZE,
+        self,
+        team_id: UUID,
+        limit: int = DEFAULT_PAGE_SIZE,
     ) -> list[Task]:
         raise NotImplementedError
 
@@ -136,7 +142,9 @@ class MemoryRepository(ABC):
 
     @abstractmethod
     async def list_by_workspace(
-        self, workspace_id: UUID, limit: int = DEFAULT_PAGE_SIZE,
+        self,
+        workspace_id: UUID,
+        limit: int = DEFAULT_PAGE_SIZE,
     ) -> list[Memory]:
         raise NotImplementedError
 
@@ -182,7 +190,9 @@ class AuditRepository(ABC):
 
     @abstractmethod
     async def list_by_workspace(
-        self, workspace_id: UUID, limit: int = DEFAULT_AUDIT_PAGE_SIZE,
+        self,
+        workspace_id: UUID,
+        limit: int = DEFAULT_AUDIT_PAGE_SIZE,
     ) -> list[AuditEntry]:
         raise NotImplementedError
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from rigovo.domain.entities.agent import Agent
-from rigovo.domain.entities.task import TaskType, TaskComplexity
+from rigovo.domain.entities.task import TaskComplexity, TaskType
 
 
 @dataclass
@@ -100,9 +100,6 @@ class TeamAssemblerService:
         pipeline_agents.sort(key=lambda a: a.pipeline_order)
 
         # 6. Determine which roles trigger quality gates
-        gates_after = [
-            a.role for a in pipeline_agents
-            if a.role in self.CODE_PRODUCING_ROLES
-        ]
+        gates_after = [a.role for a in pipeline_agents if a.role in self.CODE_PRODUCING_ROLES]
 
         return PipelineConfig(agents=pipeline_agents, gates_after=gates_after)

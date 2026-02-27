@@ -103,14 +103,28 @@ export default function AuthScreen({
         {waiting ? (
           /* Waiting for browser OAuth redirect */
           <div className="auth-waiting">
-            <div className="auth-waiting-spinner" aria-label="Loading" />
-            <p className="auth-waiting-text">
-              Completing sign-in in your browser…<br />
-              Switch back here once you&apos;re done.
-            </p>
-            <button type="button" className="auth-cancel-btn" onClick={onCancel}>
-              Cancel
-            </button>
+            {message ? (
+              /* Auth failed or timed out — show error with retry */
+              <>
+                <div className="auth-error" role="alert" style={{ marginBottom: 16 }}>
+                  {message}
+                </div>
+                <button type="button" className="auth-primary-btn" onClick={() => { onCancel(); }}>
+                  Try again
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="auth-waiting-spinner" aria-label="Loading" />
+                <p className="auth-waiting-text">
+                  Completing sign-in in your browser…<br />
+                  Switch back here once you&apos;re done.
+                </p>
+                <button type="button" className="auth-cancel-btn" onClick={onCancel}>
+                  Cancel
+                </button>
+              </>
+            )}
           </div>
         ) : (
           <div className="auth-actions">
@@ -141,8 +155,8 @@ export default function AuthScreen({
           </div>
         )}
 
-        {/* Error message */}
-        {message && (
+        {/* Error message — only shown when NOT in waiting state (waiting state handles its own errors) */}
+        {!waiting && message && (
           <div className="auth-error" role="alert">
             {message}
           </div>

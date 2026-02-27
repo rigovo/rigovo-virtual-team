@@ -18,17 +18,63 @@ def get_engineering_tools(role_id: str) -> list[dict[str, Any]]:
 
 # Which tools each role has access to
 TOOLS_BY_ROLE: dict[str, list[str]] = {
-    "planner": ["read_file", "list_directory", "search_codebase", "read_dependencies", "consult_agent", "invoke_integration"],
+    "planner": [
+        "read_file",
+        "list_directory",
+        "search_codebase",
+        "read_dependencies",
+        "consult_agent",
+        "invoke_integration",
+    ],
     "coder": [
-        "read_file", "write_file", "list_directory", "search_codebase",
-        "run_command", "read_dependencies", "spawn_subtask", "consult_agent",
+        "read_file",
+        "write_file",
+        "list_directory",
+        "search_codebase",
+        "run_command",
+        "read_dependencies",
+        "spawn_subtask",
+        "consult_agent",
     ],
     "reviewer": ["read_file", "list_directory", "search_codebase", "consult_agent"],
-    "security": ["read_file", "search_codebase", "run_command", "consult_agent", "invoke_integration"],
-    "qa": ["read_file", "write_file", "list_directory", "search_codebase", "run_command", "consult_agent"],
-    "devops": ["read_file", "write_file", "list_directory", "run_command", "consult_agent", "invoke_integration"],
-    "sre": ["read_file", "write_file", "list_directory", "run_command", "consult_agent", "invoke_integration"],
-    "lead": ["read_file", "list_directory", "search_codebase", "consult_agent", "invoke_integration"],
+    "security": [
+        "read_file",
+        "search_codebase",
+        "run_command",
+        "consult_agent",
+        "invoke_integration",
+    ],
+    "qa": [
+        "read_file",
+        "write_file",
+        "list_directory",
+        "search_codebase",
+        "run_command",
+        "consult_agent",
+    ],
+    "devops": [
+        "read_file",
+        "write_file",
+        "list_directory",
+        "run_command",
+        "consult_agent",
+        "invoke_integration",
+    ],
+    "sre": [
+        "read_file",
+        "write_file",
+        "list_directory",
+        "run_command",
+        "consult_agent",
+        "invoke_integration",
+    ],
+    "lead": [
+        "read_file",
+        "list_directory",
+        "search_codebase",
+        "consult_agent",
+        "invoke_integration",
+    ],
 }
 
 # Tool definitions for LLM function calling

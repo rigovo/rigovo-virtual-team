@@ -42,11 +42,13 @@ class QualityGateBuilder:
         configs = self._configs_from_yml(yml_quality)
         configs = self._merge_domain_configs(configs)
 
-        return [RigourQualityGate(
-            gate_configs=configs,
-            rigour_binary=yml_quality.rigour_binary,
-            timeout_seconds=yml_quality.rigour_timeout,
-        )]
+        return [
+            RigourQualityGate(
+                gate_configs=configs,
+                rigour_binary=yml_quality.rigour_binary,
+                timeout_seconds=yml_quality.rigour_timeout,
+            )
+        ]
 
     def _configs_from_yml(self, yml_quality) -> list[RigourGateConfig]:
         """Build gate configs from rigovo.yml overrides."""
@@ -58,7 +60,8 @@ class QualityGateBuilder:
                     name=gate_id.replace("-", " ").title(),
                     threshold=gate_override.threshold,
                     severity=SEVERITY_MAP.get(
-                        gate_override.severity, ViolationSeverity.ERROR,
+                        gate_override.severity,
+                        ViolationSeverity.ERROR,
                     ),
                     enabled=gate_override.enabled,
                 )
@@ -66,7 +69,8 @@ class QualityGateBuilder:
         return configs
 
     def _merge_domain_configs(
-        self, configs: list[RigourGateConfig],
+        self,
+        configs: list[RigourGateConfig],
     ) -> list[RigourGateConfig]:
         """Add domain plugin gates that aren't already configured."""
         existing_ids = {c.gate_id for c in configs}

@@ -56,12 +56,15 @@ async def scan_project_node(
     return {
         "project_snapshot": snapshot,
         "status": "project_scanned",
-        "events": state.get("events", []) + [{
-            "type": "project_scanned",
-            "source_files": snapshot.source_file_count,
-            "total_files": snapshot.total_file_count,
-            "tech_stack": snapshot.tech_stack,
-            "entry_points": snapshot.entry_points,
-            "test_dirs": snapshot.test_directories,
-        }],
+        "events": state.get("events", [])
+        + [
+            {
+                "type": "project_scanned",
+                "source_files": snapshot.source_file_count,
+                "total_files": snapshot.total_file_count,
+                "tech_stack": snapshot.tech_stack,
+                "entry_points": snapshot.entry_points,
+                "test_dirs": snapshot.test_directories,
+            }
+        ],
     }

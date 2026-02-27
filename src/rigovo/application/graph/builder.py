@@ -17,38 +17,38 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from rigovo.application.graph.state import TaskState
+from rigovo.application.context.memory_retriever import MemoryRetriever
 from rigovo.application.graph.edges import (
+    advance_to_next_agent,
     check_approval,
     check_gates_and_route,
-    check_replan_result,
-    check_pipeline_complete,
     check_parallel_postprocess,
-    advance_to_next_agent,
+    check_replan_result,
     prepare_debate_round,
 )
-from rigovo.application.graph.nodes.scan_project import scan_project_node
-from rigovo.application.graph.nodes.classify import classify_node
-from rigovo.application.graph.nodes.route_team import route_team_node
+from rigovo.application.graph.nodes.approval import commit_approval_node, plan_approval_node
 from rigovo.application.graph.nodes.assemble import assemble_node
+from rigovo.application.graph.nodes.classify import classify_node
+from rigovo.application.graph.nodes.enrich import enrich_node
 from rigovo.application.graph.nodes.execute_agent import (
     execute_agent_node,
     execute_agents_parallel,
 )
+from rigovo.application.graph.nodes.finalize import finalize_node
 from rigovo.application.graph.nodes.quality_check import quality_check_node
-from rigovo.application.graph.nodes.approval import plan_approval_node, commit_approval_node
-from rigovo.application.graph.nodes.enrich import enrich_node
 from rigovo.application.graph.nodes.replan import replan_node
+from rigovo.application.graph.nodes.route_team import route_team_node
+from rigovo.application.graph.nodes.scan_project import scan_project_node
 from rigovo.application.graph.nodes.store_memory import store_memory_node
-from rigovo.application.context.memory_retriever import MemoryRetriever
+from rigovo.application.graph.state import TaskState
 from rigovo.application.master.classifier import TaskClassifier
-from rigovo.application.master.router import TeamRouter
 from rigovo.application.master.enricher import ContextEnricher
 from rigovo.application.master.evaluator import AgentEvaluator
-from rigovo.application.graph.nodes.finalize import finalize_node
+from rigovo.application.master.router import TeamRouter
 from rigovo.domain.entities.agent import Agent
 from rigovo.domain.interfaces.embedding_provider import EmbeddingProvider
 from rigovo.domain.interfaces.llm_provider import LLMProvider
@@ -82,7 +82,7 @@ class GraphBuilder:
         available_teams: list[dict[str, Any]] | None = None,
         approval_handler: Callable[[TaskState], dict[str, Any]] | None = None,
         auto_approve: bool = True,
-        enable_parallel: bool = True,   # ON by default — the magic
+        enable_parallel: bool = True,  # ON by default — the magic
         stream_callback: Any | None = None,
         memory_repo: MemoryRepository | None = None,
         embedding_provider: EmbeddingProvider | None = None,
@@ -130,6 +130,7 @@ class GraphBuilder:
         except ImportError:
             try:
                 from langgraph.checkpoint.sqlite import SqliteSaver
+
                 path = str(db_path) if db_path else ".rigovo/checkpoints.db"
                 return SqliteSaver.from_conn_string(path)
             except ImportError:
@@ -150,7 +151,7 @@ class GraphBuilder:
         Returns the compiled graph ready for ``await graph.ainvoke(state)``.
         Raises ``ImportError`` when ``langgraph`` is not installed.
         """
-        from langgraph.graph import StateGraph, START, END
+        from langgraph.graph import END, START, StateGraph
 
         graph = StateGraph(TaskState)
 
@@ -185,11 +186,14 @@ class GraphBuilder:
             if not available_teams:
                 return {
                     "status": "routed",
-                    "events": state.get("events", []) + [{
-                        "type": "team_routed",
-                        "team_name": "engineering",
-                        "reasoning": "No team config provided; using default engineering team.",
-                    }],
+                    "events": state.get("events", [])
+                    + [
+                        {
+                            "type": "team_routed",
+                            "team_name": "engineering",
+                            "reasoning": "No team config provided; using default engineering team.",
+                        }
+                    ],
                 }
             return await route_team_node(state, master_llm, available_teams, router=router)
 
@@ -262,14 +266,16 @@ class GraphBuilder:
                 remaining_roles = list(ready_roles)
             else:
                 current_index = state.get("current_agent_index", 0)
-                remaining_roles = pipeline_order[current_index + 1:]
+                remaining_roles = pipeline_order[current_index + 1 :]
 
             # Emit parallel_started event
             events = list(state.get("events", []))
-            events.append({
-                "type": "parallel_started",
-                "roles": remaining_roles,
-            })
+            events.append(
+                {
+                    "type": "parallel_started",
+                    "roles": remaining_roles,
+                }
+            )
 
             result = await execute_agents_parallel(
                 {**state, "events": events},
@@ -330,51 +336,75 @@ class GraphBuilder:
         graph.add_edge("route_team", "assemble")
         graph.add_edge("assemble", "plan_approval")
 
-        graph.add_conditional_edges("plan_approval", check_approval, {
-            "approved": "execute_agent",
-            "rejected": "finalize",
-        })
+        graph.add_conditional_edges(
+            "plan_approval",
+            check_approval,
+            {
+                "approved": "execute_agent",
+                "rejected": "finalize",
+            },
+        )
 
         # Agent execution → quality gates
         graph.add_edge("execute_agent", "quality_check")
 
-        graph.add_conditional_edges("quality_check", check_gates_and_route, {
-            "pass_next_agent": "route_next",
-            "fail_fix_loop": "execute_agent",
-            "trigger_replan": "replan",
-            "fail_max_retries": "finalize",
-        })
+        graph.add_conditional_edges(
+            "quality_check",
+            check_gates_and_route,
+            {
+                "pass_next_agent": "route_next",
+                "fail_fix_loop": "execute_agent",
+                "trigger_replan": "replan",
+                "fail_max_retries": "finalize",
+            },
+        )
 
-        graph.add_conditional_edges("replan", check_replan_result, {
-            "replan_continue": "execute_agent",
-            "replan_failed": "finalize",
-        })
+        graph.add_conditional_edges(
+            "replan",
+            check_replan_result,
+            {
+                "replan_continue": "execute_agent",
+                "replan_failed": "finalize",
+            },
+        )
 
         # After routing: sequential, parallel fan-out, debate loop, or done
-        graph.add_conditional_edges("route_next", check_parallel_postprocess, {
-            "more_agents": "execute_agent",
-            "parallel_fan_out": "parallel_fan_out",
-            "debate_needed": "debate_check",
-            "pipeline_done": "commit_approval",
-            "pipeline_failed": "finalize",
-        })
+        graph.add_conditional_edges(
+            "route_next",
+            check_parallel_postprocess,
+            {
+                "more_agents": "execute_agent",
+                "parallel_fan_out": "parallel_fan_out",
+                "debate_needed": "debate_check",
+                "pipeline_done": "commit_approval",
+                "pipeline_failed": "finalize",
+            },
+        )
 
         # After parallel fan-out: continue DAG scheduling, or trigger debate loop.
-        graph.add_conditional_edges("parallel_fan_out", check_parallel_postprocess, {
-            "more_agents": "execute_agent",
-            "parallel_fan_out": "parallel_fan_out",
-            "pipeline_done": "commit_approval",
-            "pipeline_failed": "finalize",
-            "debate_needed": "debate_check",
-        })
+        graph.add_conditional_edges(
+            "parallel_fan_out",
+            check_parallel_postprocess,
+            {
+                "more_agents": "execute_agent",
+                "parallel_fan_out": "parallel_fan_out",
+                "pipeline_done": "commit_approval",
+                "pipeline_failed": "finalize",
+                "debate_needed": "debate_check",
+            },
+        )
 
         # Debate check preps coder re-execution with reviewer feedback
         graph.add_edge("debate_check", "execute_agent")
 
-        graph.add_conditional_edges("commit_approval", check_approval, {
-            "approved": "enrich",
-            "rejected": "finalize",
-        })
+        graph.add_conditional_edges(
+            "commit_approval",
+            check_approval,
+            {
+                "approved": "enrich",
+                "rejected": "finalize",
+            },
+        )
 
         graph.add_edge("enrich", "store_memory")
         graph.add_edge("store_memory", "finalize")
@@ -458,8 +488,11 @@ class GraphBuilder:
             await self._run_sequential_agents(state, sequential)
             if parallel:
                 update = await execute_agents_parallel(
-                    state, parallel, self._llm_factory,
-                    self._cost_calculator, self._stream_callback,
+                    state,
+                    parallel,
+                    self._llm_factory,
+                    self._cost_calculator,
+                    self._stream_callback,
                     memory_repo=self._memory_repo,
                     embedding_provider=self._embedding_provider,
                     memory_retriever=self._memory_retriever,
@@ -506,7 +539,9 @@ class GraphBuilder:
         return state  # type: ignore[return-value]
 
     async def _run_sequential_agents(
-        self, state: dict, pipeline_order: list[str],
+        self,
+        state: dict,
+        pipeline_order: list[str],
     ) -> None:
         """Run agents one-by-one with quality gate retry loops."""
         for i, role in enumerate(pipeline_order):
@@ -514,7 +549,9 @@ class GraphBuilder:
             state["current_agent_role"] = role
 
             update = await execute_agent_node(
-                state, self._llm_factory, self._cost_calculator,
+                state,
+                self._llm_factory,
+                self._cost_calculator,
                 stream_callback=self._stream_callback,
                 memory_repo=self._memory_repo,
                 embedding_provider=self._embedding_provider,
@@ -532,7 +569,9 @@ class GraphBuilder:
 
                 while retry_count < max_retries and not gate_results.get("passed", True):
                     update = await execute_agent_node(
-                        state, self._llm_factory, self._cost_calculator,
+                        state,
+                        self._llm_factory,
+                        self._cost_calculator,
                         stream_callback=self._stream_callback,
                         memory_repo=self._memory_repo,
                         embedding_provider=self._embedding_provider,

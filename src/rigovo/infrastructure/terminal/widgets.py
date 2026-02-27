@@ -30,10 +30,10 @@ ROLE_ICONS: dict[str, str] = {
 }
 
 # --- Stage status indicators ---
-STAGE_PENDING = "\u25cb"     # ○
-STAGE_ACTIVE = "\u25c9"      # ◉
-STAGE_COMPLETE = "\u25cf"    # ●
-STAGE_FAILED = "\u2717"      # ✗
+STAGE_PENDING = "\u25cb"  # ○
+STAGE_ACTIVE = "\u25c9"  # ◉
+STAGE_COMPLETE = "\u25cf"  # ●
+STAGE_FAILED = "\u2717"  # ✗
 
 # --- Pipeline stage display names ---
 STAGE_LABELS: dict[str, str] = {
@@ -319,7 +319,12 @@ class AgentPanel(Static):
         self._update_log()
 
     def add_agent_complete(
-        self, role: str, name: str, tokens: int, cost: float, duration_ms: int,
+        self,
+        role: str,
+        name: str,
+        tokens: int,
+        cost: float,
+        duration_ms: int,
     ) -> None:
         icon = ROLE_ICONS.get(role, "\u2699")
         duration_s = duration_ms / 1000
@@ -360,12 +365,8 @@ class AgentPanel(Static):
         self._update_log()
 
     def add_parallel_start(self, roles: list[str]) -> None:
-        icons = " ".join(
-            f"{ROLE_ICONS.get(r, chr(0x2699))} {r}" for r in roles
-        )
-        self._log_lines.append(
-            f"[bold magenta]\u26a1 Parallel:[/bold magenta] {icons}"
-        )
+        icons = " ".join(f"{ROLE_ICONS.get(r, chr(0x2699))} {r}" for r in roles)
+        self._log_lines.append(f"[bold magenta]\u26a1 Parallel:[/bold magenta] {icons}")
         self._update_log()
 
     def add_parallel_complete(self) -> None:
@@ -445,11 +446,13 @@ class CostTracker(Static):
             filled = int(pct / 5)
             bar = "\u2588" * filled + "\u2591" * (20 - filled)
             color = "green" if pct < 70 else "yellow" if pct < 90 else "red"
-            lines.extend([
-                "",
-                f"  Budget: ${self._budget:.2f}",
-                f"  [{color}][{bar}] {pct:.0f}%[/{color}]",
-            ])
+            lines.extend(
+                [
+                    "",
+                    f"  Budget: ${self._budget:.2f}",
+                    f"  [{color}][{bar}] {pct:.0f}%[/{color}]",
+                ]
+            )
 
         return "\n".join(lines)
 

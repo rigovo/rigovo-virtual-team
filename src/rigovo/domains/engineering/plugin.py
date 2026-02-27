@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from rigovo.domain.interfaces.domain_plugin import (
-    DomainPlugin,
     AgentRoleDefinition,
+    DomainPlugin,
     TaskTypeDefinition,
 )
 from rigovo.domain.interfaces.quality_gate import QualityGate
@@ -39,13 +39,21 @@ class EngineeringDomain(DomainPlugin):
         return [
             TaskTypeDefinition("feature", "Feature", "New functionality or capability"),
             TaskTypeDefinition("bug", "Bug Fix", "Fix a defect in existing code"),
-            TaskTypeDefinition("refactor", "Refactor", "Improve code structure without changing behaviour"),
+            TaskTypeDefinition(
+                "refactor", "Refactor", "Improve code structure without changing behaviour"
+            ),
             TaskTypeDefinition("test", "Test", "Add or improve tests"),
             TaskTypeDefinition("docs", "Documentation", "Write or update documentation"),
-            TaskTypeDefinition("infra", "Infrastructure", "CI/CD, deployment, or infrastructure changes"),
+            TaskTypeDefinition(
+                "infra", "Infrastructure", "CI/CD, deployment, or infrastructure changes"
+            ),
             TaskTypeDefinition("security", "Security", "Fix or improve security posture"),
-            TaskTypeDefinition("performance", "Performance", "Optimise speed, memory, or efficiency"),
-            TaskTypeDefinition("investigation", "Investigation", "Research or spike — no code output"),
+            TaskTypeDefinition(
+                "performance", "Performance", "Optimise speed, memory, or efficiency"
+            ),
+            TaskTypeDefinition(
+                "investigation", "Investigation", "Research or spike — no code output"
+            ),
         ]
 
     def get_quality_gates(self) -> list[QualityGate]:
@@ -69,8 +77,6 @@ class EngineeringDomain(DomainPlugin):
         sections = [role_def.default_system_prompt]
 
         if enrichment_context:
-            sections.append(
-                f"--- ENRICHMENT (from Master Agent) ---\n{enrichment_context}"
-            )
+            sections.append(f"--- ENRICHMENT (from Master Agent) ---\n{enrichment_context}")
 
         return "\n\n".join(sections)

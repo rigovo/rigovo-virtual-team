@@ -24,18 +24,15 @@ async def finalize_node(state: TaskState) -> dict[str, Any]:
     total_tokens = sum(o.get("tokens", 0) for o in agent_outputs.values())
     total_cost = sum(o.get("cost", 0.0) for o in agent_outputs.values())
     total_duration = sum(o.get("duration_ms", 0) for o in agent_outputs.values())
-    files_changed = list({
-        f
-        for o in agent_outputs.values()
-        for f in o.get("files_changed", [])
-    })
+    files_changed = list({f for o in agent_outputs.values() for f in o.get("files_changed", [])})
 
     # Determine final status
     if approval_status == "rejected":
         final_status = "rejected"
-    elif state.get("error"):
-        final_status = "failed"
-    elif not gate_results.get("passed", True) and state.get("retry_count", 0) >= state.get("max_retries", 5):
+    elif state.get("error") or (
+        not gate_results.get("passed", True)
+        and state.get("retry_count", 0) >= state.get("max_retries", 5)
+    ):
         final_status = "failed"
     else:
         final_status = "completed"
@@ -46,15 +43,18 @@ async def finalize_node(state: TaskState) -> dict[str, Any]:
         "total_cost_usd": round(total_cost, 6),
         "total_duration_ms": total_duration,
         "files_changed": files_changed,
-        "events": state.get("events", []) + [{
-            "type": "task_finalized",
-            "status": final_status,
-            "agents_run": list(agent_outputs.keys()),
-            "total_tokens": total_tokens,
-            "total_cost": round(total_cost, 6),
-            "total_duration_ms": total_duration,
-            "files_changed": files_changed,
-            "retries": state.get("retry_count", 0),
-            "memories_stored": len(state.get("memories_to_store", [])),
-        }],
+        "events": state.get("events", [])
+        + [
+            {
+                "type": "task_finalized",
+                "status": final_status,
+                "agents_run": list(agent_outputs.keys()),
+                "total_tokens": total_tokens,
+                "total_cost": round(total_cost, 6),
+                "total_duration_ms": total_duration,
+                "files_changed": files_changed,
+                "retries": state.get("retry_count", 0),
+                "memories_stored": len(state.get("memories_to_store", [])),
+            }
+        ],
     }

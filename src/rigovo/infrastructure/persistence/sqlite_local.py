@@ -176,9 +176,7 @@ class LocalDatabase:
 
         # Check if schema needs applying
         try:
-            row = conn.execute(
-                "SELECT MAX(version) FROM schema_version"
-            ).fetchone()
+            row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
             current_version = row[0] if row and row[0] else 0
         except sqlite3.OperationalError:
             current_version = 0

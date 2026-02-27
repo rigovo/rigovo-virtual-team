@@ -33,9 +33,9 @@ class AgentMessage(TypedDict, total=False):
 class ClassificationData(TypedDict, total=False):
     """Master Agent's classification of a task."""
 
-    task_type: str       # feature, bug, refactor, etc.
-    complexity: str      # low, medium, high, critical
-    reasoning: str       # Why this classification
+    task_type: str  # feature, bug, refactor, etc.
+    complexity: str  # low, medium, high, critical
+    reasoning: str  # Why this classification
 
 
 class TeamConfig(TypedDict, total=False):
@@ -45,7 +45,7 @@ class TeamConfig(TypedDict, total=False):
     team_name: str
     domain: str
     agents: dict[str, dict[str, Any]]  # {role: agent_config}
-    pipeline_order: list[str]          # Ordered role IDs
+    pipeline_order: list[str]  # Ordered role IDs
     execution_dag: dict[str, list[str]]  # {role: [depends_on_roles]}
 
 
@@ -62,35 +62,35 @@ class TaskState(TypedDict, total=False):
     workspace_id: str
     description: str
     project_root: str
-    worktree_mode: str                  # project|git_worktree
-    worktree_root: str                  # Optional worktree root within project sandbox
-    filesystem_sandbox_mode: str        # project_root|worktree
+    worktree_mode: str  # project|git_worktree
+    worktree_root: str  # Optional worktree root within project sandbox
+    filesystem_sandbox_mode: str  # project_root|worktree
 
     # --- Classification (set by classify node) ---
     classification: ClassificationData
 
     # --- Team routing (set by route_team node) ---
     team_config: TeamConfig
-    requested_team_name: str            # Optional user-requested team key/name
+    requested_team_name: str  # Optional user-requested team key/name
 
     # --- Pipeline execution ---
-    current_agent_index: int            # Index into pipeline_order
-    current_agent_role: str             # Current agent's role ID
-    ready_roles: list[str]              # DAG roles ready to execute
-    completed_roles: list[str]          # DAG roles already completed
-    blocked_roles: list[str]            # DAG roles blocked by dependency failure
+    current_agent_index: int  # Index into pipeline_order
+    current_agent_role: str  # Current agent's role ID
+    ready_roles: list[str]  # DAG roles ready to execute
+    completed_roles: list[str]  # DAG roles already completed
+    blocked_roles: list[str]  # DAG roles blocked by dependency failure
     agent_outputs: dict[str, AgentOutput]  # {role: output}
     agent_messages: list[AgentMessage]  # Inter-agent consultation thread
 
     # --- Quality gates ---
-    gate_results: dict[str, Any]        # Latest gate check result
+    gate_results: dict[str, Any]  # Latest gate check result
     gate_history: list[dict[str, Any]]  # Per-role gate summaries across pipeline
-    fix_packets: list[str]              # Accumulated fix packet prompts
+    fix_packets: list[str]  # Accumulated fix packet prompts
     retry_count: int
     max_retries: int
 
     # --- Approval ---
-    approval_status: str                # 'pending', 'approved', 'rejected'
+    approval_status: str  # 'pending', 'approved', 'rejected'
     user_feedback: str
 
     # --- Cost tracking ---
@@ -98,26 +98,26 @@ class TaskState(TypedDict, total=False):
     budget_max_cost_per_task: float
     budget_max_tokens_per_task: int
     consultation_policy: dict[str, Any]  # Runtime consultation policy from rigovo.yml
-    subagent_policy: dict[str, Any]      # Runtime sub-agent spawn policy from rigovo.yml
-    replan_policy: dict[str, Any]       # Runtime replanning policy from rigovo.yml
-    replan_count: int                   # Replans already triggered in this task
+    subagent_policy: dict[str, Any]  # Runtime sub-agent spawn policy from rigovo.yml
+    replan_policy: dict[str, Any]  # Runtime replanning policy from rigovo.yml
+    replan_count: int  # Replans already triggered in this task
     replan_history: list[dict[str, Any]]  # Replan trigger/failure history for auditability
-    deep_mode: str                      # never|final|ci|always|critical_only
-    deep_pro: bool                      # Run deep in pro tier when deep enabled
-    ci_mode: bool                       # Task was launched in CI mode
+    deep_mode: str  # never|final|ci|always|critical_only
+    deep_pro: bool  # Run deep in pro tier when deep enabled
+    ci_mode: bool  # Task was launched in CI mode
 
     # --- Context engineering ---
-    project_snapshot: Any               # ProjectSnapshot from scanner (set at task start)
+    project_snapshot: Any  # ProjectSnapshot from scanner (set at task start)
     enrichment_updates: list[dict[str, Any]]  # Learnings extracted post-pipeline
 
     # --- Agent debate ---
-    debate_round: int                   # Current debate iteration (0 = first pass)
-    max_debate_rounds: int              # Max coder↔reviewer iterations (default 2)
-    reviewer_feedback: str              # Reviewer's CHANGES_REQUESTED feedback for coder
-    debate_target_role: str             # Role to force-run after coder in debate cycle
+    debate_round: int  # Current debate iteration (0 = first pass)
+    max_debate_rounds: int  # Max coder↔reviewer iterations (default 2)
+    reviewer_feedback: str  # Reviewer's CHANGES_REQUESTED feedback for coder
+    debate_target_role: str  # Role to force-run after coder in debate cycle
 
     # --- Memory ---
-    memories_to_store: list[str]        # Memory text to persist post-task
+    memories_to_store: list[str]  # Memory text to persist post-task
     memory_context_by_role: dict[str, str]  # Cached retrieved memory prompt section per role
     memory_retrieval_log: dict[str, list[dict[str, Any]]]  # Retrieved memory IDs/scores by role
     memory_learning_metrics: dict[str, Any]  # Per-task feedback metrics for memory loop
@@ -125,8 +125,8 @@ class TaskState(TypedDict, total=False):
     integration_catalog: dict[str, Any]  # Loaded plugin capability catalog
 
     # --- Status ---
-    status: str                         # Current phase name
-    error: str                          # Error message if failed
+    status: str  # Current phase name
+    error: str  # Error message if failed
 
     # --- Events (for terminal display / cloud sync) ---
     events: list[dict[str, Any]]

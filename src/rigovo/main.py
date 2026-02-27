@@ -51,29 +51,40 @@ def _load_container(project_root: Path | None = None):
 @app.command()
 def run(
     description: str = typer.Argument(
-        ..., help="Task description (what you want done)",
+        ...,
+        help="Task description (what you want done)",
     ),
     team: str | None = typer.Option(None, "--team", "-t", help="Target team"),
     offline: bool = typer.Option(False, "--offline", help="No cloud sync"),
     ci: bool = typer.Option(False, "--ci", help="CI mode: non-interactive"),
     plain: bool = typer.Option(
-        False, "--plain", help="Plain output (no live dashboard)",
+        False,
+        "--plain",
+        help="Plain output (no live dashboard)",
     ),
     approve: bool = typer.Option(
-        False, "--approve", "-a",
+        False,
+        "--approve",
+        "-a",
         help="Interactive approval mode — pause for human approval at checkpoints",
     ),
     parallel: bool = typer.Option(
-        False, "--parallel",
+        False,
+        "--parallel",
         help="Enable parallel execution for independent agents",
     ),
     resume: str | None = typer.Option(
-        None, "--resume", "-r",
+        None,
+        "--resume",
+        "-r",
         help="Resume from checkpoint (task ID from a previous crashed run)",
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose"),
     project_dir: str | None = typer.Option(
-        None, "--project", "-p", help="Project directory",
+        None,
+        "--project",
+        "-p",
+        help="Project directory",
     ),
 ) -> None:
     """Run a task through your virtual engineering team."""
@@ -109,13 +120,23 @@ def run(
 
         # Subscribe to ALL pipeline events for real-time display
         for event_type in [
-            "task_started", "project_scanned", "task_classified",
-            "pipeline_assembled", "agent_started", "agent_streaming",
-            "agent_complete", "agent_timeout", "gate_results",
-            "approval_requested", "enrichment_extracted",
-            "memories_stored", "budget_exceeded",
-            "task_finalized", "task_failed",
-            "parallel_started", "parallel_complete",
+            "task_started",
+            "project_scanned",
+            "task_classified",
+            "pipeline_assembled",
+            "agent_started",
+            "agent_streaming",
+            "agent_complete",
+            "agent_timeout",
+            "gate_results",
+            "approval_requested",
+            "enrichment_extracted",
+            "memories_stored",
+            "budget_exceeded",
+            "task_finalized",
+            "task_failed",
+            "parallel_started",
+            "parallel_complete",
         ]:
             emitter.on(
                 event_type,
@@ -126,6 +147,7 @@ def run(
 
         # --- Interactive approval handler ---
         if approve:
+
             def approval_handler(state):
                 status = state.get("status", "")
                 if "plan" in status:
@@ -137,7 +159,9 @@ def run(
                 else:
                     checkpoint = "commit_ready"
                     agent_outputs = state.get("agent_outputs", {})
-                    agents_done = list(agent_outputs.keys()) if isinstance(agent_outputs, dict) else []
+                    agents_done = (
+                        list(agent_outputs.keys()) if isinstance(agent_outputs, dict) else []
+                    )
                     details = f"Agents completed: {', '.join(agents_done)}" if agents_done else ""
                 approved = ui.prompt_approval(checkpoint, details)
                 return {
@@ -207,10 +231,16 @@ def run(
 @app.command()
 def init(
     project_dir: str | None = typer.Option(
-        None, "--project", "-p", help="Project directory",
+        None,
+        "--project",
+        "-p",
+        help="Project directory",
     ),
     force: bool = typer.Option(
-        False, "--force", "-f", help="Overwrite existing rigovo.yml",
+        False,
+        "--force",
+        "-f",
+        help="Overwrite existing rigovo.yml",
     ),
 ) -> None:
     """Initialise a Rigovo project — auto-detects stack, writes rigovo.yml."""
@@ -251,8 +281,7 @@ def init(
             coder = eng_team.agents.get("coder")
             if coder and coder.rules:
                 console.print(
-                    f"    [dim]Coder rules:[/dim] "
-                    f"{len(coder.rules)} auto-configured",
+                    f"    [dim]Coder rules:[/dim] {len(coder.rules)} auto-configured",
                 )
 
     # 3. Create .env template if not exists
@@ -286,7 +315,7 @@ def init(
     console.print("\n[bold green]Project initialized.[/bold green]")
     console.print("  1. Set your API key in [bold].env[/bold]")
     console.print("  2. Review [bold]rigovo.yml[/bold]")
-    console.print("  3. Run: [bold]rigovo run \"your task description\"[/bold]\n")
+    console.print('  3. Run: [bold]rigovo run "your task description"[/bold]\n')
 
 
 @app.command()
@@ -302,7 +331,10 @@ def serve(
     host: str = typer.Option("127.0.0.1", "--host", help="Control-plane bind host"),
     port: int = typer.Option(8787, "--port", help="Control-plane bind port"),
     project_dir: str | None = typer.Option(
-        None, "--project", "-p", help="Project directory",
+        None,
+        "--project",
+        "-p",
+        help="Project directory",
     ),
 ) -> None:
     """Run Rigovo control-plane API for desktop/connectors."""

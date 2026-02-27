@@ -21,7 +21,7 @@ Key resolution:
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from rigovo.config import LLMConfig
 from rigovo.domain.interfaces.llm_provider import LLMProvider
@@ -30,34 +30,34 @@ logger = logging.getLogger(__name__)
 
 # Base URLs for known providers (OpenAI-compatible endpoints)
 _PROVIDER_BASE_URLS: dict[str, str] = {
-    "google":    "https://generativelanguage.googleapis.com/v1beta/openai",
-    "deepseek":  "https://api.deepseek.com",
-    "groq":      "https://api.groq.com/openai/v1",
-    "mistral":   "https://api.mistral.ai/v1",
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "deepseek": "https://api.deepseek.com",
+    "groq": "https://api.groq.com/openai/v1",
+    "mistral": "https://api.mistral.ai/v1",
     # ollama uses config.ollama_base_url (default http://localhost:11434)
 }
 
 # Maps provider name → settings DB key for the API key
 _PROVIDER_DB_KEY: dict[str, str] = {
-    "anthropic":        "ANTHROPIC_API_KEY",
-    "openai":           "OPENAI_API_KEY",
-    "google":           "GOOGLE_API_KEY",
-    "deepseek":         "DEEPSEEK_API_KEY",
-    "groq":             "GROQ_API_KEY",
-    "mistral":          "MISTRAL_API_KEY",
-    "ollama":           "",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "ollama": "",
     "openai_compatible": "OPENAI_API_KEY",
 }
 
 # Maps provider name → LLMConfig attribute (fallback for CLI)
 _PROVIDER_KEY_ATTR: dict[str, str] = {
-    "anthropic":        "anthropic_api_key",
-    "openai":           "openai_api_key",
-    "google":           "google_api_key",
-    "deepseek":         "deepseek_api_key",
-    "groq":             "groq_api_key",
-    "mistral":          "mistral_api_key",
-    "ollama":           "",
+    "anthropic": "anthropic_api_key",
+    "openai": "openai_api_key",
+    "google": "google_api_key",
+    "deepseek": "deepseek_api_key",
+    "groq": "groq_api_key",
+    "mistral": "mistral_api_key",
+    "ollama": "",
     "openai_compatible": "openai_api_key",
 }
 
@@ -105,7 +105,9 @@ class LLMProviderFactory:
 
         logger.info(
             "Creating LLM provider: model=%s provider=%s key_set=%s",
-            model, provider, bool(api_key),
+            model,
+            provider,
+            bool(api_key),
         )
 
         # Anthropic uses its own SDK (not OpenAI-compatible)
@@ -113,6 +115,7 @@ class LLMProviderFactory:
             from rigovo.infrastructure.llm.anthropic_provider import (
                 AnthropicProvider,
             )
+
             return AnthropicProvider(api_key=api_key, model=model)
 
         # Everything else uses OpenAI-compatible SDK
@@ -134,13 +137,16 @@ class LLMProviderFactory:
                 if val:
                     logger.info(
                         "Resolved API key for %s from SQLite (%d chars)",
-                        provider, len(val),
+                        provider,
+                        len(val),
                     )
                     return val
                 logger.debug("SQLite returned empty for %s", db_key)
             except Exception as exc:
                 logger.warning(
-                    "key_resolver failed for %s: %s", db_key, exc,
+                    "key_resolver failed for %s: %s",
+                    db_key,
+                    exc,
                 )
         else:
             logger.debug("No key_resolver set — skipping SQLite lookup")
@@ -151,12 +157,15 @@ class LLMProviderFactory:
         if fallback:
             logger.info(
                 "Resolved API key for %s from config fallback (%d chars)",
-                provider, len(fallback),
+                provider,
+                len(fallback),
             )
         else:
             logger.warning(
                 "No API key found for provider '%s' — checked SQLite key '%s' and config attr '%s'",
-                provider, db_key, attr,
+                provider,
+                db_key,
+                attr,
             )
         return fallback
 
@@ -167,9 +176,9 @@ class LLMProviderFactory:
             return url or None
 
         if provider == "ollama":
-            base = self._resolve_setting(
-                "OLLAMA_BASE_URL", self._config.ollama_base_url
-            ).rstrip("/")
+            base = self._resolve_setting("OLLAMA_BASE_URL", self._config.ollama_base_url).rstrip(
+                "/"
+            )
             return f"{base}/v1"
 
         if provider == "openai_compatible":

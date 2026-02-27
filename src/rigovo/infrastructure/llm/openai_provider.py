@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Retry config for transient API errors (429, 500, 502, 503, 529)
 _MAX_RETRIES = 5
-_BASE_DELAY = 1.0   # seconds — doubles each attempt (1, 2, 4, 8, 16)
+_BASE_DELAY = 1.0  # seconds — doubles each attempt (1, 2, 4, 8, 16)
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 529}
 
 from rigovo.domain.interfaces.llm_provider import LLMProvider, LLMResponse, LLMUsage
@@ -56,9 +56,7 @@ class OpenAIProvider(LLMProvider):
             try:
                 from openai import AsyncOpenAI
             except ImportError:
-                raise ImportError(
-                    "openai SDK required. Install with: pip install openai"
-                )
+                raise ImportError("openai SDK required. Install with: pip install openai")
             kwargs: dict[str, Any] = {"api_key": self._api_key}
             if self._base_url:
                 kwargs["base_url"] = self._base_url
@@ -108,11 +106,13 @@ class OpenAIProvider(LLMProvider):
                     parsed_input = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
                     parsed_input = {}
-                tool_calls.append({
-                    "id": tc.id,
-                    "name": tc.function.name,
-                    "input": parsed_input,
-                })
+                tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "input": parsed_input,
+                    }
+                )
 
         # Extract cached token info if available
         input_tokens = response.usage.prompt_tokens if response.usage else 0
@@ -173,10 +173,14 @@ class OpenAIProvider(LLMProvider):
                     raise  # Not retryable — propagate immediately
 
                 last_error = exc
-                delay = _BASE_DELAY * (2 ** attempt)
+                delay = _BASE_DELAY * (2**attempt)
                 logger.warning(
                     "OpenAI API returned %s (attempt %d/%d), retrying in %.1fs: %s",
-                    status_code, attempt + 1, _MAX_RETRIES, delay, exc,
+                    status_code,
+                    attempt + 1,
+                    _MAX_RETRIES,
+                    delay,
+                    exc,
                 )
                 await asyncio.sleep(delay)
 

@@ -18,9 +18,13 @@ MAX_WRITE_SIZE = 512_000
 
 # Files that should never be overwritten by agents
 PROTECTED_FILES = {
-    ".env", ".env.local", ".env.production",
-    ".gitignore", ".git/config",
-    "rigovo.yml", "rigovo.yml.example",
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".gitignore",
+    ".git/config",
+    "rigovo.yml",
+    "rigovo.yml.example",
 }
 
 
@@ -47,9 +51,7 @@ class CodeWriter:
         try:
             resolved.relative_to(self._root)
         except ValueError:
-            raise PermissionError(
-                f"Path traversal detected: {relative_path} escapes project root"
-            )
+            raise PermissionError(f"Path traversal detected: {relative_path} escapes project root")
         return resolved
 
     def write_file(self, path: str, content: str) -> dict[str, Any]:
@@ -63,7 +65,9 @@ class CodeWriter:
             return {"error": f"File write limit reached ({MAX_FILES_PER_EXECUTION} per execution)"}
 
         if len(content.encode("utf-8")) > MAX_WRITE_SIZE:
-            return {"error": f"Content too large ({len(content)} chars, max {MAX_WRITE_SIZE} bytes)"}
+            return {
+                "error": f"Content too large ({len(content)} chars, max {MAX_WRITE_SIZE} bytes)"
+            }
 
         # Check protected files
         normalized = path.replace("\\", "/").strip("/")

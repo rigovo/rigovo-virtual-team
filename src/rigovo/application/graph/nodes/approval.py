@@ -33,11 +33,14 @@ async def plan_approval_node(state: TaskState) -> dict[str, Any]:
     return {
         "status": "awaiting_plan_approval",
         "approval_status": "pending",
-        "events": state.get("events", []) + [{
-            "type": "approval_requested",
-            "checkpoint": "plan_ready",
-            "summary": approval_summary,
-        }],
+        "events": state.get("events", [])
+        + [
+            {
+                "type": "approval_requested",
+                "checkpoint": "plan_ready",
+                "summary": approval_summary,
+            }
+        ],
     }
 
 
@@ -55,22 +58,19 @@ async def commit_approval_node(state: TaskState) -> dict[str, Any]:
         "checkpoint": "commit_ready",
         "agents_completed": list(agent_outputs.keys()),
         "gate_passed": state.get("gate_results", {}).get("passed", False),
-        "total_cost": sum(
-            o.get("cost", 0.0) for o in agent_outputs.values()
-        ),
-        "files_changed": [
-            f
-            for o in agent_outputs.values()
-            for f in o.get("files_changed", [])
-        ],
+        "total_cost": sum(o.get("cost", 0.0) for o in agent_outputs.values()),
+        "files_changed": [f for o in agent_outputs.values() for f in o.get("files_changed", [])],
     }
 
     return {
         "status": "awaiting_commit_approval",
         "approval_status": "pending",
-        "events": state.get("events", []) + [{
-            "type": "approval_requested",
-            "checkpoint": "commit_ready",
-            "summary": approval_summary,
-        }],
+        "events": state.get("events", [])
+        + [
+            {
+                "type": "approval_requested",
+                "checkpoint": "commit_ready",
+                "summary": approval_summary,
+            }
+        ],
     }

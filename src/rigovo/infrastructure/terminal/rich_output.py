@@ -23,17 +23,23 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
-from rich.text import Text
 
 # --- Display constants ---
 ROLE_ICONS = {
-    "planner": "\U0001f4cb", "lead": "\U0001f454", "coder": "\U0001f4bb",
-    "reviewer": "\U0001f50d", "qa": "\U0001f9ea", "security": "\U0001f512",
-    "docs": "\U0001f4dd", "devops": "\U0001f680",
+    "planner": "\U0001f4cb",
+    "lead": "\U0001f454",
+    "coder": "\U0001f4bb",
+    "reviewer": "\U0001f50d",
+    "qa": "\U0001f9ea",
+    "security": "\U0001f512",
+    "docs": "\U0001f4dd",
+    "devops": "\U0001f680",
 }
 COMPLEXITY_STYLE = {
-    "low": "green", "medium": "yellow",
-    "high": "red", "critical": "bold red",
+    "low": "green",
+    "medium": "yellow",
+    "high": "red",
+    "critical": "bold red",
 }
 
 
@@ -64,9 +70,7 @@ class TerminalUI:
         """Print the task header and start."""
         self._start_time = time.monotonic()
         self.console.print()
-        self.console.print(
-            f"[bold blue]RIGOVO[/bold blue] [dim]\u2502[/dim] {description}"
-        )
+        self.console.print(f"[bold blue]RIGOVO[/bold blue] [dim]\u2502[/dim] {description}")
         if team:
             self.console.print(f"  [dim]Team:[/dim] {team}")
         self.console.print()
@@ -146,9 +150,7 @@ class TerminalUI:
                 icon = ROLE_ICONS.get(role, "\u2699")
                 # Shorten model IDs for display (e.g., "claude-sonnet-4-5-20250929" → "sonnet-4.5")
                 short = self._shorten_model_name(model)
-                self.console.print(
-                    f"     [dim]{icon} {role} \u2192 {short}[/dim]"
-                )
+                self.console.print(f"     [dim]{icon} {role} \u2192 {short}[/dim]")
         self.console.print()
 
     @staticmethod
@@ -187,11 +189,12 @@ class TerminalUI:
         self._active_role = role
         self._streaming = False
 
-        self.console.print(Rule(
-            f"[bold cyan]{icon} {role}[/bold cyan]"
-            + (f" [dim]({name})[/dim]" if name else ""),
-            style="cyan",
-        ))
+        self.console.print(
+            Rule(
+                f"[bold cyan]{icon} {role}[/bold cyan]" + (f" [dim]({name})[/dim]" if name else ""),
+                style="cyan",
+            )
+        )
 
     def _on_agent_streaming(self, e: dict) -> None:
         """Print streaming chunks directly — like Claude Code typing effect."""
@@ -249,9 +252,7 @@ class TerminalUI:
         icon = ROLE_ICONS.get(role, "\u2699")
         timeout = e.get("timeout_seconds", 0)
         self._active_role = ""
-        self.console.print(
-            f"  [red]\u2717 {icon} {role} timed out[/red] after {timeout}s"
-        )
+        self.console.print(f"  [red]\u2717 {icon} {role} timed out[/red] after {timeout}s")
         self.console.print()
 
     def _on_gate_results(self, e: dict) -> None:
@@ -279,8 +280,7 @@ class TerminalUI:
         pitfalls = e.get("pitfall_count", 0)
         patterns = e.get("pattern_count", 0)
         self.console.print(
-            f"  [magenta]\U0001f4da Enrichment:[/magenta] "
-            f"{pitfalls} pitfalls, {patterns} patterns"
+            f"  [magenta]\U0001f4da Enrichment:[/magenta] {pitfalls} pitfalls, {patterns} patterns"
         )
 
     def _on_memories(self, e: dict) -> None:
@@ -306,17 +306,11 @@ class TerminalUI:
 
     def _on_parallel_started(self, e: dict) -> None:
         roles = e.get("roles", [])
-        icons = " ".join(
-            f"{ROLE_ICONS.get(r, chr(0x2699))} {r}" for r in roles
-        )
-        self.console.print(
-            f"  [bold magenta]\u26a1 Parallel execution:[/bold magenta] {icons}"
-        )
+        icons = " ".join(f"{ROLE_ICONS.get(r, chr(0x2699))} {r}" for r in roles)
+        self.console.print(f"  [bold magenta]\u26a1 Parallel execution:[/bold magenta] {icons}")
 
     def _on_parallel_complete(self, e: dict) -> None:
-        self.console.print(
-            "  [magenta]\u2713 Parallel execution complete[/magenta]"
-        )
+        self.console.print("  [magenta]\u2713 Parallel execution complete[/magenta]")
         self.console.print()
 
     def _on_debate_round(self, e: dict) -> None:
@@ -338,14 +332,16 @@ class TerminalUI:
         """Inline approval prompt. No hacks, no Live restart."""
         self._end_stream()
         self.console.print()
-        self.console.print(Panel(
-            f"[bold]Checkpoint:[/bold] {checkpoint}"
-            + (f"\n{details}" if details else "")
-            + "\n\n[dim]Press Enter to approve, type 'reject' to reject[/dim]",
-            title="[bold yellow]\u26a0 Approval Required[/bold yellow]",
-            border_style="yellow",
-            padding=(1, 2),
-        ))
+        self.console.print(
+            Panel(
+                f"[bold]Checkpoint:[/bold] {checkpoint}"
+                + (f"\n{details}" if details else "")
+                + "\n\n[dim]Press Enter to approve, type 'reject' to reject[/dim]",
+                title="[bold yellow]\u26a0 Approval Required[/bold yellow]",
+                border_style="yellow",
+                padding=(1, 2),
+            )
+        )
 
         try:
             response = input("  > ").strip().lower()
@@ -370,9 +366,7 @@ class TerminalUI:
         tokens = event.get("total_tokens", self._total_tokens)
         agents = event.get("agents_run", [])
         elapsed = time.monotonic() - self._start_time
-        color = {"completed": "green", "failed": "red", "rejected": "yellow"}.get(
-            status, "white"
-        )
+        color = {"completed": "green", "failed": "red", "rejected": "yellow"}.get(status, "white")
 
         self.console.print()
         self.console.print(Rule(style=color))
@@ -385,10 +379,7 @@ class TerminalUI:
         default_icon = "\u2699"
         t.add_row(
             "Agents",
-            " \u2192 ".join(
-                f"{ROLE_ICONS.get(r, default_icon)} {r}" for r in agents
-            )
-            or "\u2014",
+            " \u2192 ".join(f"{ROLE_ICONS.get(r, default_icon)} {r}" for r in agents) or "\u2014",
         )
         t.add_row("Tokens", f"{tokens:,}")
         t.add_row("Cost", f"${cost:.4f}")
@@ -397,9 +388,11 @@ class TerminalUI:
         if self._memories_stored:
             t.add_row("Memories", f"{self._memories_stored} stored")
 
-        self.console.print(Panel(
-            t,
-            title="[bold]Task Complete[/bold]",
-            border_style=color,
-            padding=(0, 1),
-        ))
+        self.console.print(
+            Panel(
+                t,
+                title="[bold]Task Complete[/bold]",
+                border_style=color,
+                padding=(0, 1),
+            )
+        )

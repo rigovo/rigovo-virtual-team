@@ -12,7 +12,7 @@ else:
     class StrEnum(str, Enum):
         """Backport of StrEnum for Python 3.10."""
 
-        def __new__(cls, value: str) -> "StrEnum":
+        def __new__(cls, value: str) -> StrEnum:
             member = str.__new__(cls, value)
             member._value_ = value
             return member

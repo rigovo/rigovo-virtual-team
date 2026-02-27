@@ -20,11 +20,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from uuid import UUID, NAMESPACE_DNS, uuid5
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
-from rigovo.application.context.rigour_supervisor import RigourSupervisor, FixPacket
+from rigovo.application.context.rigour_supervisor import RigourSupervisor
 from rigovo.application.graph.state import TaskState
-from rigovo.application.master.enricher import ContextEnricher, EnrichmentUpdate
+from rigovo.application.master.enricher import ContextEnricher
 from rigovo.application.master.evaluator import AgentEvaluator
 from rigovo.domain.entities.agent import Agent
 from rigovo.domain.entities.quality import GateResult, GateStatus, Violation, ViolationSeverity
@@ -90,28 +90,30 @@ async def enrich_node(
     fix_patterns: list[str] = []
     for packet_text in fix_packets:
         if isinstance(packet_text, str) and "violation" in packet_text.lower():
-            fix_patterns.append(
-                f"Previous fix required: {packet_text[:200]}"
-            )
+            fix_patterns.append(f"Previous fix required: {packet_text[:200]}")
 
     # 4. Combine all patterns into enrichment update
     all_pitfalls = patterns_from_gates + retry_patterns
     all_patterns = fix_patterns
 
     if all_pitfalls or all_patterns:
-        enrichment_updates.append({
-            "known_pitfalls": all_pitfalls[:5],
-            "domain_knowledge": all_patterns[:5],
-            "source": "rigour_gates",
-        })
+        enrichment_updates.append(
+            {
+                "known_pitfalls": all_pitfalls[:5],
+                "domain_knowledge": all_patterns[:5],
+                "source": "rigour_gates",
+            }
+        )
 
     # 5. Extract success patterns (what worked well)
     success_patterns = _extract_success_patterns(state)
     if success_patterns:
-        enrichment_updates.append({
-            "domain_knowledge": success_patterns[:3],
-            "source": "pipeline_success",
-        })
+        enrichment_updates.append(
+            {
+                "domain_knowledge": success_patterns[:3],
+                "source": "pipeline_success",
+            }
+        )
 
     # 6. Master-service enrichment/evaluation (if wired)
     if enricher is not None or evaluator is not None:
@@ -123,12 +125,14 @@ async def enrich_node(
         enrichment_updates.extend(master_updates)
         events.extend(eval_events)
 
-    events.append({
-        "type": "enrichment_extracted",
-        "pitfall_count": len(all_pitfalls),
-        "pattern_count": len(all_patterns) + len(success_patterns),
-        "retry_count": retry_count,
-    })
+    events.append(
+        {
+            "type": "enrichment_extracted",
+            "pitfall_count": len(all_pitfalls),
+            "pattern_count": len(all_patterns) + len(success_patterns),
+            "retry_count": retry_count,
+        }
+    )
 
     return {
         "enrichment_updates": enrichment_updates,
@@ -286,7 +290,9 @@ def _extract_gate_patterns(gate_payloads: list[dict[str, Any]]) -> list[str]:
             continue
         # Fallback when only counts are available (legacy states).
         if int(payload.get("violation_count", 0) or 0) > 0:
-            rule_counts["unknown"] = rule_counts.get("unknown", 0) + int(payload.get("violation_count", 0) or 0)
+            rule_counts["unknown"] = rule_counts.get("unknown", 0) + int(
+                payload.get("violation_count", 0) or 0
+            )
 
     if not rule_counts:
         return patterns
@@ -297,11 +303,11 @@ def _extract_gate_patterns(gate_payloads: list[dict[str, Any]]) -> list[str]:
         if mapped:
             patterns.append(mapped)
         elif rule == "contract_failed":
-            patterns.append("Respect declared input/output contracts strictly; fail fast on mismatch.")
-        elif count >= 2:
             patterns.append(
-                f"Repeated violation of '{rule}' ({count}x). Fix this pattern."
+                "Respect declared input/output contracts strictly; fail fast on mismatch."
             )
+        elif count >= 2:
+            patterns.append(f"Repeated violation of '{rule}' ({count}x). Fix this pattern.")
 
     return patterns
 

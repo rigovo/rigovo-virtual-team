@@ -34,10 +34,15 @@ def register(app: typer.Typer) -> None:
         task_id: str | None = typer.Argument(None, help="Task ID to inspect"),
         limit: int = typer.Option(20, "--limit", "-n", help="Number of tasks"),
         status_filter: str | None = typer.Option(
-            None, "--status", help="Filter by status",
+            None,
+            "--status",
+            help="Filter by status",
         ),
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
     ) -> None:
         """Show task history — past runs with outcomes, costs, durations."""
@@ -47,19 +52,17 @@ def register(app: typer.Typer) -> None:
         console.print("[bold blue]Rigovo[/bold blue] — History\n")
 
         db = container.get_db()
-        from rigovo.infrastructure.persistence.sqlite_task_repo import (
-            SqliteTaskRepository,
-        )
         from rigovo.infrastructure.persistence.sqlite_audit_repo import (
             SqliteAuditRepository,
+        )
+        from rigovo.infrastructure.persistence.sqlite_task_repo import (
+            SqliteTaskRepository,
         )
 
         task_repo = SqliteTaskRepository(db)
         audit_repo = SqliteAuditRepository(db)
         workspace_id = (
-            UUID(container.config.workspace_id)
-            if container.config.workspace_id
-            else UUID(int=0)
+            UUID(container.config.workspace_id) if container.config.workspace_id else UUID(int=0)
         )
 
         if task_id:
@@ -73,7 +76,10 @@ def register(app: typer.Typer) -> None:
     @app.command()
     def costs(
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
     ) -> None:
         """Show cost breakdown — per-task, per-agent, and totals."""
@@ -94,16 +100,14 @@ def register(app: typer.Typer) -> None:
         task_repo = SqliteTaskRepository(db)
 
         workspace_id = (
-            UUID(container.config.workspace_id)
-            if container.config.workspace_id
-            else UUID(int=0)
+            UUID(container.config.workspace_id) if container.config.workspace_id else UUID(int=0)
         )
         total = asyncio.run(cost_repo.total_by_workspace(workspace_id))
         tasks = asyncio.run(task_repo.list_by_workspace(workspace_id, limit=20))
 
         if not tasks and total == 0:
             console.print(
-                "  [dim]No tasks run yet. Run: rigovo run \"your task\"[/dim]\n",
+                '  [dim]No tasks run yet. Run: rigovo run "your task"[/dim]\n',
             )
             container.close()
             return
@@ -151,7 +155,10 @@ def register(app: typer.Typer) -> None:
     def audit(
         limit: int = typer.Option(100, "--limit", "-n", help="Number of audit entries"),
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
     ) -> None:
         """Show audit trail for monitoring and governance."""
@@ -162,9 +169,7 @@ def register(app: typer.Typer) -> None:
 
         audit_repo = SqliteAuditRepository(db)
         workspace_id = (
-            UUID(container.config.workspace_id)
-            if container.config.workspace_id
-            else UUID(int=0)
+            UUID(container.config.workspace_id) if container.config.workspace_id else UUID(int=0)
         )
         entries = asyncio.run(audit_repo.list_by_workspace(workspace_id, limit=limit))
 
@@ -197,13 +202,22 @@ def register(app: typer.Typer) -> None:
     @app.command("export")
     def export_cmd(
         format: str = typer.Option(
-            "json", "--format", "-f", help="Output format: json, csv",
+            "json",
+            "--format",
+            "-f",
+            help="Output format: json, csv",
         ),
         output: str | None = typer.Option(
-            None, "--output", "-o", help="Output file path",
+            None,
+            "--output",
+            "-o",
+            help="Output file path",
         ),
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
     ) -> None:
         """Export task history, costs, and agent stats as JSON or CSV."""
@@ -211,19 +225,17 @@ def register(app: typer.Typer) -> None:
         container = _load_container(root)
 
         db = container.get_db()
-        from rigovo.infrastructure.persistence.sqlite_task_repo import (
-            SqliteTaskRepository,
-        )
         from rigovo.infrastructure.persistence.sqlite_cost_repo import (
             SqliteCostRepository,
+        )
+        from rigovo.infrastructure.persistence.sqlite_task_repo import (
+            SqliteTaskRepository,
         )
 
         task_repo = SqliteTaskRepository(db)
         cost_repo = SqliteCostRepository(db)
         workspace_id = (
-            UUID(container.config.workspace_id)
-            if container.config.workspace_id
-            else UUID(int=0)
+            UUID(container.config.workspace_id) if container.config.workspace_id else UUID(int=0)
         )
 
         tasks = asyncio.run(task_repo.list_by_workspace(workspace_id, limit=10000))
@@ -314,7 +326,7 @@ def _show_task_list(task_repo, workspace_id: UUID, limit: int) -> None:
     tasks = asyncio.run(task_repo.list_by_workspace(workspace_id, limit=limit))
 
     if not tasks:
-        console.print("  [dim]No tasks yet. Run: rigovo run \"your task\"[/dim]")
+        console.print('  [dim]No tasks yet. Run: rigovo run "your task"[/dim]')
         return
 
     table = Table(title=f"Recent Tasks ({len(tasks)})")
@@ -342,11 +354,7 @@ def _show_task_list(task_repo, workspace_id: UUID, limit: int) -> None:
             f"{task.total_tokens:,}",
             f"${task.total_cost_usd:.4f}",
             f"{duration_s:.1f}s",
-            (
-                task.created_at.strftime("%Y-%m-%d %H:%M")
-                if task.created_at
-                else ""
-            ),
+            (task.created_at.strftime("%Y-%m-%d %H:%M") if task.created_at else ""),
         )
 
     console.print(table)
@@ -372,9 +380,7 @@ def _export_json(tasks, total_cost: float, workspace_id: UUID, output) -> None:
                 "total_tokens": t.total_tokens,
                 "total_cost_usd": t.total_cost_usd,
                 "duration_ms": t.duration_ms,
-                "created_at": (
-                    t.created_at.isoformat() if t.created_at else None
-                ),
+                "created_at": (t.created_at.isoformat() if t.created_at else None),
             }
             for t in tasks
         ],
@@ -392,20 +398,29 @@ def _export_csv(tasks, output) -> None:
     """Export as CSV."""
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow([
-        "id", "description", "status", "tokens",
-        "cost_usd", "duration_ms", "created_at",
-    ])
+    writer.writerow(
+        [
+            "id",
+            "description",
+            "status",
+            "tokens",
+            "cost_usd",
+            "duration_ms",
+            "created_at",
+        ]
+    )
     for t in tasks:
-        writer.writerow([
-            str(t.id),
-            t.description,
-            t.status.value,
-            t.total_tokens,
-            f"{t.total_cost_usd:.6f}",
-            t.duration_ms,
-            t.created_at.isoformat() if t.created_at else "",
-        ])
+        writer.writerow(
+            [
+                str(t.id),
+                t.description,
+                t.status.value,
+                t.total_tokens,
+                f"{t.total_cost_usd:.6f}",
+                t.duration_ms,
+                t.created_at.isoformat() if t.created_at else "",
+            ]
+        )
 
     csv_str = buf.getvalue()
     if output:

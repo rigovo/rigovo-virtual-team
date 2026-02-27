@@ -28,7 +28,6 @@ def get_engineering_gates() -> list[RigourGateConfig]:
         RigourGateConfig("path-traversal", "Path Traversal", 0, "security"),
         RigourGateConfig("eval-usage", "Eval/Exec Usage", 0, "security"),
         RigourGateConfig("prototype-pollution", "Prototype Pollution", 0, "security"),
-
         # Threshold gates (style + complexity)
         RigourGateConfig("file-size", "File Size", 500, "size"),
         RigourGateConfig("function-length", "Function Length", 50, "complexity"),
@@ -36,7 +35,6 @@ def get_engineering_gates() -> list[RigourGateConfig]:
         RigourGateConfig("nesting-depth", "Nesting Depth", 4, "complexity"),
         RigourGateConfig("parameter-count", "Parameter Count", 5, "complexity"),
         RigourGateConfig("duplicate-code", "Duplicate Code", 10, "style"),
-
         # Warning gates (informational, don't block)
         RigourGateConfig("missing-types", "Missing Type Hints", 20, "style"),
         RigourGateConfig("missing-docstrings", "Missing Docstrings", 10, "style"),
@@ -44,11 +42,9 @@ def get_engineering_gates() -> list[RigourGateConfig]:
         RigourGateConfig("console-logs", "Console.log/print Statements", 3, "style"),
         RigourGateConfig("unused-variables", "Unused Variables", 5, "correctness"),
         RigourGateConfig("unused-imports", "Unused Imports", 3, "correctness"),
-
         # Test quality gates
         RigourGateConfig("test-coverage", "Test Coverage", 70, "correctness"),
         RigourGateConfig("test-assertions", "Test Missing Assertions", 0, "correctness"),
-
         # Dependency gates
         RigourGateConfig("outdated-deps", "Outdated Dependencies", 10, "correctness"),
         RigourGateConfig("known-cves", "Known CVEs in Dependencies", 0, "security"),

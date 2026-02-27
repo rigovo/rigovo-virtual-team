@@ -49,13 +49,17 @@ class SqliteCostRepository(CostRepository):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
-                    str(e.id), str(e.workspace_id),
+                    str(e.id),
+                    str(e.workspace_id),
                     str(e.team_id) if e.team_id else None,
                     str(e.agent_id) if e.agent_id else None,
                     str(e.task_id) if e.task_id else None,
                     str(e.project_id) if e.project_id else None,
-                    e.llm_model, e.input_tokens, e.output_tokens,
-                    e.total_tokens, e.cost_usd,
+                    e.llm_model,
+                    e.input_tokens,
+                    e.output_tokens,
+                    e.total_tokens,
+                    e.cost_usd,
                 )
                 for e in entries
             ],

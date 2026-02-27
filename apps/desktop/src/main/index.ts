@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join, relative } from "node:path";
-import { ChildProcess, spawn } from "node:child_process";
+import { ChildProcess, execSync, spawn } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 
 /* ------------------------------------------------------------------ */
@@ -324,6 +324,24 @@ function createWindow(): void {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Port cleanup — free stale ports before starting                   */
+/* ------------------------------------------------------------------ */
+
+function killPort(port: number): void {
+  try {
+    if (process.platform === "win32") {
+      const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: "utf8", timeout: 3000 });
+      const pids = new Set(out.trim().split("\n").map((l) => l.trim().split(/\s+/).pop()).filter(Boolean));
+      for (const pid of pids) { try { execSync(`taskkill /PID ${pid} /F`, { timeout: 3000 }); } catch { /* ignore */ } }
+    } else {
+      execSync(`lsof -ti :${port} | xargs kill -9 2>/dev/null || true`, { encoding: "utf8", timeout: 3000 });
+    }
+  } catch {
+    // Port was not in use or kill failed — safe to ignore
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  App lifecycle                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -333,6 +351,11 @@ async function bootstrapDesktop(): Promise<void> {
     console.error("Electron runtime is unavailable in this process.");
     return;
   }
+
+  // Free port 8787 if occupied by a stale process from a previous run
+  // (port 8787 is required for WorkOS redirect URI to match)
+  killPort(8787);
+
   await app.whenReady();
   registerIpc();
   createWindow();

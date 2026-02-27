@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from uuid import UUID, NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from rigovo.application.graph.state import TaskState
 from rigovo.domain.entities.memory import Memory, MemoryType
 from rigovo.domain.interfaces.embedding_provider import EmbeddingProvider
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 from rigovo.domain.interfaces.repositories import MemoryRepository
-
 
 MEMORY_EXTRACTION_PROMPT = """\
 You are analyzing a completed engineering task to extract reusable lessons.
@@ -215,7 +214,9 @@ def _should_reinforce_retrieved_memories(state: TaskState) -> bool:
     """Only reinforce retrieved memories when quality outcomes are acceptable."""
     gate_history = state.get("gate_history", []) or []
     if isinstance(gate_history, list) and gate_history:
-        return all(bool(entry.get("passed", False)) for entry in gate_history if isinstance(entry, dict))
+        return all(
+            bool(entry.get("passed", False)) for entry in gate_history if isinstance(entry, dict)
+        )
     gate_results = state.get("gate_results", {}) or {}
     if isinstance(gate_results, dict) and gate_results:
         return bool(gate_results.get("passed", False) or gate_results.get("status") == "skipped")

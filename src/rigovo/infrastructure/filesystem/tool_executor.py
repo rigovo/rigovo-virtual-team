@@ -9,9 +9,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-from rigovo.infrastructure.filesystem.project_reader import ProjectReader
 from rigovo.infrastructure.filesystem.code_writer import CodeWriter
 from rigovo.infrastructure.filesystem.command_runner import CommandRunner
+from rigovo.infrastructure.filesystem.project_reader import ProjectReader
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +81,17 @@ class ToolExecutor:
         self._project_root = project_root.resolve()
         self._worktree_mode = str(worktree_mode or "project").strip().lower()
         self._worktree_root = str(worktree_root or "").strip()
-        self._filesystem_sandbox_mode = str(filesystem_sandbox_mode or "project_root").strip().lower()
+        self._filesystem_sandbox_mode = (
+            str(filesystem_sandbox_mode or "project_root").strip().lower()
+        )
         self._execution_root = self._resolve_execution_root()
         allowed_commands = set(self._integration_policy.get("allowed_shell_commands", []) or [])
 
         self._reader = ProjectReader(self._execution_root)
         self._writer = CodeWriter(self._execution_root)
-        self._runner = CommandRunner(self._execution_root, allowed_commands=allowed_commands or None)
+        self._runner = CommandRunner(
+            self._execution_root, allowed_commands=allowed_commands or None
+        )
 
         self._handlers: dict[str, Any] = {
             "read_file": self._handle_read_file,
@@ -102,9 +106,7 @@ class ToolExecutor:
     def _resolve_execution_root(self) -> Path:
         """Resolve effective filesystem sandbox root based on worktree policy."""
         if self._filesystem_sandbox_mode not in {"project_root", "worktree"}:
-            raise ValueError(
-                f"Invalid filesystem_sandbox_mode '{self._filesystem_sandbox_mode}'"
-            )
+            raise ValueError(f"Invalid filesystem_sandbox_mode '{self._filesystem_sandbox_mode}'")
         if self._worktree_mode not in {"project", "git_worktree"}:
             raise ValueError(f"Invalid worktree_mode '{self._worktree_mode}'")
 
@@ -118,9 +120,7 @@ class ToolExecutor:
         try:
             candidate.relative_to(self._project_root)
         except ValueError as exc:
-            raise PermissionError(
-                "worktree_root must stay within project_root sandbox"
-            ) from exc
+            raise PermissionError("worktree_root must stay within project_root sandbox") from exc
         if not candidate.exists() or not candidate.is_dir():
             raise ValueError(f"Configured worktree_root does not exist: {candidate}")
         return candidate
@@ -287,17 +287,14 @@ class ToolExecutor:
         if not isinstance(payload, dict):
             return "Payload must be an object"
         if len(json.dumps(payload, default=str)) > MAX_INTEGRATION_PAYLOAD_CHARS:
-            return (
-                f"Payload too large; max {MAX_INTEGRATION_PAYLOAD_CHARS} chars"
-            )
+            return f"Payload too large; max {MAX_INTEGRATION_PAYLOAD_CHARS} chars"
 
         if not bool(self._integration_policy.get("allow_sensitive_payload_keys", False)):
             sensitive_keys = _collect_sensitive_payload_keys(payload)
             if sensitive_keys:
                 preview = ", ".join(sensitive_keys[:5])
                 return (
-                    "Sensitive payload keys require explicit policy allow-list "
-                    f"(found: {preview})"
+                    f"Sensitive payload keys require explicit policy allow-list (found: {preview})"
                 )
 
         policy_flag_by_kind = {
@@ -320,18 +317,14 @@ class ToolExecutor:
         declared_capabilities = set(plugin.get("capabilities", []) or [])
         required_cap = {"connector": "connector", "mcp": "mcp", "action": "action"}[kind]
         if declared_capabilities and required_cap not in declared_capabilities:
-            return (
-                f"Plugin '{plugin_id}' does not declare '{required_cap}' capability"
-            )
+            return f"Plugin '{plugin_id}' does not declare '{required_cap}' capability"
 
         min_trust = str(self._integration_policy.get("min_trust_level", "verified")).lower()
         plugin_trust = str(plugin.get("trust_level", "community")).lower()
         min_rank = self.TRUST_LEVEL_ORDER.get(min_trust, 1)
         plugin_rank = self.TRUST_LEVEL_ORDER.get(plugin_trust, 0)
         if plugin_rank < min_rank:
-            return (
-                f"Plugin '{plugin_id}' trust '{plugin_trust}' below required '{min_trust}'"
-            )
+            return f"Plugin '{plugin_id}' trust '{plugin_trust}' below required '{min_trust}'"
 
         targets_by_kind = {
             "connector": set(plugin.get("connectors", []) or []),
@@ -339,45 +332,35 @@ class ToolExecutor:
             "action": set(plugin.get("actions", []) or []),
         }
         if target_id not in targets_by_kind[kind]:
-            return (
-                f"Target '{target_id}' not exposed by plugin '{plugin_id}' for kind '{kind}'"
-            )
+            return f"Target '{target_id}' not exposed by plugin '{plugin_id}' for kind '{kind}'"
         global_ops_by_kind = {
-            "connector": set(self._integration_policy.get("allowed_connector_operations", []) or []),
+            "connector": set(
+                self._integration_policy.get("allowed_connector_operations", []) or []
+            ),
             "mcp": set(self._integration_policy.get("allowed_mcp_operations", []) or []),
             "action": set(self._integration_policy.get("allowed_action_operations", []) or []),
         }
         global_ops = global_ops_by_kind[kind]
         if global_ops and operation not in global_ops:
-            return (
-                f"Operation '{operation}' is not allowed by global {kind} policy"
-            )
+            return f"Operation '{operation}' is not allowed by global {kind} policy"
         if kind == "connector":
             connector_ops = plugin.get("connector_operations", {}) or {}
             allowed_ops = connector_ops.get(target_id, [])
             if isinstance(allowed_ops, list) and allowed_ops and operation not in set(allowed_ops):
-                return (
-                    f"Operation '{operation}' not allowed for connector target '{target_id}'"
-                )
+                return f"Operation '{operation}' not allowed for connector target '{target_id}'"
         if kind == "mcp":
             mcp_ops = plugin.get("mcp_operations", {}) or {}
             allowed_ops = mcp_ops.get(target_id, [])
             if isinstance(allowed_ops, list) and allowed_ops and operation not in set(allowed_ops):
-                return (
-                    f"Operation '{operation}' not allowed for MCP target '{target_id}'"
-                )
+                return f"Operation '{operation}' not allowed for MCP target '{target_id}'"
         if kind == "action":
-            requires_approval = (
-                (plugin.get("action_requires_approval", {}) or {}).get(target_id, False)
+            requires_approval = (plugin.get("action_requires_approval", {}) or {}).get(
+                target_id, False
             )
             if bool(requires_approval) and not bool(
                 self._integration_policy.get("allow_approval_required_actions", False)
             ):
-                return (
-                    f"Action '{target_id}' requires approval and is blocked by policy"
-                )
+                return f"Action '{target_id}' requires approval and is blocked by policy"
             if operation not in {"run", target_id}:
-                return (
-                    f"Operation '{operation}' not allowed for action target '{target_id}'"
-                )
+                return f"Operation '{operation}' not allowed for action target '{target_id}'"
         return None

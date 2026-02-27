@@ -30,28 +30,28 @@ class ProjectSchema(BaseModel):
     """Auto-detected project metadata. Written by `rigovo init`."""
 
     name: str = ""
-    language: str = ""           # python, typescript, rust, go, java ...
-    framework: str = ""          # nextjs, fastapi, express, django ...
+    language: str = ""  # python, typescript, rust, go, java ...
+    framework: str = ""  # nextjs, fastapi, express, django ...
     monorepo: bool = False
-    test_framework: str = ""     # pytest, jest, vitest, cargo-test ...
-    package_manager: str = ""    # npm, pnpm, yarn, pip, poetry, cargo ...
-    source_dir: str = "src"      # conventional source directory
-    test_dir: str = "tests"      # conventional test directory
+    test_framework: str = ""  # pytest, jest, vitest, cargo-test ...
+    package_manager: str = ""  # npm, pnpm, yarn, pip, poetry, cargo ...
+    source_dir: str = "src"  # conventional source directory
+    test_dir: str = "tests"  # conventional test directory
 
 
 class AgentOverride(BaseModel):
     """Per-agent customisation inside rigovo.yml."""
 
-    model: str = ""                              # Override LLM model
+    model: str = ""  # Override LLM model
     temperature: float = 0.0
     max_tokens: int = 4096
-    rules: list[str] = Field(default_factory=list)    # CTO-defined rules
-    tools: list[str] = Field(default_factory=list)     # Restrict tool set
-    approval_required: bool = False              # Require human approval
+    rules: list[str] = Field(default_factory=list)  # CTO-defined rules
+    tools: list[str] = Field(default_factory=list)  # Restrict tool set
+    approval_required: bool = False  # Require human approval
     max_retries: int = 5
     timeout_seconds: int = 600
-    depends_on: list[str] = Field(default_factory=list)   # DAG dependencies by role
-    input_contract: dict[str, Any] = Field(default_factory=dict)   # JSON-schema-like
+    depends_on: list[str] = Field(default_factory=list)  # DAG dependencies by role
+    input_contract: dict[str, Any] = Field(default_factory=dict)  # JSON-schema-like
     output_contract: dict[str, Any] = Field(default_factory=dict)  # JSON-schema-like
 
 
@@ -71,18 +71,18 @@ class CustomAgentSchema(BaseModel):
             pipeline_after: "coder"
     """
 
-    id: str                                      # Unique agent identifier
-    name: str                                    # Display name
-    role: str                                    # Role in pipeline
-    system_prompt: str                           # Full system prompt
-    pipeline_after: str = "coder"                # Insert after this role
-    model: str = ""                              # LLM model override
+    id: str  # Unique agent identifier
+    name: str  # Display name
+    role: str  # Role in pipeline
+    system_prompt: str  # Full system prompt
+    pipeline_after: str = "coder"  # Insert after this role
+    model: str = ""  # LLM model override
     temperature: float = 0.0
     max_tokens: int = 4096
     rules: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     timeout_seconds: int = 600
-    parallel: bool = False                       # Can run in parallel group
+    parallel: bool = False  # Can run in parallel group
     depends_on: list[str] = Field(default_factory=list)
     input_contract: dict[str, Any] = Field(default_factory=dict)
     output_contract: dict[str, Any] = Field(default_factory=dict)
@@ -101,8 +101,8 @@ class GateOverride(BaseModel):
     """Per-gate threshold and severity override."""
 
     enabled: bool = True
-    severity: str = "error"       # error | warning | info
-    threshold: float = 0.0        # 0 = zero-tolerance
+    severity: str = "error"  # error | warning | info
+    threshold: float = 0.0  # 0 = zero-tolerance
 
 
 class CustomRule(BaseModel):
@@ -122,12 +122,14 @@ class QualitySchema(BaseModel):
     rigour_binary: str | None = None
     rigour_timeout: int = 120
 
-    gates: dict[str, GateOverride] = Field(default_factory=lambda: {
-        "hardcoded-secrets": GateOverride(severity="error", threshold=0),
-        "file-size": GateOverride(severity="warning", threshold=500),
-        "function-length": GateOverride(severity="warning", threshold=50),
-        "hallucinated-imports": GateOverride(severity="error", threshold=0),
-    })
+    gates: dict[str, GateOverride] = Field(
+        default_factory=lambda: {
+            "hardcoded-secrets": GateOverride(severity="error", threshold=0),
+            "file-size": GateOverride(severity="warning", threshold=500),
+            "function-length": GateOverride(severity="warning", threshold=50),
+            "hallucinated-imports": GateOverride(severity="error", threshold=0),
+        }
+    )
 
     custom_rules: list[CustomRule] = Field(default_factory=list)
 
@@ -146,17 +148,17 @@ class ApprovalSchema(BaseModel):
 class BudgetSchema(BaseModel):
     """Cost controls — prevent surprise bills."""
 
-    max_cost_per_task: float = 25.00      # USD — soft warning only, never hard-stops
+    max_cost_per_task: float = 25.00  # USD — soft warning only, never hard-stops
     max_tokens_per_task: int = 200_000
-    monthly_budget: float = 100.00        # USD
-    alert_at_percent: float = 0.80        # Alert at 80%
-    hard_stop_at_percent: float = 1.0     # Stop at 100%
+    monthly_budget: float = 100.00  # USD
+    alert_at_percent: float = 0.80  # Alert at 80%
+    hard_stop_at_percent: float = 1.0  # Stop at 100%
 
 
 class ReplanSchema(BaseModel):
     """Policy-driven mid-run replanning controls."""
 
-    enabled: bool = True   # ON by default — re-evaluate rather than abort on step failure
+    enabled: bool = True  # ON by default — re-evaluate rather than abort on step failure
     max_replans_per_task: int = 3  # raised from 1 to give agents a fair shot
     trigger_retry_count: int = 3
     trigger_gate_violation_count: int = 5
@@ -167,13 +169,13 @@ class ReplanSchema(BaseModel):
 class OrchestrationSchema(BaseModel):
     """Pipeline and execution configuration."""
 
-    max_retries: int = 5                  # LLM agents need patience
+    max_retries: int = 5  # LLM agents need patience
     max_agents_per_task: int = 8
-    timeout_per_agent: int = 900          # 15 min batch ceiling (streaming uses idle)
-    idle_timeout: int = 120               # 2 min idle = abort (no tokens received)
-    parallel_agents: bool = True          # ON by default — independent agents run in parallel
-    deep_mode: str = "final"              # never|final|ci|always|critical_only
-    deep_pro: bool = False                # Use larger deep model when deep is enabled
+    timeout_per_agent: int = 900  # 15 min batch ceiling (streaming uses idle)
+    idle_timeout: int = 120  # 2 min idle = abort (no tokens received)
+    parallel_agents: bool = True  # ON by default — independent agents run in parallel
+    deep_mode: str = "final"  # never|final|ci|always|critical_only
+    deep_pro: bool = False  # Use larger deep model when deep is enabled
     consultation: ConsultationSchema = Field(default_factory=lambda: ConsultationSchema())
     subagents: SubAgentSchema = Field(default_factory=lambda: SubAgentSchema())
     replan: ReplanSchema = Field(default_factory=lambda: ReplanSchema())
@@ -187,16 +189,18 @@ class ConsultationSchema(BaseModel):
     enabled: bool = True
     max_question_chars: int = 1200
     max_response_chars: int = 1200
-    allowed_targets: dict[str, list[str]] = Field(default_factory=lambda: {
-        "planner": ["lead", "security", "devops"],
-        "coder": ["reviewer", "security", "qa"],
-        "reviewer": ["planner", "coder", "security", "qa", "devops", "sre", "lead"],
-        "security": ["coder", "reviewer", "devops", "sre", "lead"],
-        "qa": ["coder", "reviewer"],
-        "devops": ["security", "sre", "reviewer", "lead"],
-        "sre": ["devops", "security", "reviewer", "lead"],
-        "lead": ["planner", "coder", "reviewer", "security", "qa", "devops", "sre"],
-    })
+    allowed_targets: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "planner": ["lead", "security", "devops"],
+            "coder": ["reviewer", "security", "qa"],
+            "reviewer": ["planner", "coder", "security", "qa", "devops", "sre", "lead"],
+            "security": ["coder", "reviewer", "devops", "sre", "lead"],
+            "qa": ["coder", "reviewer"],
+            "devops": ["security", "sre", "reviewer", "lead"],
+            "sre": ["devops", "security", "reviewer", "lead"],
+            "lead": ["planner", "coder", "reviewer", "security", "qa", "devops", "sre"],
+        }
+    )
 
 
 class SubAgentSchema(BaseModel):
@@ -237,7 +241,7 @@ class LoggingSchema(BaseModel):
 class DatabaseSchema(BaseModel):
     """Database backend configuration."""
 
-    backend: str = "sqlite"             # sqlite|postgres
+    backend: str = "sqlite"  # sqlite|postgres
     local_path: str = ".rigovo/local.db"
 
 
@@ -266,32 +270,34 @@ class IdentitySchema(BaseModel):
     """Enterprise identity + persona controls."""
 
     sso_enabled: bool = False
-    auth_mode: str = "email_only"          # email_only|hybrid|sso_required
-    provider: str = ""                    # okta|azuread|google|auth0|saml|oidc
+    auth_mode: str = "email_only"  # email_only|hybrid|sso_required
+    provider: str = ""  # okta|azuread|google|auth0|saml|oidc
     workos_organization_id: str = ""
     issuer_url: str = ""
     client_id: str = ""
     allowed_domains: list[str] = Field(default_factory=list)
-    personas: dict[str, list[str]] = Field(default_factory=lambda: {
-        "admin": [
-            "workspace.manage",
-            "teams.manage",
-            "plugins.manage",
-            "tasks.abort",
-            "tasks.approve",
-            "audit.read",
-        ],
-        "operator": [
-            "tasks.run",
-            "tasks.approve",
-            "tasks.resume",
-            "audit.read",
-        ],
-        "viewer": [
-            "tasks.read",
-            "audit.read",
-        ],
-    })
+    personas: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "admin": [
+                "workspace.manage",
+                "teams.manage",
+                "plugins.manage",
+                "tasks.abort",
+                "tasks.approve",
+                "audit.read",
+            ],
+            "operator": [
+                "tasks.run",
+                "tasks.approve",
+                "tasks.resume",
+                "audit.read",
+            ],
+            "viewer": [
+                "tasks.read",
+                "audit.read",
+            ],
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -309,9 +315,11 @@ class RigovoConfig(BaseModel):
     version: str = "1"
 
     project: ProjectSchema = Field(default_factory=ProjectSchema)
-    teams: dict[str, TeamSchema] = Field(default_factory=lambda: {
-        "engineering": TeamSchema(domain="engineering"),
-    })
+    teams: dict[str, TeamSchema] = Field(
+        default_factory=lambda: {
+            "engineering": TeamSchema(domain="engineering"),
+        }
+    )
     quality: QualitySchema = Field(default_factory=QualitySchema)
     approval: ApprovalSchema = Field(default_factory=ApprovalSchema)
     orchestration: OrchestrationSchema = Field(default_factory=OrchestrationSchema)
@@ -415,18 +423,18 @@ def rigovo_yml_to_string(config: RigovoConfig) -> str:
     )
 
     section_comments = {
-        "version:":       "\n# Schema version",
-        "project:":       "\n# ─── Project (auto-detected by `rigovo init`) ───",
-        "teams:":         "\n# ─── Teams & Agent Configuration ─────────────────",
-        "quality:":       "\n# ─── Quality Gates ───────────────────────────────",
-        "approval:":      "\n# ─── Approval Workflow ────────────────────────────",
+        "version:": "\n# Schema version",
+        "project:": "\n# ─── Project (auto-detected by `rigovo init`) ───",
+        "teams:": "\n# ─── Teams & Agent Configuration ─────────────────",
+        "quality:": "\n# ─── Quality Gates ───────────────────────────────",
+        "approval:": "\n# ─── Approval Workflow ────────────────────────────",
         "orchestration:": "\n# ─── Orchestration (replan, consultation, parallel) ─",
-        "cloud:":         "\n# ─── Cloud Sync ──────────────────────────────────",
-        "ci:":            "\n# ─── CI/CD Integration ───────────────────────────",
-        "logging:":       "\n# ─── Logging ─────────────────────────────────────",
-        "database:":      "\n# ─── Database (sqlite | postgres) ───────────────",
-        "plugins:":       "\n# ─── Plugin Ecosystem ───────────────────────────",
-        "identity:":      "\n# ─── Identity & Personas ───────────────────────",
+        "cloud:": "\n# ─── Cloud Sync ──────────────────────────────────",
+        "ci:": "\n# ─── CI/CD Integration ───────────────────────────",
+        "logging:": "\n# ─── Logging ─────────────────────────────────────",
+        "database:": "\n# ─── Database (sqlite | postgres) ───────────────",
+        "plugins:": "\n# ─── Plugin Ecosystem ───────────────────────────",
+        "identity:": "\n# ─── Identity & Personas ───────────────────────",
     }
 
     for yaml_line in yaml_str.splitlines():

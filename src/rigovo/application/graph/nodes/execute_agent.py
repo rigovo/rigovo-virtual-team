@@ -21,11 +21,11 @@ import logging
 import time
 from pathlib import Path
 from typing import Any
-from uuid import UUID, NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
-from rigovo.application.context.memory_retriever import MemoryRetriever, ROLE_MEMORY_PREFERENCES
 from rigovo.application.context.context_builder import ContextBuilder
-from rigovo.application.graph.state import TaskState, AgentOutput
+from rigovo.application.context.memory_retriever import ROLE_MEMORY_PREFERENCES, MemoryRetriever
+from rigovo.application.graph.state import AgentOutput, TaskState
 from rigovo.domain.interfaces.embedding_provider import EmbeddingProvider
 from rigovo.domain.interfaces.llm_provider import LLMProvider, LLMResponse, LLMUsage
 from rigovo.domain.interfaces.repositories import MemoryRepository
@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 
 # --- Named constants for agent execution defaults ---
 DEFAULT_LLM_MODEL = "claude-sonnet-4-6"
-DEFAULT_IDLE_TIMEOUT = 120     # No tokens for 2 min → something's wrong
-DEFAULT_BATCH_TIMEOUT = 900    # 15 min hard ceiling for batch (non-streaming)
+DEFAULT_IDLE_TIMEOUT = 120  # No tokens for 2 min → something's wrong
+DEFAULT_BATCH_TIMEOUT = 900  # 15 min hard ceiling for batch (non-streaming)
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 8192
 MS_PER_SECOND = 1000
@@ -50,10 +50,10 @@ MAX_TOOL_ROUNDS = 25  # Safety limit to prevent infinite tool loops
 ROLE_MAX_TOKENS: dict[str, int] = {
     "lead": 4096,
     "planner": 4096,
-    "coder": 16384,      # Needs room for multi-file output
+    "coder": 16384,  # Needs room for multi-file output
     "reviewer": 4096,
     "security": 4096,
-    "qa": 8192,           # Test generation can be verbose
+    "qa": 8192,  # Test generation can be verbose
     "devops": 4096,
     "sre": 4096,
     "docs": 4096,
@@ -195,9 +195,7 @@ def _validate_contract(
         if isinstance(properties, dict):
             for key, child_schema in properties.items():
                 if key in payload and isinstance(child_schema, dict):
-                    errors.extend(
-                        _validate_contract(child_schema, payload[key], f"{path}.{key}")
-                    )
+                    errors.extend(_validate_contract(child_schema, payload[key], f"{path}.{key}"))
 
     if isinstance(payload, list):
         item_schema = schema.get("items")
@@ -263,10 +261,12 @@ def _build_agent_messages(
     # Add fix packet if retrying
     fix_packets = state.get("fix_packets", [])
     if fix_packets:
-        messages.append({
-            "role": "user",
-            "content": f"[FIX REQUIRED]: {fix_packets[-1]}",
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": f"[FIX REQUIRED]: {fix_packets[-1]}",
+            }
+        )
 
     return messages
 
@@ -312,7 +312,12 @@ async def _resolve_memory_context_for_role(
             if isinstance(entries, list):
                 memory_retrieval_log[str(role)] = [e for e in entries if isinstance(e, dict)]
     if current_role in memory_context_by_role:
-        return memory_context_by_role[current_role], memory_context_by_role, memory_retrieval_log, []
+        return (
+            memory_context_by_role[current_role],
+            memory_context_by_role,
+            memory_retrieval_log,
+            [],
+        )
 
     if not memory_repo or not embedding_provider:
         return "", memory_context_by_role, memory_retrieval_log, []
@@ -337,8 +342,7 @@ async def _resolve_memory_context_for_role(
             memory_types=preferred_types,
         )
         similarity_scores = [
-            _cosine_similarity(query_embedding, m.embedding or [])
-            for m in memories
+            _cosine_similarity(query_embedding, m.embedding or []) for m in memories
         ]
         retrieved = await retriever.retrieve(
             task_description=task_description,
@@ -393,39 +397,40 @@ def _check_budget_guards(state: TaskState, current_role: str) -> dict[str, Any] 
     Returns error state dict if token limit exceeded, None otherwise.
     Cost overruns are logged as warnings — user should be informed, not blocked.
     """
-    accumulated_cost = sum(
-        v.get("cost", 0) for v in state.get("cost_accumulator", {}).values()
-    )
+    accumulated_cost = sum(v.get("cost", 0) for v in state.get("cost_accumulator", {}).values())
     budget_limit = state.get("budget_max_cost_per_task", 0)
     if budget_limit > 0 and accumulated_cost >= budget_limit:
         logger.warning(
             "Budget warning: $%.4f spent (soft limit $%.2f) — continuing task. "
             "Adjust budget.max_cost_per_task in rigovo.yml to change the limit.",
-            accumulated_cost, budget_limit,
+            accumulated_cost,
+            budget_limit,
         )
 
-    accumulated_tokens = sum(
-        v.get("tokens", 0) for v in state.get("cost_accumulator", {}).values()
-    )
+    accumulated_tokens = sum(v.get("tokens", 0) for v in state.get("cost_accumulator", {}).values())
     token_limit = state.get("budget_max_tokens_per_task", 0)
     if token_limit > 0 and accumulated_tokens >= token_limit:
         return {
             "status": "budget_exceeded_tokens",
             "error": (
-                f"Token limit exceeded: {accumulated_tokens:,} tokens "
-                f"(limit {token_limit:,})"
+                f"Token limit exceeded: {accumulated_tokens:,} tokens (limit {token_limit:,})"
             ),
-            "events": state.get("events", []) + [{
-                "type": "budget_exceeded",
-                "role": current_role,
-                "tokens_used": accumulated_tokens,
-                "token_limit": token_limit,
-            }],
+            "events": state.get("events", [])
+            + [
+                {
+                    "type": "budget_exceeded",
+                    "role": current_role,
+                    "tokens_used": accumulated_tokens,
+                    "token_limit": token_limit,
+                }
+            ],
         }
     return None
 
 
-def _resolve_tool_definitions(agent_config: dict[str, Any], current_role: str) -> list[dict[str, Any]]:
+def _resolve_tool_definitions(
+    agent_config: dict[str, Any], current_role: str
+) -> list[dict[str, Any]]:
     """Resolve tool names in agent_config to full tool definitions for the LLM."""
     role_defs = get_engineering_tools(current_role)
     configured = agent_config.get("tools")
@@ -513,12 +518,14 @@ def _handle_consult_agent(
         "created_at": time.time(),
     }
     agent_messages.append(request)
-    events.append({
-        "type": "agent_consult_requested",
-        "from_role": from_role,
-        "to_role": to_role,
-        "message_id": request_id,
-    })
+    events.append(
+        {
+            "type": "agent_consult_requested",
+            "from_role": from_role,
+            "to_role": to_role,
+            "message_id": request_id,
+        }
+    )
 
     existing_output = state.get("agent_outputs", {}).get(to_role, {})
     existing_summary = existing_output.get("summary", "")
@@ -527,22 +534,26 @@ def _handle_consult_agent(
         request["status"] = "answered"
 
         response_id = _new_message_id(agent_messages)
-        agent_messages.append({
-            "id": response_id,
-            "type": "consult_response",
-            "from_role": to_role,
-            "to_role": from_role,
-            "content": answer,
-            "status": "answered",
-            "linked_to": request_id,
-            "created_at": time.time(),
-        })
-        events.append({
-            "type": "agent_consult_completed",
-            "from_role": from_role,
-            "to_role": to_role,
-            "message_id": request_id,
-        })
+        agent_messages.append(
+            {
+                "id": response_id,
+                "type": "consult_response",
+                "from_role": to_role,
+                "to_role": from_role,
+                "content": answer,
+                "status": "answered",
+                "linked_to": request_id,
+                "created_at": time.time(),
+            }
+        )
+        events.append(
+            {
+                "type": "agent_consult_completed",
+                "from_role": from_role,
+                "to_role": to_role,
+                "message_id": request_id,
+            }
+        )
         return json.dumps(
             {
                 "status": "answered",
@@ -578,7 +589,9 @@ def _fulfill_pending_consults(
     enabled, _, max_response_chars, _ = _resolve_consult_policy(state)
     if not enabled:
         return
-    answer = final_text[:max_response_chars] if final_text else "Completed work. No summary provided."
+    answer = (
+        final_text[:max_response_chars] if final_text else "Completed work. No summary provided."
+    )
     for msg in agent_messages:
         if (
             msg.get("type") == "consult_request"
@@ -587,22 +600,26 @@ def _fulfill_pending_consults(
         ):
             msg["status"] = "answered"
             response_id = _new_message_id(agent_messages)
-            agent_messages.append({
-                "id": response_id,
-                "type": "consult_response",
-                "from_role": current_role,
-                "to_role": msg.get("from_role", ""),
-                "content": f"[ADVISORY] {answer}",
-                "status": "answered",
-                "linked_to": msg.get("id", ""),
-                "created_at": time.time(),
-            })
-            events.append({
-                "type": "agent_consult_completed",
-                "from_role": msg.get("from_role", ""),
-                "to_role": current_role,
-                "message_id": msg.get("id", ""),
-            })
+            agent_messages.append(
+                {
+                    "id": response_id,
+                    "type": "consult_response",
+                    "from_role": current_role,
+                    "to_role": msg.get("from_role", ""),
+                    "content": f"[ADVISORY] {answer}",
+                    "status": "answered",
+                    "linked_to": msg.get("id", ""),
+                    "created_at": time.time(),
+                }
+            )
+            events.append(
+                {
+                    "type": "agent_consult_completed",
+                    "from_role": msg.get("from_role", ""),
+                    "to_role": current_role,
+                    "message_id": msg.get("id", ""),
+                }
+            )
 
 
 async def _run_subtask(
@@ -644,10 +661,7 @@ async def _run_subtask(
     ]
 
     # Get coder tools (without spawn_subtask to prevent recursion)
-    sub_tool_defs = [
-        t for t in get_engineering_tools("coder")
-        if t["name"] != "spawn_subtask"
-    ]
+    sub_tool_defs = [t for t in get_engineering_tools("coder") if t["name"] != "spawn_subtask"]
 
     if stream_callback:
         try:
@@ -710,7 +724,9 @@ async def _run_agentic_loop(
     for round_num in range(max_rounds):
         logger.info(
             "Agent %s: tool loop round %d (messages: %d)",
-            role, round_num + 1, len(messages),
+            role,
+            round_num + 1,
+            len(messages),
         )
 
         # Call LLM with tools
@@ -740,13 +756,16 @@ async def _run_agentic_loop(
         # Check if LLM wants to call tools
         if not response.tool_calls:
             # No tool calls — agent is done
-            logger.info("Agent %s: finished after %d rounds (no more tool calls)", role, round_num + 1)
+            logger.info(
+                "Agent %s: finished after %d rounds (no more tool calls)", role, round_num + 1
+            )
             break
 
         # Execute each tool call
         logger.info(
             "Agent %s: executing %d tool call(s): %s",
-            role, len(response.tool_calls),
+            role,
+            len(response.tool_calls),
             [tc.get("name", "?") for tc in response.tool_calls],
         )
 
@@ -756,12 +775,14 @@ async def _run_agentic_loop(
         if response.content:
             assistant_content.append({"type": "text", "text": response.content})
         for tc in response.tool_calls:
-            assistant_content.append({
-                "type": "tool_use",
-                "id": tc["id"],
-                "name": tc["name"],
-                "input": tc["input"],
-            })
+            assistant_content.append(
+                {
+                    "type": "tool_use",
+                    "id": tc["id"],
+                    "name": tc["name"],
+                    "input": tc["input"],
+                }
+            )
 
         messages.append({"role": "assistant", "content": assistant_content})
 
@@ -773,36 +794,46 @@ async def _run_agentic_loop(
             nonlocal total_input_tokens, total_output_tokens
             if tc["name"] == "spawn_subtask":
                 if not subagent_enabled:
-                    result_str = json.dumps({
-                        "status": "blocked",
-                        "reason": "subagents_disabled_by_policy",
-                    })
-                    events.append({
-                        "type": "subtask_blocked",
-                        "role": role,
-                        "reason": "subagents_disabled_by_policy",
-                    })
+                    result_str = json.dumps(
+                        {
+                            "status": "blocked",
+                            "reason": "subagents_disabled_by_policy",
+                        }
+                    )
+                    events.append(
+                        {
+                            "type": "subtask_blocked",
+                            "role": role,
+                            "reason": "subagents_disabled_by_policy",
+                        }
+                    )
                 elif subtask_count_ref["value"] >= max_subtasks_per_step:
-                    result_str = json.dumps({
-                        "status": "blocked",
-                        "reason": "subtask_limit_reached",
-                        "max_subtasks_per_agent_step": max_subtasks_per_step,
-                    })
-                    events.append({
-                        "type": "subtask_blocked",
-                        "role": role,
-                        "reason": "subtask_limit_reached",
-                        "max_subtasks_per_agent_step": max_subtasks_per_step,
-                    })
+                    result_str = json.dumps(
+                        {
+                            "status": "blocked",
+                            "reason": "subtask_limit_reached",
+                            "max_subtasks_per_agent_step": max_subtasks_per_step,
+                        }
+                    )
+                    events.append(
+                        {
+                            "type": "subtask_blocked",
+                            "role": role,
+                            "reason": "subtask_limit_reached",
+                            "max_subtasks_per_agent_step": max_subtasks_per_step,
+                        }
+                    )
                 else:
                     subtask_count_ref["value"] += 1
                     subtask_description = str(tc["input"].get("description", "")).strip()
-                    events.append({
-                        "type": "subtask_spawned",
-                        "role": role,
-                        "subtask_index": subtask_count_ref["value"],
-                        "description": subtask_description[:140],
-                    })
+                    events.append(
+                        {
+                            "type": "subtask_spawned",
+                            "role": role,
+                            "subtask_index": subtask_count_ref["value"],
+                            "description": subtask_description[:140],
+                        }
+                    )
                     sub_result = await _run_subtask(
                         llm=llm,
                         tool_executor=tool_executor,
@@ -818,14 +849,16 @@ async def _run_agentic_loop(
                     subtask_token_total_ref["value"] += sub_in + sub_out
                     total_input_tokens += sub_in
                     total_output_tokens += sub_out
-                    events.append({
-                        "type": "subtask_complete",
-                        "role": role,
-                        "subtask_index": subtask_count_ref["value"],
-                        "input_tokens": sub_in,
-                        "output_tokens": sub_out,
-                        "files_changed": len(sub_result.get("files_changed", []) or []),
-                    })
+                    events.append(
+                        {
+                            "type": "subtask_complete",
+                            "role": role,
+                            "subtask_index": subtask_count_ref["value"],
+                            "input_tokens": sub_in,
+                            "output_tokens": sub_out,
+                            "files_changed": len(sub_result.get("files_changed", []) or []),
+                        }
+                    )
                     result_str = json.dumps(sub_result, default=str)
             elif tc["name"] == "consult_agent":
                 if state is None:
@@ -854,18 +887,20 @@ async def _run_agentic_loop(
                         if integration_result.get("blocked")
                         else "integration_invoked"
                     )
-                    events.append({
-                        "type": event_type,
-                        "role": role,
-                        "kind": str(tc.get("input", {}).get("kind", "")),
-                        "plugin_id": str(tc.get("input", {}).get("plugin_id", "")),
-                        "target_id": str(tc.get("input", {}).get("target_id", "")),
-                        "operation": str(tc.get("input", {}).get("operation", "")),
-                        "dry_run": bool(integration_result.get("dry_run", False)),
-                        "blocked_reason": str(integration_result.get("error", "")),
-                        "status": str(integration_result.get("status", "")),
-                        "latency_ms": elapsed_ms,
-                    })
+                    events.append(
+                        {
+                            "type": event_type,
+                            "role": role,
+                            "kind": str(tc.get("input", {}).get("kind", "")),
+                            "plugin_id": str(tc.get("input", {}).get("plugin_id", "")),
+                            "target_id": str(tc.get("input", {}).get("target_id", "")),
+                            "operation": str(tc.get("input", {}).get("operation", "")),
+                            "dry_run": bool(integration_result.get("dry_run", False)),
+                            "blocked_reason": str(integration_result.get("error", "")),
+                            "status": str(integration_result.get("status", "")),
+                            "latency_ms": elapsed_ms,
+                        }
+                    )
             return tc, result_str
 
         if len(response.tool_calls) > 1:
@@ -884,14 +919,18 @@ async def _run_agentic_loop(
                 tc, result_str = result
                 if stream_callback:
                     try:
-                        stream_callback(role, f"\n  ⚡ {tc['name']}({_summarize_input(tc['input'])})\n")
+                        stream_callback(
+                            role, f"\n  ⚡ {tc['name']}({_summarize_input(tc['input'])})\n"
+                        )
                     except Exception as exc:
                         logger.debug("Stream callback failed for parallel tool result: %s", exc)
-                tool_results_content.append({
-                    "type": "tool_result",
-                    "tool_use_id": tc["id"],
-                    "content": result_str,
-                })
+                tool_results_content.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tc["id"],
+                        "content": result_str,
+                    }
+                )
         else:
             # Single tool call — execute directly
             tc = response.tool_calls[0]
@@ -901,11 +940,13 @@ async def _run_agentic_loop(
                     stream_callback(role, f"\n  ⚡ {tc['name']}({_summarize_input(tc['input'])})\n")
                 except Exception as exc:
                     logger.debug("Stream callback failed for tool result: %s", exc)
-            tool_results_content.append({
-                "type": "tool_result",
-                "tool_use_id": tc["id"],
-                "content": result_str,
-            })
+            tool_results_content.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tc["id"],
+                    "content": result_str,
+                }
+            )
 
         messages.append({"role": "user", "content": tool_results_content})
 
@@ -916,10 +957,16 @@ async def _run_agentic_loop(
     files_changed = _extract_written_files(messages)
 
     final_text = "\n".join(all_text_parts)
-    return final_text, total_input_tokens, total_output_tokens, files_changed, {
-        "subtask_count": subtask_count_ref["value"],
-        "subtask_tokens": subtask_token_total_ref["value"],
-    }
+    return (
+        final_text,
+        total_input_tokens,
+        total_output_tokens,
+        files_changed,
+        {
+            "subtask_count": subtask_count_ref["value"],
+            "subtask_tokens": subtask_token_total_ref["value"],
+        },
+    )
 
 
 def _extract_written_files(messages: list[dict[str, Any]]) -> list[str]:
@@ -985,11 +1032,14 @@ async def execute_agent_node(
         return {
             "status": f"agent_{current_role}_error",
             "error": f"Agent role '{current_role}' not found in team config",
-            "events": state.get("events", []) + [{
-                "type": "agent_timeout",
-                "role": current_role,
-                "error": f"Role '{current_role}' not configured",
-            }],
+            "events": state.get("events", [])
+            + [
+                {
+                    "type": "agent_timeout",
+                    "role": current_role,
+                    "error": f"Role '{current_role}' not configured",
+                }
+            ],
         }
     agent_config = agents[current_role]
 
@@ -1013,7 +1063,12 @@ async def execute_agent_node(
         return budget_error
 
     # --- Memory retrieval and context assembly ---
-    memory_section_text, memory_context_by_role, memory_retrieval_log, memory_events = await _resolve_memory_context_for_role(
+    (
+        memory_section_text,
+        memory_context_by_role,
+        memory_retrieval_log,
+        memory_events,
+    ) = await _resolve_memory_context_for_role(
         state=state,
         current_role=current_role,
         memory_repo=memory_repo,
@@ -1054,11 +1109,13 @@ async def execute_agent_node(
     events = list(state.get("events", []))
     events.extend(memory_events)
     agent_messages_log = list(state.get("agent_messages", []))
-    events.append({
-        "type": "agent_started",
-        "role": current_role,
-        "name": agent_config["name"],
-    })
+    events.append(
+        {
+            "type": "agent_started",
+            "role": current_role,
+            "name": agent_config["name"],
+        }
+    )
 
     start_time = time.monotonic()
 
@@ -1067,7 +1124,13 @@ async def execute_agent_node(
             # --- Agentic tool loop (for agents with tools) ---
             # Always use batch invoke for tool-calling agents.
             # This is the standard pattern: invoke → tools → invoke → tools → done.
-            final_text, input_tokens, output_tokens, files_changed, subtask_metrics = await _run_agentic_loop(
+            (
+                final_text,
+                input_tokens,
+                output_tokens,
+                files_changed,
+                subtask_metrics,
+            ) = await _run_agentic_loop(
                 llm=llm,
                 messages=messages,
                 tool_defs=tool_defs,
@@ -1092,8 +1155,12 @@ async def execute_agent_node(
             # --- Streaming mode for text-only agents (no tools) ---
             idle_timeout = agent_config.get("idle_timeout", DEFAULT_IDLE_TIMEOUT)
             response = await _execute_streaming(
-                llm, messages, agent_config, idle_timeout,
-                current_role, stream_callback,
+                llm,
+                messages,
+                agent_config,
+                idle_timeout,
+                current_role,
+                stream_callback,
             )
             final_text = response.content
             total_tokens = response.usage.total_tokens
@@ -1127,12 +1194,14 @@ async def execute_agent_node(
     except asyncio.TimeoutError:
         duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)
         logger.warning("Agent %s timed out after %ds", current_role, batch_timeout)
-        events.append({
-            "type": "agent_timeout",
-            "role": current_role,
-            "timeout_seconds": batch_timeout,
-            "duration_ms": duration_ms,
-        })
+        events.append(
+            {
+                "type": "agent_timeout",
+                "role": current_role,
+                "timeout_seconds": batch_timeout,
+                "duration_ms": duration_ms,
+            }
+        )
         return {
             "status": f"agent_{current_role}_timeout",
             "error": f"Agent '{current_role}' timed out after {batch_timeout}s",
@@ -1175,17 +1244,19 @@ async def execute_agent_node(
     if output_violations:
         return _contract_failure_result(state, current_role, "output", output_violations)
 
-    events.append({
-        "type": "agent_complete",
-        "role": current_role,
-        "name": agent_config["name"],
-        "tokens": total_tokens,
-        "cost": cost,
-        "duration_ms": duration_ms,
-        "files_changed": files_changed,
-        "summary": final_text,
-        "subtask_count": int(subtask_metrics.get("subtask_count", 0) or 0),
-    })
+    events.append(
+        {
+            "type": "agent_complete",
+            "role": current_role,
+            "name": agent_config["name"],
+            "tokens": total_tokens,
+            "cost": cost,
+            "duration_ms": duration_ms,
+            "files_changed": files_changed,
+            "summary": final_text,
+            "subtask_count": int(subtask_metrics.get("subtask_count", 0) or 0),
+        }
+    )
 
     return {
         "agent_outputs": {
@@ -1232,14 +1303,16 @@ async def _execute_streaming(
     while True:
         try:
             chunk = await asyncio.wait_for(
-                stream_iter.__anext__(), timeout=idle_timeout,
+                stream_iter.__anext__(),
+                timeout=idle_timeout,
             )
         except StopAsyncIteration:
             break  # Stream finished normally
         except asyncio.TimeoutError:
             logger.warning(
                 "Agent %s idle for %ds (no tokens), aborting stream",
-                role, idle_timeout,
+                role,
+                idle_timeout,
             )
             break
 
@@ -1250,7 +1323,9 @@ async def _execute_streaming(
             logger.debug("Stream callback error for %s", role)
 
     # Build a synthetic LLMResponse from streamed content
-    estimated_input = sum(len(m.get("content", "")) // 4 for m in messages if isinstance(m.get("content"), str))
+    estimated_input = sum(
+        len(m.get("content", "")) // 4 for m in messages if isinstance(m.get("content"), str)
+    )
     estimated_output = len(collected_text) // 4
 
     return LLMResponse(
@@ -1280,6 +1355,7 @@ async def execute_agents_parallel(
     Only used for agents that have no dependencies on each other's output.
     Each agent sees the SAME state — they don't see each other's results.
     """
+
     def _build_role_state(base: TaskState, role: str) -> TaskState:
         """Create an isolated task state for one parallel role execution."""
         role_state: TaskState = dict(base)
@@ -1321,11 +1397,13 @@ async def execute_agents_parallel(
         role = roles[i]
         if isinstance(result, Exception):
             logger.error("Parallel agent %s failed: %s", role, result)
-            merged_events.append({
-                "type": "agent_timeout",
-                "role": role,
-                "error": str(result),
-            })
+            merged_events.append(
+                {
+                    "type": "agent_timeout",
+                    "role": role,
+                    "error": str(result),
+                }
+            )
             continue
         if isinstance(result, dict):
             role_outputs = result.get("agent_outputs", {})
@@ -1354,9 +1432,7 @@ async def execute_agents_parallel(
                     if not isinstance(existing_entries, list):
                         existing_entries = []
                     seen = {
-                        str(e.get("memory_id", ""))
-                        for e in existing_entries
-                        if isinstance(e, dict)
+                        str(e.get("memory_id", "")) for e in existing_entries if isinstance(e, dict)
                     }
                     for entry in entries:
                         if not isinstance(entry, dict):

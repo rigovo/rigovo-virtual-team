@@ -8,7 +8,7 @@ import logging
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from rigovo.domain.entities.quality import (
@@ -130,7 +130,9 @@ class RigourQualityGate(QualityGate):
                     None,
                     lambda: subprocess.run(
                         ["npm", "install", "-g", "@rigour-labs/cli"],
-                        capture_output=True, text=True, timeout=120,
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
                     ),
                 )
                 if result.returncode == 0:
@@ -151,7 +153,9 @@ class RigourQualityGate(QualityGate):
                     None,
                     lambda: subprocess.run(
                         ["npx", "-y", "@rigour-labs/cli", "--help"],
-                        capture_output=True, text=True, timeout=120,
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
                     ),
                 )
                 cls._cached_binary = "npx"
@@ -193,7 +197,11 @@ class RigourQualityGate(QualityGate):
             for f in gate_input.files_changed:
                 cmd.extend(["--file", f])
 
-        project_root = Path(gate_input.project_root) if isinstance(gate_input.project_root, str) else gate_input.project_root
+        project_root = (
+            Path(gate_input.project_root)
+            if isinstance(gate_input.project_root, str)
+            else gate_input.project_root
+        )
 
         try:
             loop = asyncio.get_running_loop()
@@ -205,7 +213,7 @@ class RigourQualityGate(QualityGate):
                     text=True,
                     timeout=self._timeout,
                     cwd=str(project_root),
-                )
+                ),
             )
 
             # If the CLI produced no valid JSON, it's not installed or broken.
@@ -314,7 +322,9 @@ class RigourQualityGate(QualityGate):
                 violations.append(
                     Violation(
                         gate_id=gate_id,
-                        message=str(failure.get("details") or failure.get("title") or "Gate failed"),
+                        message=str(
+                            failure.get("details") or failure.get("title") or "Gate failed"
+                        ),
                         severity=severity,
                         suggestion=str(failure.get("hint") or ""),
                     )
@@ -477,7 +487,11 @@ class RigourQualityGate(QualityGate):
                 violations=[],
             )
 
-        project_root = Path(gate_input.project_root) if isinstance(gate_input.project_root, str) else gate_input.project_root
+        project_root = (
+            Path(gate_input.project_root)
+            if isinstance(gate_input.project_root, str)
+            else gate_input.project_root
+        )
 
         for file_path in gate_input.files_changed:
             full_path = project_root / file_path
@@ -534,9 +548,7 @@ class RigourQualityGate(QualityGate):
 
             # Check for function length (Python only)
             if file_path.endswith(".py"):
-                self._check_python_function_length(
-                    lines, file_path, violations
-                )
+                self._check_python_function_length(lines, file_path, violations)
 
         has_errors = any(v.severity == ViolationSeverity.ERROR for v in violations)
         status = GateStatus.FAILED if has_errors else GateStatus.PASSED

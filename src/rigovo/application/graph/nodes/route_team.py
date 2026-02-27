@@ -11,7 +11,6 @@ from rigovo.application.master.router import TeamRouter
 from rigovo.domain.entities.team import Team
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 
-
 ROUTING_PROMPT = """\
 You are a team router for a workspace with multiple engineering teams.
 
@@ -53,11 +52,14 @@ async def route_team_node(
                 "pipeline_order": team.get("pipeline_order", []),
             },
             "status": "routed",
-            "events": state.get("events", []) + [{
-                "type": "team_routed",
-                "team_name": team["name"],
-                "reasoning": "Only one team available.",
-            }],
+            "events": state.get("events", [])
+            + [
+                {
+                    "type": "team_routed",
+                    "team_name": team["name"],
+                    "reasoning": "Only one team available.",
+                }
+            ],
         }
 
     if router is not None:
@@ -86,17 +88,23 @@ async def route_team_node(
                 "pipeline_order": matched_team.get("pipeline_order", []),
             },
             "status": "routed",
-            "events": state.get("events", []) + [{
-                "type": "team_routed",
-                "team_name": matched_team.get("name"),
-                "reasoning": routed.reasoning,
-                "confidence": routed.confidence,
-            }],
+            "events": state.get("events", [])
+            + [
+                {
+                    "type": "team_routed",
+                    "team_name": matched_team.get("name"),
+                    "reasoning": routed.reasoning,
+                    "confidence": routed.confidence,
+                }
+            ],
         }
 
     prompt = ROUTING_PROMPT.format(
         teams_json=json.dumps(
-            [{"id": t["id"], "name": t["name"], "domain": t.get("domain")} for t in available_teams],
+            [
+                {"id": t["id"], "name": t["name"], "domain": t.get("domain")}
+                for t in available_teams
+            ],
             indent=2,
         ),
         task_type=classification.get("task_type", "unknown"),
@@ -137,11 +145,14 @@ async def route_team_node(
             "pipeline_order": matched_team.get("pipeline_order", []),
         },
         "status": "routed",
-        "events": state.get("events", []) + [{
-            "type": "team_routed",
-            "team_name": routing.get("team_name"),
-            "reasoning": routing.get("reasoning"),
-        }],
+        "events": state.get("events", [])
+        + [
+            {
+                "type": "team_routed",
+                "team_name": routing.get("team_name"),
+                "reasoning": routing.get("reasoning"),
+            }
+        ],
     }
 
 

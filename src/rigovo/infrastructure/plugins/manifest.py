@@ -75,11 +75,9 @@ class PluginManifest(BaseModel):
     actions: list[ActionSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _validate_capabilities(self) -> "PluginManifest":
+    def _validate_capabilities(self) -> PluginManifest:
         if self.trust_level not in {"community", "verified", "internal"}:
-            raise ValueError(
-                "trust_level must be one of: community, verified, internal"
-            )
+            raise ValueError("trust_level must be one of: community, verified, internal")
         implied: set[str] = set()
         if self.connectors:
             implied.add("connector")

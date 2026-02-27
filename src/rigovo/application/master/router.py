@@ -79,8 +79,7 @@ class TeamRouter:
     ) -> RoutingResult:
         """Use LLM to route among multiple teams."""
         teams_desc = "\n".join(
-            f"- Team ID: {t.id} | Domain: {t.domain} | Name: {t.name}"
-            for t in teams
+            f"- Team ID: {t.id} | Domain: {t.domain} | Name: {t.name}" for t in teams
         )
 
         response = await self._llm.invoke(
@@ -89,8 +88,7 @@ class TeamRouter:
                 {
                     "role": "user",
                     "content": (
-                        f"Available Teams:\n{teams_desc}\n\n"
-                        f"Task Description:\n{description}"
+                        f"Available Teams:\n{teams_desc}\n\nTask Description:\n{description}"
                     ),
                 },
             ],

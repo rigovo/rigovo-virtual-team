@@ -18,11 +18,11 @@ enrichment + pipeline outputs + quality expectations.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from rigovo.application.context.project_scanner import ProjectSnapshot
 from rigovo.application.context.memory_retriever import RetrievedMemories
+from rigovo.application.context.project_scanner import ProjectSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,8 @@ class AgentContext:
             full = full[:MAX_TOTAL_CONTEXT_CHARS] + "\n... (context truncated)"
             logger.warning(
                 "Agent context for %s truncated at %d chars",
-                self.role, MAX_TOTAL_CONTEXT_CHARS,
+                self.role,
+                MAX_TOTAL_CONTEXT_CHARS,
             )
 
         return full
@@ -164,7 +165,8 @@ class ContextBuilder:
         # 2. Project context — what the codebase looks like
         if project_snapshot:
             ctx.project_section = self._build_project_section(
-                project_snapshot, role,
+                project_snapshot,
+                role,
             )
 
         # 3. Memory context — lessons from past tasks
@@ -181,7 +183,8 @@ class ContextBuilder:
         # 5. Pipeline context — what previous agents produced
         if previous_outputs:
             ctx.pipeline_section = self._build_pipeline_section(
-                previous_outputs, role,
+                previous_outputs,
+                role,
             )
 
         # 6. Message context — direct consults and responses between agents
@@ -191,7 +194,9 @@ class ContextBuilder:
         return ctx
 
     def _build_project_section(
-        self, snapshot: ProjectSnapshot, role: str,
+        self,
+        snapshot: ProjectSnapshot,
+        role: str,
     ) -> str:
         """Build project context section, tailored per role."""
         # Planner and Lead get full tree + all key files
@@ -275,8 +280,6 @@ class ContextBuilder:
             content = str(msg.get("content", ""))
             if len(content) > 700:
                 content = content[:700] + "..."
-            parts.append(
-                f"[{msg_type}] {from_role} -> {to_role} ({status})\n{content}"
-            )
+            parts.append(f"[{msg_type}] {from_role} -> {to_role} ({status})\n{content}")
 
         return self._budget_text("\n\n".join(parts), MAX_PIPELINE_CONTEXT_CHARS)

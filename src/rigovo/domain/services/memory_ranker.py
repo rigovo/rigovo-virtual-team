@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 
-from rigovo.domain.entities.memory import Memory, MemoryType
+from rigovo.domain.entities.memory import Memory
 
 
 @dataclass

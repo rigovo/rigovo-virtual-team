@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from uuid import UUID
 
-from rigovo.domain.entities.audit_entry import AuditEntry, AuditAction
+from rigovo.domain.entities.audit_entry import AuditAction, AuditEntry
 from rigovo.domain.interfaces.repositories import AuditRepository
 from rigovo.infrastructure.persistence.sqlite_local import LocalDatabase
 

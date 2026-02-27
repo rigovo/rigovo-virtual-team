@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Retry config for transient API errors (429, 529, 500, etc.)
 _MAX_RETRIES = 5
-_BASE_DELAY = 1.0   # seconds — doubles each attempt (1, 2, 4, 8, 16)
+_BASE_DELAY = 1.0  # seconds — doubles each attempt (1, 2, 4, 8, 16)
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 529}
 
 
@@ -41,9 +41,7 @@ class AnthropicProvider(LLMProvider):
             try:
                 import anthropic
             except ImportError:
-                raise ImportError(
-                    "anthropic SDK required. Install with: pip install anthropic"
-                )
+                raise ImportError("anthropic SDK required. Install with: pip install anthropic")
             self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
         return self._client
 
@@ -94,11 +92,13 @@ class AnthropicProvider(LLMProvider):
             if hasattr(block, "text"):
                 content += block.text
             elif hasattr(block, "type") and block.type == "tool_use":
-                tool_calls.append({
-                    "id": block.id,
-                    "name": block.name,
-                    "input": block.input,
-                })
+                tool_calls.append(
+                    {
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.input,
+                    }
+                )
 
         return LLMResponse(
             content=content,
@@ -173,10 +173,14 @@ class AnthropicProvider(LLMProvider):
                     raise  # Not retryable — propagate immediately
 
                 last_error = exc
-                delay = _BASE_DELAY * (2 ** attempt)
+                delay = _BASE_DELAY * (2**attempt)
                 logger.warning(
                     "Anthropic API returned %s (attempt %d/%d), retrying in %.1fs: %s",
-                    status_code, attempt + 1, _MAX_RETRIES, delay, exc,
+                    status_code,
+                    attempt + 1,
+                    _MAX_RETRIES,
+                    delay,
+                    exc,
                 )
                 await asyncio.sleep(delay)
 

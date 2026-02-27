@@ -103,7 +103,7 @@ def check_pipeline_complete(state: TaskState) -> str:
     current_index = state.get("current_agent_index", 0)
     if current_index + 1 >= len(pipeline_order):
         return "pipeline_done"
-    remaining_roles = pipeline_order[current_index + 1:]
+    remaining_roles = pipeline_order[current_index + 1 :]
     if len(remaining_roles) >= 2 and all(r in _PARALLELIZABLE_ROLES for r in remaining_roles):
         return "parallel_fan_out"
 
@@ -162,7 +162,7 @@ def advance_to_next_agent(state: TaskState) -> dict:
             "current_agent_index": next_index,
             "current_agent_role": next_role,
             "fix_packets": [],  # Clear fix packets for new agent
-            "retry_count": 0,   # Reset retries for new agent
+            "retry_count": 0,  # Reset retries for new agent
         }
 
     current_role = state.get("current_agent_role", "")
@@ -208,14 +208,11 @@ def advance_to_next_agent(state: TaskState) -> dict:
     events = list(state.get("events", []))
     status = "routing_next_agent"
     error = ""
-    remaining = [
-        r for r in pipeline_order if r not in completed_roles and r not in blocked_roles
-    ]
+    remaining = [r for r in pipeline_order if r not in completed_roles and r not in blocked_roles]
     if remaining and not ready_roles:
         status = "pipeline_failed_dependency"
-        error = (
-            "No executable DAG nodes remain; unresolved dependencies for roles: "
-            + ", ".join(remaining)
+        error = "No executable DAG nodes remain; unresolved dependencies for roles: " + ", ".join(
+            remaining
         )
         events.append(
             {
@@ -227,7 +224,9 @@ def advance_to_next_agent(state: TaskState) -> dict:
         )
 
     next_role = ready_roles[0] if ready_roles else ""
-    next_index = pipeline_order.index(next_role) if next_role in pipeline_order else len(pipeline_order)
+    next_index = (
+        pipeline_order.index(next_role) if next_role in pipeline_order else len(pipeline_order)
+    )
 
     return {
         "current_agent_index": next_index,
@@ -276,9 +275,7 @@ def check_debate_needed(state: TaskState) -> str:
     max_rounds = state.get("max_debate_rounds", DEFAULT_MAX_DEBATE_ROUNDS)
 
     # Check if reviewer requested changes
-    needs_changes = any(
-        marker in reviewer_summary for marker in _CHANGES_REQUESTED_MARKERS
-    )
+    needs_changes = any(marker in reviewer_summary for marker in _CHANGES_REQUESTED_MARKERS)
 
     if needs_changes and debate_round < max_rounds:
         return "debate_needed"
@@ -312,11 +309,13 @@ def prepare_debate_round(state: TaskState) -> dict:
     agent_outputs.pop("reviewer", None)
 
     events = list(state.get("events", []))
-    events.append({
-        "type": "debate_round",
-        "round": debate_round,
-        "reviewer_feedback": reviewer_summary[:200],
-    })
+    events.append(
+        {
+            "type": "debate_round",
+            "round": debate_round,
+            "reviewer_feedback": reviewer_summary[:200],
+        }
+    )
 
     return {
         "current_agent_index": coder_index,

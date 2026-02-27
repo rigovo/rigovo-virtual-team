@@ -24,15 +24,17 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Keys that contain secrets — MUST be encrypted at rest
-SECRET_KEYS = frozenset({
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-    "GOOGLE_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "GROQ_API_KEY",
-    "MISTRAL_API_KEY",
-    "WORKOS_API_KEY",
-})
+SECRET_KEYS = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GOOGLE_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "MISTRAL_API_KEY",
+        "WORKOS_API_KEY",
+    }
+)
 
 SETTINGS_TABLE_SQL = """\
 CREATE TABLE IF NOT EXISTS settings (
@@ -71,9 +73,7 @@ def _get_or_create_fernet_key(db: Any) -> bytes:
         logger.debug("Keychain unavailable (%s), using machine-derived key", exc)
 
     # ── Fallback: PBKDF2 with random salt in DB ──
-    row = db.fetchone(
-        "SELECT value FROM settings WHERE key = ?", ("_encryption_salt",)
-    )
+    row = db.fetchone("SELECT value FROM settings WHERE key = ?", ("_encryption_salt",))
     if row:
         salt = bytes.fromhex(row["value"])
     else:
@@ -91,9 +91,7 @@ def _get_or_create_fernet_key(db: Any) -> bytes:
         login = os.environ.get("USER", "rigovo")
 
     machine_id = f"{platform.node()}:{login}:rigovo-v1"
-    dk = hashlib.pbkdf2_hmac(
-        "sha256", machine_id.encode(), salt, iterations=480_000, dklen=32
-    )
+    dk = hashlib.pbkdf2_hmac("sha256", machine_id.encode(), salt, iterations=480_000, dklen=32)
     return base64.urlsafe_b64encode(dk)
 
 
@@ -112,9 +110,7 @@ class SqliteSettingsRepository:
     # ── public API ──────────────────────────────────────────────────
 
     def get(self, key: str, default: str = "") -> str:
-        row = self._db.fetchone(
-            "SELECT value, encrypted FROM settings WHERE key = ?", (key,)
-        )
+        row = self._db.fetchone("SELECT value, encrypted FROM settings WHERE key = ?", (key,))
         if not row:
             return default
         return self._decrypt(row["value"]) if row["encrypted"] else row["value"]
@@ -129,23 +125,18 @@ class SqliteSettingsRepository:
         )
         result: dict[str, str] = {}
         for row in rows:
-            result[row["key"]] = (
-                self._decrypt(row["value"]) if row["encrypted"] else row["value"]
-            )
+            result[row["key"]] = self._decrypt(row["value"]) if row["encrypted"] else row["value"]
         for k in keys:
             result.setdefault(k, "")
         return result
 
     def get_all(self) -> dict[str, str]:
         rows = self._db.fetchall(
-            "SELECT key, value, encrypted FROM settings "
-            "WHERE key != '_encryption_salt'"
+            "SELECT key, value, encrypted FROM settings WHERE key != '_encryption_salt'"
         )
         result: dict[str, str] = {}
         for row in rows:
-            result[row["key"]] = (
-                self._decrypt(row["value"]) if row["encrypted"] else row["value"]
-            )
+            result[row["key"]] = self._decrypt(row["value"]) if row["encrypted"] else row["value"]
         return result
 
     def set(self, key: str, value: str) -> None:

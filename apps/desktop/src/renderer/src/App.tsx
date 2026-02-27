@@ -446,12 +446,21 @@ export default function App(): JSX.Element {
   const authPollRef = useRef<number | null>(null);
   const [authWaiting, setAuthWaiting] = useState(false);
   const stopAuthPolling = useCallback(() => { if (authPollRef.current) { window.clearInterval(authPollRef.current); authPollRef.current = null; } setAuthWaiting(false); }, []);
+  const authStartTimeRef = useRef<number>(0);
+  const AUTH_TIMEOUT_MS = 120_000; // 2 minutes max wait
   const startAuthPolling = useCallback(() => {
-    stopAuthPolling(); setAuthWaiting(true);
+    stopAuthPolling(); setAuthWaiting(true); setOnboardingMsg("");
+    authStartTimeRef.current = Date.now();
     authPollRef.current = window.setInterval(async () => {
+      // Timeout: stop polling after 2 minutes and show error
+      if (Date.now() - authStartTimeRef.current > AUTH_TIMEOUT_MS) {
+        stopAuthPolling();
+        setOnboardingMsg("Sign-in timed out. Please try again.");
+        return;
+      }
       try {
         const s = await readJson<AuthSession>(`${API_BASE}/v1/auth/session`);
-        if (s?.signed_in) { stopAuthPolling(); setAuthSession(s); setRoute("control"); }
+        if (s?.signed_in) { stopAuthPolling(); setOnboardingMsg(""); setAuthSession(s); setRoute("control"); }
       } catch { /* swallow */ }
     }, 1500);
   }, [stopAuthPolling]);

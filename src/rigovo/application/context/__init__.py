@@ -10,14 +10,14 @@ This package provides:
 - MemoryRetriever: Fetches relevant past learnings
 """
 
-from rigovo.application.context.project_scanner import ProjectScanner, ProjectSnapshot
-from rigovo.application.context.context_builder import ContextBuilder, AgentContext
+from rigovo.application.context.context_builder import AgentContext, ContextBuilder
 from rigovo.application.context.memory_retriever import MemoryRetriever
+from rigovo.application.context.project_scanner import ProjectScanner, ProjectSnapshot
 
 __all__ = [
+    "AgentContext",
+    "ContextBuilder",
+    "MemoryRetriever",
     "ProjectScanner",
     "ProjectSnapshot",
-    "ContextBuilder",
-    "AgentContext",
-    "MemoryRetriever",
 ]

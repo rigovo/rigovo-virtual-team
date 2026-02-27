@@ -27,25 +27,24 @@ Architecture:
 
 from __future__ import annotations
 
-import asyncio
-import time
-import threading
 import logging
-from typing import Any, Callable
+import threading
+import time
+from collections.abc import Callable
+from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Header, Footer, Static
+from textual.widgets import Static
 
 from rigovo.infrastructure.terminal.widgets import (
-    TaskHeader,
-    PipelineView,
-    StreamingPanel,
+    ROLE_ICONS,
     AgentPanel,
     ApprovalPanel,
     CostTracker,
-    ROLE_ICONS,
-    STATUS_LABELS,
+    PipelineView,
+    StreamingPanel,
+    TaskHeader,
 )
 
 # Map graph events to pipeline stages
@@ -135,8 +134,7 @@ class RigovoDashboard(App[dict[str, Any]]):
             yield CostTracker(budget=self._budget, id="costs")
 
         yield Static(
-            "[dim]q[/dim] Quit  [dim]d[/dim] Dark  "
-            "[dim]a[/dim] Approve  [dim]r[/dim] Reject",
+            "[dim]q[/dim] Quit  [dim]d[/dim] Dark  [dim]a[/dim] Approve  [dim]r[/dim] Reject",
             id="status-bar",
         )
 
@@ -297,9 +295,7 @@ class RigovoDashboard(App[dict[str, Any]]):
     def _on_pipeline_assembled(self, event: dict[str, Any]) -> None:
         agents = self.query_one("#agents", AgentPanel)
         roles = event.get("roles", [])
-        icons = " \u2192 ".join(
-            f"{ROLE_ICONS.get(r, chr(0x2699))} {r}" for r in roles
-        )
+        icons = " \u2192 ".join(f"{ROLE_ICONS.get(r, chr(0x2699))} {r}" for r in roles)
         agents.add_info(f"Pipeline: {icons}")
 
         header = self.query_one("#task-header", TaskHeader)
@@ -498,9 +494,7 @@ def print_final_summary(event: dict[str, Any]) -> None:
     cost = event.get("total_cost", 0)
     tokens = event.get("total_tokens", 0)
     agents = event.get("agents_run", [])
-    color = {"completed": "green", "failed": "red", "rejected": "yellow"}.get(
-        status, "white"
-    )
+    color = {"completed": "green", "failed": "red", "rejected": "yellow"}.get(status, "white")
 
     t = Table(show_header=False, box=None, padding=(0, 2))
     t.add_column("Key", style="bold")
@@ -509,10 +503,7 @@ def print_final_summary(event: dict[str, Any]) -> None:
     default_icon = "\u2699"
     t.add_row(
         "Agents",
-        " \u2192 ".join(
-            f"{ROLE_ICONS.get(r, default_icon)} {r}" for r in agents
-        )
-        or "\u2014",
+        " \u2192 ".join(f"{ROLE_ICONS.get(r, default_icon)} {r}" for r in agents) or "\u2014",
     )
     t.add_row("Tokens", f"{tokens:,}")
     t.add_row("Cost", f"${cost:.4f}")

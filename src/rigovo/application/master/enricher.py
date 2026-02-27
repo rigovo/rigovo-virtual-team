@@ -10,10 +10,9 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from uuid import UUID
 
 from rigovo.domain.entities.agent import Agent, EnrichmentContext
-from rigovo.domain.entities.quality import GateResult, GateStatus
+from rigovo.domain.entities.quality import GateResult
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -101,9 +100,7 @@ class ContextEnricher:
             context_parts.append(f"\nFiles Changed: {', '.join(files_changed[:20])}")
 
         if agent.enrichment:
-            context_parts.append(
-                f"\nCurrent Enrichment:\n{agent.enrichment.to_prompt_section()}"
-            )
+            context_parts.append(f"\nCurrent Enrichment:\n{agent.enrichment.to_prompt_section()}")
 
         response = await self._llm.invoke(
             messages=[

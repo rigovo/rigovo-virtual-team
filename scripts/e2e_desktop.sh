@@ -3,13 +3,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 API_HOST="${RIGOVO_API_HOST:-127.0.0.1}"
-API_PORT="${RIGOVO_API_PORT:-8787}"
+API_PORT="8787"  # Fixed — must match WorkOS redirect URI
 API_URL="http://${API_HOST}:${API_PORT}"
 CALLBACK_URI="http://127.0.0.1:${API_PORT}/v1/auth/callback"
 API_LOG="${ROOT_DIR}/.rigovo/e2e-api.log"
 API_PID=""
 E2E_INSTALL="${RIGOVO_E2E_INSTALL:-auto}" # auto|always|never
-DEMO_MODE=0
 
 cleanup() {
   echo "[rigovo-e2e] cleaning up..."
@@ -32,25 +31,15 @@ wait_for_health() {
   return 1
 }
 
-find_open_port() {
-  local start="${1:-8787}"
-  python3 - "$start" <<'PY'
-import socket, sys
-port = int(sys.argv[1])
-for p in range(port, port + 200):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        s.bind(("127.0.0.1", p))
-        print(p)
-        break
-    except OSError:
-        pass
-    finally:
-        s.close()
-else:
-    print("")
-PY
+kill_port() {
+  local port="$1"
+  local pids
+  pids="$(lsof -ti :"${port}" 2>/dev/null || true)"
+  if [[ -n "${pids}" ]]; then
+    echo "[rigovo-e2e] killing stale process(es) on port ${port}: ${pids}"
+    echo "${pids}" | xargs kill -9 2>/dev/null || true
+    sleep 0.5
+  fi
 }
 
 check_env_var() {
@@ -114,26 +103,12 @@ mkdir -p "${ROOT_DIR}/.rigovo"
 
 trap cleanup EXIT INT TERM
 
-# ── Start API (prefer fixed port 8787 for stable WorkOS callback URI) ──
-selected_port="$(find_open_port "${API_PORT}")"
-if [[ -z "${selected_port}" ]]; then
-  echo "[rigovo-e2e] no free local API port found via probe; trying existing API at ${API_URL}"
-  if curl -fsS "${API_URL}/health" >/dev/null 2>&1; then
-    echo "[rigovo-e2e] reusing existing API at ${API_URL}"
-  else
-    echo "[rigovo-e2e] no reusable API found; continuing in desktop demo mode"
-    API_URL="http://127.0.0.1:9"
-    CALLBACK_URI="(demo mode)"
-    DEMO_MODE=1
-  fi
+# ── Start API — always on port 8787 (must match WorkOS redirect URI) ──
+if curl -fsS "${API_URL}/health" >/dev/null 2>&1; then
+  echo "[rigovo-e2e] reusing existing healthy API at ${API_URL}"
 else
-  if [[ "${selected_port}" != "${API_PORT}" ]]; then
-    echo "[rigovo-e2e] warning: preferred port ${API_PORT} in use, falling back to ${selected_port}"
-    echo "[rigovo-e2e] update WorkOS callback URI if needed"
-  fi
-  API_PORT="${selected_port}"
-  API_URL="http://${API_HOST}:${API_PORT}"
-  CALLBACK_URI="http://127.0.0.1:${API_PORT}/v1/auth/callback"
+  # Free port 8787 if occupied by a stale process from a previous run
+  kill_port "${API_PORT}"
   start_api
 
   if ! wait_for_health; then
@@ -148,21 +123,14 @@ fi
 
 # ── Launch Electron desktop app ──
 echo ""
-echo "  ┌─────────────────────────────────────────────────────┐"
-echo "  │  Rigovo Desktop — Local Development                 │"
-echo "  │                                                     │"
-echo "  │  API:      ${API_URL}                       │"
-echo "  │  Callback: ${CALLBACK_URI}  │"
-echo "  │                                                     │"
-echo "  │  Register this callback URI in WorkOS Dashboard:    │"
-echo "  │  https://dashboard.workos.com → Redirects           │"
-echo "  └─────────────────────────────────────────────────────┘"
+echo "  ┌──────────────────────────────────────────────────────────┐"
+echo "  │  Rigovo Desktop — Local Development                      │"
+echo "  │                                                          │"
+echo "  │  API:      ${API_URL}                                    │"
+echo "  │  Callback: ${CALLBACK_URI}                               │"
+echo "  │                                                          │"
+echo "  │  WorkOS redirect URI must be:                            │"
+echo "  │  http://127.0.0.1:8787/v1/auth/callback                 │"
+echo "  └──────────────────────────────────────────────────────────┘"
 echo ""
-if [[ "${DEMO_MODE}" == "1" ]]; then
-  echo "[rigovo-e2e] demo mode active; building desktop bundle for visual QA"
-  VITE_RIGOVO_API="${API_URL}" RIGOVO_API_PORT="${API_PORT}" pnpm -C "${ROOT_DIR}/apps/desktop" run build
-  echo "[rigovo-e2e] build complete. Run manually on local machine to visualize live UI:"
-  echo "  VITE_RIGOVO_API=${API_URL} RIGOVO_API_PORT=${API_PORT} pnpm -C apps/desktop run dev"
-else
-  VITE_RIGOVO_API="${API_URL}" RIGOVO_API_PORT="${API_PORT}" pnpm -C "${ROOT_DIR}/apps/desktop" run dev
-fi
+VITE_RIGOVO_API="${API_URL}" RIGOVO_API_PORT="${API_PORT}" pnpm -C "${ROOT_DIR}/apps/desktop" run dev

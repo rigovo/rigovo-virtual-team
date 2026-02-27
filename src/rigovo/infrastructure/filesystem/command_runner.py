@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import subprocess
-import re
 from pathlib import Path
 from typing import Any
 
@@ -162,10 +162,7 @@ class CommandRunner:
             stdout = result.stdout[:MAX_OUTPUT_SIZE]
             stderr = result.stderr[:MAX_OUTPUT_SIZE]
 
-            truncated = (
-                len(result.stdout) > MAX_OUTPUT_SIZE
-                or len(result.stderr) > MAX_OUTPUT_SIZE
-            )
+            truncated = len(result.stdout) > MAX_OUTPUT_SIZE or len(result.stderr) > MAX_OUTPUT_SIZE
 
             return {
                 "command": command,
@@ -228,6 +225,7 @@ class CommandRunner:
     def _safe_env(self) -> dict[str, str] | None:
         """Build a safe environment for command execution."""
         import os
+
         env = os.environ.copy()
         # Ensure agent commands can't access rigovo internals
         env.pop("RIGOVO_API_KEY", None)

@@ -50,11 +50,11 @@ class ModelSpec:
     id: str
     name: str
     provider: Provider
-    input_price: float        # USD per 1M input tokens
-    output_price: float       # USD per 1M output tokens
+    input_price: float  # USD per 1M input tokens
+    output_price: float  # USD per 1M output tokens
     context_window: int = 128_000
     strengths: tuple[Capability, ...] = ()
-    tier: str = "standard"    # "budget" | "standard" | "premium"
+    tier: str = "standard"  # "budget" | "standard" | "premium"
 
     @property
     def short_name(self) -> str:
@@ -63,10 +63,9 @@ class ModelSpec:
 
     def estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
         """Estimate cost for a single invocation."""
-        return (
-            (input_tokens / 1_000_000) * self.input_price
-            + (output_tokens / 1_000_000) * self.output_price
-        )
+        return (input_tokens / 1_000_000) * self.input_price + (
+            output_tokens / 1_000_000
+        ) * self.output_price
 
 
 # ---------------------------------------------------------------------------
@@ -98,15 +97,15 @@ ROLE_REQUIREMENTS: dict[str, tuple[Capability, ...]] = {
 # resolves GPT-5 for standard tier, GPT-5-mini for budget tier, etc.
 
 ROLE_DEFAULT_MODELS: dict[str, str] = {
-    "lead": "claude-opus-4-6",               # Best reasoning for arch decisions
-    "planner": "claude-sonnet-4-6",           # Planning: Sonnet is fast + smart enough
-    "coder": "claude-opus-4-6",              # Coding: Opus = best agent model
-    "reviewer": "claude-sonnet-4-6",          # Code review needs analysis, Sonnet suffices
+    "lead": "claude-opus-4-6",  # Best reasoning for arch decisions
+    "planner": "claude-sonnet-4-6",  # Planning: Sonnet is fast + smart enough
+    "coder": "claude-opus-4-6",  # Coding: Opus = best agent model
+    "reviewer": "claude-sonnet-4-6",  # Code review needs analysis, Sonnet suffices
     "security": "claude-haiku-4-5-20251001",  # Checklist-based audit
-    "qa": "claude-haiku-4-5-20251001",        # Test generation is formulaic
-    "devops": "claude-haiku-4-5-20251001",    # Template-based configs
-    "sre": "claude-haiku-4-5-20251001",       # Template-based configs
-    "docs": "claude-haiku-4-5-20251001",      # Text generation
+    "qa": "claude-haiku-4-5-20251001",  # Test generation is formulaic
+    "devops": "claude-haiku-4-5-20251001",  # Template-based configs
+    "sre": "claude-haiku-4-5-20251001",  # Template-based configs
+    "docs": "claude-haiku-4-5-20251001",  # Text generation
 }
 
 
@@ -141,7 +140,11 @@ def resolve_model_for_role(
         if spec and spec.provider not in available_providers:
             # Fall back to preset recommendation for this role
             reqs = ROLE_REQUIREMENTS.get(role_id, (Capability.CODING,))
-            tier = "budget" if role_id in {"reviewer", "qa", "security", "devops", "sre", "docs"} else "standard"
+            tier = (
+                "budget"
+                if role_id in {"reviewer", "qa", "security", "devops", "sre", "docs"}
+                else "standard"
+            )
             alt = _pick_best(reqs, tier, available_providers)
             if alt:
                 return alt.id
@@ -217,9 +220,9 @@ def _pick_best(
     """Pick the best model for given requirements and tier."""
     models = _get_models()
     candidates = [
-        m for m in models.values()
-        if m.tier == tier
-        and (available_providers is None or m.provider in available_providers)
+        m
+        for m in models.values()
+        if m.tier == tier and (available_providers is None or m.provider in available_providers)
     ]
     if not candidates:
         return None
@@ -232,7 +235,8 @@ def _pick_best(
 def _estimate_agent_cost(model: ModelSpec, role_id: str) -> float:
     """Estimate USD cost for one agent invocation on a typical task."""
     input_tokens, output_tokens = ROLE_TOKEN_ESTIMATES.get(
-        role_id, (5000, 3000),
+        role_id,
+        (5000, 3000),
     )
     return model.estimate_cost(input_tokens, output_tokens)
 
@@ -380,10 +384,9 @@ class CustomProvider:
         """Estimate cost. Returns None if pricing unknown."""
         if not self.has_pricing:
             return None
-        return (
-            (input_tokens / 1_000_000) * self.input_price
-            + (output_tokens / 1_000_000) * self.output_price
-        )
+        return (input_tokens / 1_000_000) * self.input_price + (
+            output_tokens / 1_000_000
+        ) * self.output_price
 
 
 def estimate_cost(

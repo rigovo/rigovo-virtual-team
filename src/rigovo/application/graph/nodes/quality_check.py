@@ -5,8 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from rigovo.application.graph.state import TaskState
-from rigovo.domain.interfaces.quality_gate import QualityGate, GateInput
-from rigovo.domain.entities.quality import GateStatus, FixPacket, FixItem, Violation, ViolationSeverity
+from rigovo.domain.entities.quality import (
+    FixItem,
+    FixPacket,
+    GateStatus,
+    Violation,
+    ViolationSeverity,
+)
+from rigovo.domain.interfaces.quality_gate import GateInput, QualityGate
 
 
 def _serialize_violation(violation: Violation) -> dict[str, Any]:
@@ -16,7 +22,9 @@ def _serialize_violation(violation: Violation) -> dict[str, Any]:
         "file_path": violation.file_path,
         "message": violation.message,
         "suggestion": violation.suggestion,
-        "severity": str(violation.severity.value if hasattr(violation.severity, "value") else violation.severity),
+        "severity": str(
+            violation.severity.value if hasattr(violation.severity, "value") else violation.severity
+        ),
         "line": violation.line,
     }
 
@@ -120,12 +128,15 @@ async def quality_check_node(
         return {
             "gate_results": {"status": "skipped", "passed": True},
             "status": f"gates_skipped_{current_role}",
-            "events": state.get("events", []) + [{
-                "type": "gate_results",
-                "role": current_role,
-                "status": "skipped",
-                "passed": True,
-            }],
+            "events": state.get("events", [])
+            + [
+                {
+                    "type": "gate_results",
+                    "role": current_role,
+                    "status": "skipped",
+                    "passed": True,
+                }
+            ],
         }
 
     # Get files changed by the current agent
@@ -175,13 +186,16 @@ async def quality_check_node(
             "fix_packets": state.get("fix_packets", []) + [fix_packet.to_prompt()],
             "retry_count": retry_count,
             "status": f"gate_failed_{current_role}",
-            "events": state.get("events", []) + [{
-                "type": "gate_results",
-                "role": current_role,
-                "passed": False,
-                "gates_run": 1,
-                "violations": 1,
-            }],
+            "events": state.get("events", [])
+            + [
+                {
+                    "type": "gate_results",
+                    "role": current_role,
+                    "passed": False,
+                    "gates_run": 1,
+                    "violations": 1,
+                }
+            ],
         }
 
     run_deep, run_pro = _resolve_deep_mode(state, current_role)
@@ -223,15 +237,18 @@ async def quality_check_node(
     update: dict[str, Any] = {
         "gate_results": gate_summary,
         "gate_history": gate_history,
-        "events": state.get("events", []) + [{
-            "type": "gate_results",
-            "role": current_role,
-            "deep": run_deep,
-            "pro": run_pro,
-            "passed": all_passed,
-            "gates_run": total_gates_run,
-            "violations": len(all_violations),
-        }],
+        "events": state.get("events", [])
+        + [
+            {
+                "type": "gate_results",
+                "role": current_role,
+                "deep": run_deep,
+                "pro": run_pro,
+                "passed": all_passed,
+                "gates_run": total_gates_run,
+                "violations": len(all_violations),
+            }
+        ],
     }
 
     # If failed, build a fix packet for the retry

@@ -10,8 +10,7 @@ A chatbot guesses. An intelligent agent READS FIRST.
 from __future__ import annotations
 
 import logging
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -25,27 +24,74 @@ TRUNCATION_SUFFIX = "\n... (truncated)"
 
 # Files that reveal project architecture (sorted by priority)
 ARCHITECTURE_FILES = [
-    "pyproject.toml", "package.json", "Cargo.toml", "go.mod", "pom.xml",
-    "build.gradle", "Makefile", "CMakeLists.txt", "Dockerfile",
-    "docker-compose.yml", "docker-compose.yaml",
-    "rigovo.yml", "rigovo.yaml",
-    ".rigour.yml", "rigour.yml",
-    "tsconfig.json", "setup.py", "setup.cfg",
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "Makefile",
+    "CMakeLists.txt",
+    "Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "rigovo.yml",
+    "rigovo.yaml",
+    ".rigour.yml",
+    "rigour.yml",
+    "tsconfig.json",
+    "setup.py",
+    "setup.cfg",
 ]
 
 # Directories to always skip
 SKIP_DIRS = {
-    ".git", "__pycache__", "node_modules", ".venv", "venv", ".tox",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build",
-    ".eggs", "*.egg-info", ".next", ".nuxt", "coverage", "htmlcov",
-    ".terraform", ".serverless",
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    ".eggs",
+    "*.egg-info",
+    ".next",
+    ".nuxt",
+    "coverage",
+    "htmlcov",
+    ".terraform",
+    ".serverless",
 }
 
 # Extensions that indicate source code
 SOURCE_EXTENSIONS = {
-    ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java",
-    ".kt", ".rb", ".php", ".cs", ".cpp", ".c", ".h", ".swift",
-    ".yaml", ".yml", ".toml", ".json", ".sql", ".sh", ".bash",
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".kt",
+    ".rb",
+    ".php",
+    ".cs",
+    ".cpp",
+    ".c",
+    ".h",
+    ".swift",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".json",
+    ".sql",
+    ".sh",
+    ".bash",
 }
 
 
@@ -58,13 +104,13 @@ class ProjectSnapshot:
     """
 
     root: str
-    tree: str                           # ASCII file tree
-    tech_stack: list[str]               # ["Python 3.11", "FastAPI", "SQLite"]
-    key_file_contents: dict[str, str]   # {path: content} for architecture files
+    tree: str  # ASCII file tree
+    tech_stack: list[str]  # ["Python 3.11", "FastAPI", "SQLite"]
+    key_file_contents: dict[str, str]  # {path: content} for architecture files
     source_file_count: int
     total_file_count: int
-    entry_points: list[str]             # ["src/main.py", "app/index.ts"]
-    test_directories: list[str]         # ["tests/", "spec/"]
+    entry_points: list[str]  # ["src/main.py", "app/index.ts"]
+    test_directories: list[str]  # ["tests/", "spec/"]
 
     def to_context_section(self) -> str:
         """Render as a context section for injection into agent prompts."""
@@ -124,7 +170,9 @@ class ProjectScanner:
         )
 
     def _build_tree(
-        self, root: Path, depth: int = 0,
+        self,
+        root: Path,
+        depth: int = 0,
     ) -> tuple[list[str], int, int]:
         """Build ASCII file tree with depth limit."""
         lines: list[str] = []
@@ -227,11 +275,20 @@ class ProjectScanner:
     def _find_entry_points(self, root: Path) -> list[str]:
         """Find likely entry points (main files, index files)."""
         candidates = [
-            "src/main.py", "src/app.py", "main.py", "app.py",
-            "src/index.ts", "src/index.js", "index.ts", "index.js",
-            "src/server.ts", "src/server.js",
-            "cmd/main.go", "main.go",
-            "src/main.rs", "src/lib.rs",
+            "src/main.py",
+            "src/app.py",
+            "main.py",
+            "app.py",
+            "src/index.ts",
+            "src/index.js",
+            "index.ts",
+            "index.js",
+            "src/server.ts",
+            "src/server.js",
+            "cmd/main.go",
+            "main.go",
+            "src/main.rs",
+            "src/lib.rs",
         ]
         return [c for c in candidates if (root / c).is_file()]
 

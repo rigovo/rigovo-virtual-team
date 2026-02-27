@@ -9,7 +9,6 @@ from typing import Any
 from rigovo.application.graph.state import TaskState
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 
-
 REPLAN_PROMPT = """\
 You are a replanner for a multi-agent software delivery DAG.
 
@@ -62,9 +61,7 @@ async def replan_node(
         )
         return {
             "status": "replan_failed",
-            "error": (
-                f"Replan budget exhausted ({next_replan_count - 1}/{max_replans})."
-            ),
+            "error": (f"Replan budget exhausted ({next_replan_count - 1}/{max_replans})."),
             "replan_history": replan_history,
             "events": events,
         }
@@ -106,10 +103,7 @@ async def replan_node(
         "Focus on resolving policy and gate failures with minimal edits."
     )
     fix_packets = list(state.get("fix_packets", []))
-    fix_packets.append(
-        f"[REPLAN REQUIRED #{next_replan_count}]\n"
-        f"{adjustment}"
-    )
+    fix_packets.append(f"[REPLAN REQUIRED #{next_replan_count}]\n{adjustment}")
 
     events.append(
         {

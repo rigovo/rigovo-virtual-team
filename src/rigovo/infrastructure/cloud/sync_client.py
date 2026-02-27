@@ -8,7 +8,6 @@ No source code ever leaves the developer's machine.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -136,9 +135,7 @@ class CloudSyncClient:
 
         return result
 
-    async def _sync_entity_batch(
-        self, entity_type: str, items: list[SyncItem]
-    ) -> None:
+    async def _sync_entity_batch(self, entity_type: str, items: list[SyncItem]) -> None:
         """Sync a batch of items of the same entity type."""
         client = await self._get_client()
         endpoint = f"/v1/workspaces/{self._workspace_id}/sync/{entity_type}"

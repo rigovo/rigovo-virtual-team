@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import shutil
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -30,7 +30,10 @@ def register(app: typer.Typer) -> None:
     @app.command()
     def teams(
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
     ) -> None:
         """List configured teams and their agent roles."""
@@ -53,17 +56,9 @@ def register(app: typer.Typer) -> None:
             table.add_column("Rules", justify="right")
 
             for role in roles:
-                code_marker = (
-                    "[green]✓[/green]" if role.produces_code else "[dim]—[/dim]"
-                )
-                override = (
-                    team_cfg.agents.get(role.role_id) if team_cfg else None
-                )
-                model = (
-                    override.model
-                    if (override and override.model)
-                    else role.default_llm_model
-                )
+                code_marker = "[green]✓[/green]" if role.produces_code else "[dim]—[/dim]"
+                override = team_cfg.agents.get(role.role_id) if team_cfg else None
+                model = override.model if (override and override.model) else role.default_llm_model
                 rule_count = len(override.rules) if override else 0
 
                 table.add_row(
@@ -85,10 +80,14 @@ def register(app: typer.Typer) -> None:
     @app.command()
     def agents(
         detail: str | None = typer.Argument(
-            None, help="Role ID to inspect (e.g., 'coder')",
+            None,
+            help="Role ID to inspect (e.g., 'coder')",
         ),
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
     ) -> None:
         """Show agent details — model, rules, tools, performance stats."""
@@ -112,11 +111,15 @@ def register(app: typer.Typer) -> None:
     @app.command("config")
     def config_cmd(
         key: str | None = typer.Argument(
-            None, help="Config key to get/set (dot notation)",
+            None,
+            help="Config key to get/set (dot notation)",
         ),
         value: str | None = typer.Option(None, "--set", "-s", help="Value to set"),
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
     ) -> None:
         """Show or update rigovo.yml configuration."""
@@ -155,31 +158,49 @@ def register(app: typer.Typer) -> None:
     @app.command()
     def consultation(
         role: str | None = typer.Argument(
-            None, help="Role to inspect/update (e.g., reviewer, coder)",
+            None,
+            help="Role to inspect/update (e.g., reviewer, coder)",
         ),
         set_targets: str | None = typer.Option(
-            None, "--set-targets", help="Comma-separated target roles for the given role",
+            None,
+            "--set-targets",
+            help="Comma-separated target roles for the given role",
         ),
         add_target: list[str] = typer.Option(
-            [], "--add-target", help="Add one allowed target role (repeatable)",
+            [],
+            "--add-target",
+            help="Add one allowed target role (repeatable)",
         ),
         remove_target: list[str] = typer.Option(
-            [], "--remove-target", help="Remove one allowed target role (repeatable)",
+            [],
+            "--remove-target",
+            help="Remove one allowed target role (repeatable)",
         ),
         enabled: bool | None = typer.Option(
-            None, "--enabled/--disabled", help="Enable or disable consultation globally",
+            None,
+            "--enabled/--disabled",
+            help="Enable or disable consultation globally",
         ),
         max_question_chars: int | None = typer.Option(
-            None, "--max-question-chars", help="Max chars allowed per consult question",
+            None,
+            "--max-question-chars",
+            help="Max chars allowed per consult question",
         ),
         max_response_chars: int | None = typer.Option(
-            None, "--max-response-chars", help="Max chars allowed per consult response",
+            None,
+            "--max-response-chars",
+            help="Max chars allowed per consult response",
         ),
         reset: bool = typer.Option(
-            False, "--reset", help="Reset consultation policy to defaults",
+            False,
+            "--reset",
+            help="Reset consultation policy to defaults",
         ),
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
     ) -> None:
         """View or update inter-agent consultation policy in rigovo.yml."""
@@ -191,7 +212,7 @@ def register(app: typer.Typer) -> None:
             )
             raise typer.Exit(1)
 
-        from rigovo.config_schema import load_rigovo_yml, save_rigovo_yml, ConsultationSchema
+        from rigovo.config_schema import ConsultationSchema, load_rigovo_yml, save_rigovo_yml
 
         yml = load_rigovo_yml(root)
         policy = yml.orchestration.consultation
@@ -238,8 +259,7 @@ def register(app: typer.Typer) -> None:
                 raise typer.BadParameter("--remove-target requires a role argument")
             blocked = set(remove_target)
             policy.allowed_targets[role] = [
-                target for target in policy.allowed_targets.get(role, [])
-                if target not in blocked
+                target for target in policy.allowed_targets.get(role, []) if target not in blocked
             ]
             changed = True
 
@@ -270,12 +290,17 @@ def register(app: typer.Typer) -> None:
             targets = ", ".join(policy.allowed_targets[from_role]) or "(none)"
             table.add_row(from_role, targets)
         console.print(table)
-        console.print("\n  [dim]Update example: rigovo consultation coder --set-targets reviewer,qa[/dim]\n")
+        console.print(
+            "\n  [dim]Update example: rigovo consultation coder --set-targets reviewer,qa[/dim]\n"
+        )
 
     @app.command()
     def status(
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
     ) -> None:
         """Show current project status — config, health, and stats."""
@@ -304,15 +329,11 @@ def register(app: typer.Typer) -> None:
         provider = container.config.llm.provider
         console.print(f"  [bold]Provider:[/bold]   {provider}")
         console.print(f"  [bold]Model:[/bold]      {model}")
-        key_status = (
-            "[green]configured[/green]" if has_key else "[red]missing[/red]"
-        )
+        key_status = "[green]configured[/green]" if has_key else "[red]missing[/red]"
         console.print(f"  [bold]API Key:[/bold]    {key_status}")
 
         cloud_key = bool(container.config.cloud.api_key)
-        cloud_status = (
-            "[green]enabled[/green]" if cloud_key else "[dim]disabled[/dim]"
-        )
+        cloud_status = "[green]enabled[/green]" if cloud_key else "[dim]disabled[/dim]"
         console.print(f"  [bold]Cloud sync:[/bold] {cloud_status}")
 
         rigour_path = shutil.which("rigour")
@@ -330,9 +351,7 @@ def register(app: typer.Typer) -> None:
 
         task_repo = SqliteTaskRepository(db)
         workspace_id = (
-            UUID(container.config.workspace_id)
-            if container.config.workspace_id
-            else UUID(int=0)
+            UUID(container.config.workspace_id) if container.config.workspace_id else UUID(int=0)
         )
         tasks = asyncio.run(task_repo.list_by_workspace(workspace_id, limit=1000))
         completed = sum(1 for t in tasks if t.status.value == "completed")
@@ -355,10 +374,15 @@ def register(app: typer.Typer) -> None:
     @app.command("plugins")
     def plugins_cmd(
         all: bool = typer.Option(
-            False, "--all", help="Include disabled plugins",
+            False,
+            "--all",
+            help="Include disabled plugins",
         ),
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
     ) -> None:
         """List discovered ecosystem plugins (connectors/skills/MCP)."""
@@ -422,9 +446,7 @@ def _show_agent_detail(plugin, roles, team_cfg, detail: str) -> None:
         raise typer.Exit(1)
 
     override = team_cfg.agents.get(role.role_id) if team_cfg else None
-    model = (
-        override.model if (override and override.model) else role.default_llm_model
-    )
+    model = override.model if (override and override.model) else role.default_llm_model
 
     console.print(f"  [bold cyan]{role.name}[/bold cyan] ({role.role_id})")
     console.print(f"  {role.description}")
@@ -469,11 +491,7 @@ def _show_agents_table(plugin, roles, team_cfg) -> None:
 
     for role in roles:
         override = team_cfg.agents.get(role.role_id) if team_cfg else None
-        model = (
-            override.model
-            if (override and override.model)
-            else role.default_llm_model
-        )
+        model = override.model if (override and override.model) else role.default_llm_model
         rule_count = len(override.rules) if override else 0
         tool_count = len(plugin.get_tools(role.role_id))
 

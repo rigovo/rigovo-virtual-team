@@ -40,14 +40,22 @@ def register(app: typer.Typer) -> None:
     def replay(
         task_id: str = typer.Argument(..., help="Task ID to replay"),
         diff: bool = typer.Option(
-            False, "--diff", "-d",
+            False,
+            "--diff",
+            "-d",
             help="Show git diff before and after replay",
         ),
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
         verbose: bool = typer.Option(
-            False, "--verbose", "-v", help="Verbose logging",
+            False,
+            "--verbose",
+            "-v",
+            help="Verbose logging",
         ),
     ) -> None:
         """Re-run a previously failed task and optionally show diff."""
@@ -79,7 +87,9 @@ def register(app: typer.Typer) -> None:
             try:
                 pre_diff = subprocess.run(
                     ["git", "diff", "--stat", "HEAD"],
-                    capture_output=True, text=True, cwd=str(root),
+                    capture_output=True,
+                    text=True,
+                    cwd=str(root),
                     timeout=10,
                 ).stdout
                 console.print(
@@ -99,8 +109,7 @@ def register(app: typer.Typer) -> None:
 
             if result["status"] == "failed":
                 console.print(
-                    f"\n[red]Replay failed:[/red] "
-                    f"{result.get('error', 'Unknown error')}",
+                    f"\n[red]Replay failed:[/red] {result.get('error', 'Unknown error')}",
                 )
             else:
                 cost = result.get("total_cost_usd", 0)
@@ -111,7 +120,9 @@ def register(app: typer.Typer) -> None:
                 try:
                     post_diff = subprocess.run(
                         ["git", "diff", "--stat", "HEAD"],
-                        capture_output=True, text=True, cwd=str(root),
+                        capture_output=True,
+                        text=True,
+                        cwd=str(root),
                         timeout=10,
                     ).stdout
                     console.print(
@@ -125,14 +136,18 @@ def register(app: typer.Typer) -> None:
                     # Show detailed diff
                     detailed = subprocess.run(
                         ["git", "diff", "HEAD"],
-                        capture_output=True, text=True, cwd=str(root),
+                        capture_output=True,
+                        text=True,
+                        cwd=str(root),
                         timeout=30,
                     ).stdout
                     if detailed:
                         # Truncate if too long
                         lines = detailed.split("\n")
                         if len(lines) > 50:
-                            detailed = "\n".join(lines[:50]) + f"\n... ({len(lines) - 50} more lines)"
+                            detailed = (
+                                "\n".join(lines[:50]) + f"\n... ({len(lines) - 50} more lines)"
+                            )
                         console.print(
                             Panel(
                                 detailed,
@@ -149,13 +164,20 @@ def register(app: typer.Typer) -> None:
     @app.command(name="resume")
     def resume_cmd(
         task_id: str = typer.Argument(
-            ..., help="Task ID to resume from last checkpoint",
+            ...,
+            help="Task ID to resume from last checkpoint",
         ),
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
         verbose: bool = typer.Option(
-            False, "--verbose", "-v", help="Verbose logging",
+            False,
+            "--verbose",
+            "-v",
+            help="Verbose logging",
         ),
     ) -> None:
         """Resume a previously interrupted or crashed task from its last checkpoint."""
@@ -199,18 +221,25 @@ def register(app: typer.Typer) -> None:
             emitter = container.get_event_emitter()
 
             for event_type in [
-                "task_started", "project_scanned", "task_classified",
-                "pipeline_assembled", "agent_started", "agent_streaming",
-                "agent_complete", "agent_timeout", "gate_results",
-                "approval_requested", "enrichment_extracted",
-                "memories_stored", "budget_exceeded",
-                "task_finalized", "task_failed",
+                "task_started",
+                "project_scanned",
+                "task_classified",
+                "pipeline_assembled",
+                "agent_started",
+                "agent_streaming",
+                "agent_complete",
+                "agent_timeout",
+                "gate_results",
+                "approval_requested",
+                "enrichment_extracted",
+                "memories_stored",
+                "budget_exceeded",
+                "task_finalized",
+                "task_failed",
             ]:
                 emitter.on(
                     event_type,
-                    lambda data, _et=event_type: ui.handle_event(
-                        {**data, "type": _et}
-                    ),
+                    lambda data, _et=event_type: ui.handle_event({**data, "type": _et}),
                 )
 
             ui.start(description=task.description)
@@ -225,8 +254,7 @@ def register(app: typer.Typer) -> None:
 
             if result["status"] == "failed":
                 console.print(
-                    f"\n[red]Resume failed:[/red] "
-                    f"{result.get('error', 'Unknown error')}",
+                    f"\n[red]Resume failed:[/red] {result.get('error', 'Unknown error')}",
                 )
             else:
                 cost = result.get("total_cost_usd", 0)
@@ -242,15 +270,18 @@ def register(app: typer.Typer) -> None:
         task_id: str = typer.Argument(..., help="Task ID to abort"),
         reason: str = typer.Option("Aborted by operator", "--reason", "-m", help="Abort reason"),
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
     ) -> None:
         """Abort a task and persist audit trail for operator control."""
         root = Path(project_dir) if project_dir else Path.cwd()
         container = _load_container(root)
         db = container.get_db()
-        from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
         from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
+        from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
 
         task_repo = SqliteTaskRepository(db)
         audit_repo = SqliteAuditRepository(db)
@@ -281,10 +312,15 @@ def register(app: typer.Typer) -> None:
     def approve_cmd(
         task_id: str = typer.Argument(..., help="Task ID to approve"),
         resume_now: bool = typer.Option(
-            True, "--resume/--no-resume", help="Resume execution immediately after approval",
+            True,
+            "--resume/--no-resume",
+            help="Resume execution immediately after approval",
         ),
         project_dir: str | None = typer.Option(
-            None, "--project", "-p", help="Project directory",
+            None,
+            "--project",
+            "-p",
+            help="Project directory",
         ),
     ) -> None:
         """Mark approval granted and optionally resume from checkpoint."""
@@ -293,8 +329,8 @@ def register(app: typer.Typer) -> None:
         root = Path(project_dir) if project_dir else Path.cwd()
         container = _load_container(root)
         db = container.get_db()
-        from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
         from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
+        from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
 
         task_repo = SqliteTaskRepository(db)
         audit_repo = SqliteAuditRepository(db)

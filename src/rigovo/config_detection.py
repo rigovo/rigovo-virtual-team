@@ -236,11 +236,15 @@ def detect_monorepo(root: Path) -> bool:
 
     # Check for multiple packages with their own package.json
     try:
-        dirs_with_pkg = sum(
-            1
-            for d in (root / "packages").iterdir()
-            if d.is_dir() and (d / "package.json").is_file()
-        ) if (root / "packages").is_dir() else 0
+        dirs_with_pkg = (
+            sum(
+                1
+                for d in (root / "packages").iterdir()
+                if d.is_dir() and (d / "package.json").is_file()
+            )
+            if (root / "packages").is_dir()
+            else 0
+        )
         return dirs_with_pkg > 1
     except OSError:
         return False

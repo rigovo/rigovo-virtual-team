@@ -17,9 +17,10 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
-from uuid import UUID, NAMESPACE_DNS, uuid4, uuid5
+from typing import Any
+from uuid import NAMESPACE_DNS, UUID, uuid4, uuid5
 
 from rigovo.application.graph.builder import GraphBuilder
 from rigovo.application.graph.state import TaskState
@@ -29,8 +30,7 @@ from rigovo.application.master.evaluator import AgentEvaluator
 from rigovo.application.master.router import TeamRouter
 from rigovo.domain.entities.agent import Agent
 from rigovo.domain.entities.audit_entry import AuditAction, AuditEntry
-from rigovo.domain.entities.task import Task, TaskStatus, PipelineStep
-from rigovo.domain.entities.team import Team
+from rigovo.domain.entities.task import PipelineStep, Task
 from rigovo.domain.interfaces.domain_plugin import DomainPlugin
 from rigovo.domain.interfaces.embedding_provider import EmbeddingProvider
 from rigovo.domain.interfaces.event_emitter import EventEmitter
@@ -40,11 +40,11 @@ from rigovo.domain.interfaces.repositories import MemoryRepository
 from rigovo.domain.services.cost_calculator import CostCalculator
 from rigovo.domain.services.team_assembler import TeamAssemblerService
 from rigovo.infrastructure.llm.model_catalog import resolve_model_for_role
-from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
-from rigovo.infrastructure.persistence.sqlite_local import LocalDatabase
-from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
 from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
 from rigovo.infrastructure.persistence.sqlite_cost_repo import SqliteCostRepository
+from rigovo.infrastructure.persistence.sqlite_local import LocalDatabase
+from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
+from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ class RunTaskCommand:
         self._enable_streaming = enable_streaming
         self._enable_parallel = enable_parallel
         self._auto_approve = auto_approve
-        self._budget_max_cost: float = 25.00    # soft warning only, never hard-stops
+        self._budget_max_cost: float = 25.00  # soft warning only, never hard-stops
         self._budget_max_tokens: int = 500_000  # token soft limit
 
         # Master Agent sub-services
@@ -190,10 +190,13 @@ class RunTaskCommand:
                 await self._task_repo.save(task)
             logger.info("Created new task %s", task_id)
 
-        self._emit_sync("task_started", {
-            "task_id": str(task_id),
-            "description": description,
-        })
+        self._emit_sync(
+            "task_started",
+            {
+                "task_id": str(task_id),
+                "description": description,
+            },
+        )
 
         # --- 2. Build initial state ---
         try:
@@ -221,7 +224,9 @@ class RunTaskCommand:
             "project_root": str(self._project_root),
             "worktree_mode": str(os.environ.get("RIGOVO_WORKTREE_MODE", "project")),
             "worktree_root": str(os.environ.get("RIGOVO_WORKTREE_ROOT", "")),
-            "filesystem_sandbox_mode": str(os.environ.get("RIGOVO_FILESYSTEM_SANDBOX_MODE", "project_root")),
+            "filesystem_sandbox_mode": str(
+                os.environ.get("RIGOVO_FILESYSTEM_SANDBOX_MODE", "project_root")
+            ),
             "description": description,
             "domain": domain_id,
             "requested_team_name": team_name or "",
@@ -272,11 +277,15 @@ class RunTaskCommand:
         # --- 4. Stream callback for real-time output (item 2) ---
         stream_callback = None
         if self._enable_streaming and self._event_emitter:
+
             def stream_callback(role: str, chunk: str) -> None:
-                self._emit_sync("agent_streaming", {
-                    "role": role,
-                    "chunk": chunk,
-                })
+                self._emit_sync(
+                    "agent_streaming",
+                    {
+                        "role": role,
+                        "chunk": chunk,
+                    },
+                )
 
         # --- 5. Prefetch Rigour CLI (runs in background while graph executes) ---
         rigour_prefetch = asyncio.create_task(self._prefetch_rigour())
@@ -304,7 +313,8 @@ class RunTaskCommand:
 
         try:
             final_state = await self._run_graph(
-                graph_builder, initial_state,
+                graph_builder,
+                initial_state,
                 resume_thread_id=resume_thread_id,
             )
         except Exception as e:
@@ -312,10 +322,13 @@ class RunTaskCommand:
             task.fail()
             if self._task_repo:
                 await self._task_repo.save(task)
-            self._emit_sync("task_failed", {
-                "task_id": str(task_id),
-                "error": str(e),
-            })
+            self._emit_sync(
+                "task_failed",
+                {
+                    "task_id": str(task_id),
+                    "error": str(e),
+                },
+            )
             return {
                 "status": "failed",
                 "error": str(e),
@@ -343,9 +356,7 @@ class RunTaskCommand:
             task.total_tokens = sum(v.get("tokens", 0) for v in cost_acc.values())
         if task.total_cost_usd == 0.0:
             cost_acc = final_state.get("cost_accumulator", {})
-            task.total_cost_usd = round(
-                sum(v.get("cost", 0.0) for v in cost_acc.values()), 6
-            )
+            task.total_cost_usd = round(sum(v.get("cost", 0.0) for v in cost_acc.values()), 6)
         task.duration_ms = elapsed_ms
 
         # --- Persist agent outputs as PipelineStep records ---
@@ -432,17 +443,20 @@ class RunTaskCommand:
 
         # --- 8. Emit finalization event ---
         agent_outputs = final_state.get("agent_outputs", {})
-        self._emit_sync("task_finalized", {
-            "type": "task_finalized",
-            "status": status,
-            "total_cost": task.total_cost_usd,
-            "total_tokens": task.total_tokens,
-            "agents_run": [o.get("role", "?") for o in agent_outputs]
-            if isinstance(agent_outputs, list)
-            else list(agent_outputs.keys()),
-            "retries": final_state.get("retry_count", 0),
-            "memories_stored": len(final_state.get("memories_to_store", [])),
-        })
+        self._emit_sync(
+            "task_finalized",
+            {
+                "type": "task_finalized",
+                "status": status,
+                "total_cost": task.total_cost_usd,
+                "total_tokens": task.total_tokens,
+                "agents_run": [o.get("role", "?") for o in agent_outputs]
+                if isinstance(agent_outputs, list)
+                else list(agent_outputs.keys()),
+                "retries": final_state.get("retry_count", 0),
+                "memories_stored": len(final_state.get("memories_to_store", [])),
+            },
+        )
 
         return {
             "status": status,
@@ -584,7 +598,11 @@ class RunTaskCommand:
         teams_config = self._team_configs or {}
         if not teams_config:
             # Backward-compatible fallback: single engineering team.
-            teams_config = {"engineering": type("TeamCfg", (), {"enabled": True, "domain": "engineering", "agents": {}})()}
+            teams_config = {
+                "engineering": type(
+                    "TeamCfg", (), {"enabled": True, "domain": "engineering", "agents": {}}
+                )()
+            }
 
         selected_key = (requested_team_name or "").strip().lower()
         available_teams: list[dict[str, Any]] = []
@@ -676,7 +694,11 @@ class RunTaskCommand:
         - User override via role_def.default_llm_model always wins
         """
         agents = []
-        stable_team_uuid = uuid5(self._workspace_id or UUID(int=0), team_key) if self._workspace_id else uuid5(NAMESPACE_DNS, team_key)
+        stable_team_uuid = (
+            uuid5(self._workspace_id or UUID(int=0), team_key)
+            if self._workspace_id
+            else uuid5(NAMESPACE_DNS, team_key)
+        )
         for role_id, role_def in agent_roles.items():
             override = (
                 team_cfg.agents.get(role_id)
@@ -686,17 +708,21 @@ class RunTaskCommand:
             # Resolve model: user override > role default > catalog default
             model = resolve_model_for_role(
                 role_id=role_id,
-                user_model=(override.model if override and getattr(override, "model", "") else role_def.default_llm_model),
+                user_model=(
+                    override.model
+                    if override and getattr(override, "model", "")
+                    else role_def.default_llm_model
+                ),
             )
             tools = (
                 list(override.tools)
                 if override and getattr(override, "tools", None)
-                else list(role_def.default_tools) if role_def.default_tools else []
+                else list(role_def.default_tools)
+                if role_def.default_tools
+                else []
             )
             custom_rules = (
-                list(override.rules)
-                if override and getattr(override, "rules", None)
-                else []
+                list(override.rules) if override and getattr(override, "rules", None) else []
             )
             input_contract = (
                 dict(override.input_contract)

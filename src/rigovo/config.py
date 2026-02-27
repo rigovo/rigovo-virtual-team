@@ -73,6 +73,7 @@ class LLMConfig(BaseSettings):
         """Detect provider from model name (uses model_catalog for accuracy)."""
         try:
             from rigovo.infrastructure.llm.model_catalog import detect_provider
+
             return detect_provider(self.model)
         except ImportError:
             # Fallback heuristic if catalog not available
@@ -165,7 +166,7 @@ class AppConfig(BaseSettings):
 
     # Database
     db_backend: str = Field(default="sqlite", alias="RIGOVO_DB_BACKEND")  # sqlite|postgres
-    db_url: str = Field(default="", alias="RIGOVO_DB_URL")                 # Postgres DSN
+    db_url: str = Field(default="", alias="RIGOVO_DB_URL")  # Postgres DSN
     local_db_path: str = Field(default=".rigovo/local.db", alias="RIGOVO_LOCAL_DB")
 
     # Sub-configs (from .env)

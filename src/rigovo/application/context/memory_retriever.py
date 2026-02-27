@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
 from rigovo.domain.entities.memory import Memory, MemoryType
 from rigovo.domain.services.memory_ranker import MemoryRanker, ScoredMemory

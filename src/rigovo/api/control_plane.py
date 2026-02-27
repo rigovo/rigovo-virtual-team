@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -31,7 +31,6 @@ from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepos
 from rigovo.infrastructure.persistence.sqlite_settings_repo import SqliteSettingsRepository
 from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
 
-
 # ── Live agent progress tracker (in-memory, per-task) ──────────────
 # Populated by event emitter callbacks during graph execution.
 # The detail endpoint reads this for running tasks; completed tasks
@@ -45,13 +44,14 @@ _live_task_events: dict[str, list[dict[str, Any]]] = {}  # task_id -> rolling ru
 # The handler blocks on a threading.Event until the /approve or /deny API
 # endpoint unblocks it with the human's decision.
 _APPROVAL_TIMEOUT_SECS = 86_400  # 24 h — after this auto-approve to unblock graph
-_approval_events: dict[str, threading.Event] = {}     # task_id → event
-_approval_decisions: dict[str, dict[str, Any]] = {}   # task_id → decision payload
+_approval_events: dict[str, threading.Event] = {}  # task_id → event
+_approval_decisions: dict[str, dict[str, Any]] = {}  # task_id → decision payload
 
 
 def _make_approval_handler(
     task_id: str,
     main_loop: asyncio.AbstractEventLoop,
+    container: Container | None = None,
 ) -> Any:
     """Return a synchronous approval_handler suitable for asyncio.to_thread.
 
@@ -61,6 +61,7 @@ def _make_approval_handler(
       3. Blocks on a threading.Event until /approve or /deny is called.
       4. Returns {"approval_status": "approved"|"rejected", "approval_feedback": "..."}.
     """
+
     def handler(state: dict[str, Any]) -> dict[str, Any]:
         checkpoint = (state.get("events") or [{}])[-1].get("checkpoint", "checkpoint")
 
@@ -88,7 +89,10 @@ def _make_approval_handler(
 
         if not signalled:
             # Timeout: auto-approve so the graph is never permanently stuck
-            return {"approval_status": "approved", "approval_feedback": "auto-approved after timeout"}
+            return {
+                "approval_status": "approved",
+                "approval_feedback": "auto-approved after timeout",
+            }
 
         return decision
 
@@ -98,8 +102,8 @@ def _make_approval_handler(
 def _make_notify_handler(
     task_id: str,
     main_loop: asyncio.AbstractEventLoop,
-    db_factory: Any,      # callable → LocalDatabase  (e.g. container.get_db)
-    workspace_uuid: UUID, # pre-resolved workspace ID
+    db_factory: Any,  # callable → LocalDatabase  (e.g. container.get_db)
+    workspace_uuid: UUID,  # pre-resolved workspace ID
 ) -> Any:
     """Return a non-blocking approval_handler for tier='notify'.
 
@@ -110,6 +114,7 @@ def _make_notify_handler(
     db_factory and workspace_uuid are passed explicitly so this module-level
     function does not rely on create_app-scoped variables.
     """
+
     def handler(state: dict[str, Any]) -> dict[str, Any]:
         checkpoint = (state.get("events") or [{}])[-1].get("checkpoint", "checkpoint")
         summary = state.get("approval_data", {}).get("summary") or f"Gate reached: {checkpoint}"
@@ -217,9 +222,9 @@ class CreateTaskRequest(BaseModel):
     team: str = ""
     tier: str = "auto"
     approve: bool = False
-    project_id: str = ""          # UUID of the active project (optional)
-    workspace_path: str = ""      # Absolute path of the target repo/folder for this task
-    workspace_label: str = ""     # Human-readable name shown in sidebar (e.g. folder/repo name)
+    project_id: str = ""  # UUID of the active project (optional)
+    workspace_path: str = ""  # Absolute path of the target repo/folder for this task
+    workspace_label: str = ""  # Human-readable name shown in sidebar (e.g. folder/repo name)
 
 
 class RenameTaskRequest(BaseModel):
@@ -236,12 +241,13 @@ class UpdateSettingsRequest(BaseModel):
 
     Any field can be sent individually. The backend merges changes.
     """
+
     # API keys — any provider
-    api_keys: dict[str, str] | None = None       # e.g. {"anthropic": "sk-...", "deepseek": "ds-..."}
+    api_keys: dict[str, str] | None = None  # e.g. {"anthropic": "sk-...", "deepseek": "ds-..."}
     # Other .env settings
     default_model: str | None = None
     ollama_url: str | None = None
-    custom_base_url: str | None = None            # For OpenAI-compatible endpoints
+    custom_base_url: str | None = None  # For OpenAI-compatible endpoints
     # Per-agent model overrides (written to rigovo.yml)
     agent_models: dict[str, str] | None = None
     # Per-agent tool/capability overrides (written to rigovo.yml)
@@ -251,9 +257,9 @@ class UpdateSettingsRequest(BaseModel):
     # Raw YAML override (written directly to rigovo.yml)
     yml_raw: str | None = None
     # Database/runtime storage settings
-    db_backend: str | None = None          # sqlite|postgres
-    local_db_path: str | None = None       # Used when backend=sqlite
-    db_url: str | None = None              # Postgres DSN (persisted to .env)
+    db_backend: str | None = None  # sqlite|postgres
+    local_db_path: str | None = None  # Used when backend=sqlite
+    db_url: str | None = None  # Postgres DSN (persisted to .env)
 
 
 class PersonaMember(BaseModel):
@@ -445,21 +451,30 @@ def _setup_logging(root: Path) -> Path:
 
     # App log — rotating, 5MB per file, keep 5
     app_handler = logging.handlers.RotatingFileHandler(
-        log_dir / "app.log", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8",
+        log_dir / "app.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
     )
     app_handler.setLevel(logging.INFO)
     app_handler.setFormatter(readable_fmt)
 
     # Error log — errors and warnings only
     error_handler = logging.handlers.RotatingFileHandler(
-        log_dir / "error.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8",
+        log_dir / "error.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
     )
     error_handler.setLevel(logging.WARNING)
     error_handler.setFormatter(readable_fmt)
 
     # Audit log — structured JSON, one line per event
     audit_handler = logging.handlers.RotatingFileHandler(
-        log_dir / "audit.log", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8",
+        log_dir / "audit.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
     )
     audit_handler.setLevel(logging.INFO)
     audit_handler.setFormatter(StructuredFormatter())
@@ -495,6 +510,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     log_dir = _setup_logging(root)
 
     import logging
+
     logger = logging.getLogger("rigovo.api")
 
     # Auto-initialize database schema (ensures tables exist on first run)
@@ -525,7 +541,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 repo.set(key_name, key_val)
                 migrated.append(key_name)
         if migrated:
-            logger.info("Migrated %d API key(s) from .env to encrypted SQLite: %s", len(migrated), migrated)
+            logger.info(
+                "Migrated %d API key(s) from .env to encrypted SQLite: %s", len(migrated), migrated
+            )
     except Exception:
         logger.debug("API key migration skipped", exc_info=True)
 
@@ -581,9 +599,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         api_key = runtime_workos_api_key or config.identity.workos_api_key or ""
         client_id = identity.get("workosClientId") or config.identity.workos_client_id or ""
         organization_id = (
-            identity.get("workosOrganizationId")
-            or config.identity.workos_organization_id
-            or ""
+            identity.get("workosOrganizationId") or config.identity.workos_organization_id or ""
         )
         return {
             "provider": str(provider).strip(),
@@ -748,15 +764,19 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         project_id is stored on the task record so agents know which repo they work on.
         """
         import logging as _logging
+
         _bg_logger = _logging.getLogger("rigovo.api.background")
         real_task_id = use_task_id or task_id
         try:
             # Read parallel setting from config (default True for speed)
             enable_parallel = getattr(
                 getattr(getattr(container, "config", None), "yml", None),
-                "orchestration", None,
+                "orchestration",
+                None,
             )
-            parallel = getattr(enable_parallel, "parallel_agents", True) if enable_parallel else True
+            parallel = (
+                getattr(enable_parallel, "parallel_agents", True) if enable_parallel else True
+            )
 
             # ── @file mention injection ───────────────────────────────────────
             # Parse @filepath tokens in the description and prepend file contents
@@ -765,11 +785,10 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             try:
                 import re as _re
                 from pathlib import Path as _Path
-                at_mentions = _re.findall(r'@([\w.\-/\\]+)', description)
+
+                at_mentions = _re.findall(r"@([\w.\-/\\]+)", description)
                 if at_mentions:
-                    project_root = getattr(
-                        getattr(container, "config", None), "project_root", None
-                    )
+                    project_root = getattr(getattr(container, "config", None), "project_root", None)
                     if project_root:
                         file_blocks: list[str] = []
                         for mention in at_mentions:
@@ -791,7 +810,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                             )
                             _bg_logger.debug(
                                 "Injected %d file(s) into task %s description",
-                                len(file_blocks), real_task_id,
+                                len(file_blocks),
+                                real_task_id,
                             )
             except Exception as _inj_err:
                 _bg_logger.warning("@file injection failed (non-fatal): %s", _inj_err)
@@ -804,12 +824,14 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             if tier == "notify":
                 auto_approve = False
                 approval_handler = _make_notify_handler(
-                    real_task_id, main_loop,
-                    container.get_db, _workspace_id(),
+                    real_task_id,
+                    main_loop,
+                    container.get_db,
+                    _workspace_id(),
                 )
             elif tier == "approve":
                 auto_approve = False
-                approval_handler = _make_approval_handler(real_task_id, main_loop)
+                approval_handler = _make_approval_handler(real_task_id, main_loop, container)
             else:
                 auto_approve = True
                 approval_handler = None
@@ -834,8 +856,13 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             try:
                 task_repo = SqliteTaskRepository(container.get_db())
                 from uuid import UUID as _UUID
+
                 task_obj = await task_repo.get(_UUID(str(real_task_id)))
-                if task_obj and task_obj.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.REJECTED):
+                if task_obj and task_obj.status not in (
+                    TaskStatus.COMPLETED,
+                    TaskStatus.FAILED,
+                    TaskStatus.REJECTED,
+                ):
                     task_obj.fail(str(exc)[:500])
                     await task_repo.update_status(task_obj)
                     _bg_logger.info("Marked task %s as failed", real_task_id)
@@ -858,7 +885,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "consultation_enabled": bool(orchestration.consultation.enabled),
                 "subagents": {
                     "enabled": bool(orchestration.subagents.enabled),
-                    "max_subtasks_per_agent_step": int(orchestration.subagents.max_subtasks_per_agent_step),
+                    "max_subtasks_per_agent_step": int(
+                        orchestration.subagents.max_subtasks_per_agent_step
+                    ),
                     "max_subtask_rounds": int(orchestration.subagents.max_subtask_rounds),
                 },
                 "replan": {
@@ -877,12 +906,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "allowed_connector_operations": list(plugins.allowed_connector_operations),
                 "allowed_mcp_operations": list(plugins.allowed_mcp_operations),
                 "allowed_action_operations": list(plugins.allowed_action_operations),
-                "allow_approval_required_actions": bool(
-                    plugins.allow_approval_required_actions
-                ),
-                "allow_sensitive_payload_keys": bool(
-                    plugins.allow_sensitive_payload_keys
-                ),
+                "allow_approval_required_actions": bool(plugins.allow_approval_required_actions),
+                "allow_sensitive_payload_keys": bool(plugins.allow_sensitive_payload_keys),
                 "allowed_shell_commands": list(plugins.allowed_shell_commands),
                 "dry_run": bool(plugins.dry_run),
             },
@@ -943,9 +968,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "allowed_connector_operations": list(plugins_cfg.allowed_connector_operations),
             "allowed_mcp_operations": list(plugins_cfg.allowed_mcp_operations),
             "allowed_action_operations": list(plugins_cfg.allowed_action_operations),
-            "allow_approval_required_actions": bool(
-                plugins_cfg.allow_approval_required_actions
-            ),
+            "allow_approval_required_actions": bool(plugins_cfg.allow_approval_required_actions),
             "allow_sensitive_payload_keys": bool(plugins_cfg.allow_sensitive_payload_keys),
             "allowed_shell_commands": list(plugins_cfg.allowed_shell_commands),
             "dry_run": bool(plugins_cfg.dry_run),
@@ -1057,7 +1080,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         }
 
     @app.get("/v1/observability/slo")
-    async def observability_slo(window_days: int = 7, task_limit: int = 500, audit_limit: int = 2000) -> dict[str, Any]:
+    async def observability_slo(
+        window_days: int = 7, task_limit: int = 500, audit_limit: int = 2000
+    ) -> dict[str, Any]:
         """Aggregate launch SLO metrics from task and audit history."""
         if window_days < 1 or window_days > 90:
             raise HTTPException(status_code=400, detail="window_days must be between 1 and 90")
@@ -1070,29 +1095,37 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
 
         tasks = await task_repo.list_by_workspace(_workspace_id(), limit=task_limit)
         tasks_window = [
-            t for t in tasks
-            if (_to_utc(getattr(t, "created_at", None)) or _now_utc()) >= cutoff
+            t for t in tasks if (_to_utc(getattr(t, "created_at", None)) or _now_utc()) >= cutoff
         ]
         total = len(tasks_window)
         completed = sum(1 for t in tasks_window if t.status == TaskStatus.COMPLETED)
         failed = sum(1 for t in tasks_window if t.status == TaskStatus.FAILED)
         rejected = sum(1 for t in tasks_window if t.status == TaskStatus.REJECTED)
         awaiting_approval = sum(1 for t in tasks_window if t.status == TaskStatus.AWAITING_APPROVAL)
-        finished = [t for t in tasks_window if t.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.REJECTED}]
+        finished = [
+            t
+            for t in tasks_window
+            if t.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.REJECTED}
+        ]
 
-        durations_ms = [float(t.duration_ms) for t in finished if int(getattr(t, "duration_ms", 0) or 0) > 0]
+        durations_ms = [
+            float(t.duration_ms) for t in finished if int(getattr(t, "duration_ms", 0) or 0) > 0
+        ]
         costs = [float(t.total_cost_usd or 0.0) for t in tasks_window]
         tokens = [float(t.total_tokens or 0) for t in tasks_window]
 
         audits = await audit_repo.list_by_workspace(_workspace_id(), limit=audit_limit)
         audits_window = [
-            a for a in audits
-            if (_to_utc(getattr(a, "created_at", None)) or _now_utc()) >= cutoff
+            a for a in audits if (_to_utc(getattr(a, "created_at", None)) or _now_utc()) >= cutoff
         ]
         replan_triggered = sum(1 for a in audits_window if a.action == AuditAction.REPLAN_TRIGGERED)
         replan_failed = sum(1 for a in audits_window if a.action == AuditAction.REPLAN_FAILED)
-        approvals_requested = sum(1 for a in audits_window if a.action == AuditAction.APPROVAL_REQUESTED)
-        approvals_granted = sum(1 for a in audits_window if a.action == AuditAction.APPROVAL_GRANTED)
+        approvals_requested = sum(
+            1 for a in audits_window if a.action == AuditAction.APPROVAL_REQUESTED
+        )
+        approvals_granted = sum(
+            1 for a in audits_window if a.action == AuditAction.APPROVAL_GRANTED
+        )
         approvals_denied = sum(1 for a in audits_window if a.action == AuditAction.APPROVAL_DENIED)
         memory_stored = sum(1 for a in audits_window if a.action == AuditAction.MEMORY_STORED)
 
@@ -1169,12 +1202,12 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
     def set_identity(payload: dict[str, Any]) -> dict[str, Any]:
         nonlocal runtime_workos_api_key
         state = _read_state()
-        provider = str(
-            payload.get("provider", state.identity.get("provider", "local"))
-        ).strip().lower()
-        auth_mode = str(
-            payload.get("authMode", state.policy.get("authMode", "email_only"))
-        ).strip().lower()
+        provider = (
+            str(payload.get("provider", state.identity.get("provider", "local"))).strip().lower()
+        )
+        auth_mode = (
+            str(payload.get("authMode", state.policy.get("authMode", "email_only"))).strip().lower()
+        )
         workos_client_id = str(
             payload.get("workosClientId", state.identity.get("workosClientId", ""))
         ).strip()
@@ -1200,12 +1233,14 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
 
         # Persist identity runtime config to encrypted SQLite for restart stability.
         repo = _settings_repo()
-        repo.set_many({
-            "RIGOVO_IDENTITY_PROVIDER": provider,
-            "RIGOVO_AUTH_MODE": auth_mode,
-            "WORKOS_CLIENT_ID": workos_client_id,
-            "WORKOS_ORGANIZATION_ID": workos_organization_id,
-        })
+        repo.set_many(
+            {
+                "RIGOVO_IDENTITY_PROVIDER": provider,
+                "RIGOVO_AUTH_MODE": auth_mode,
+                "WORKOS_CLIENT_ID": workos_client_id,
+                "WORKOS_ORGANIZATION_ID": workos_organization_id,
+            }
+        )
         if workos_api_key:
             runtime_workos_api_key = workos_api_key
             repo.set("WORKOS_API_KEY", workos_api_key)
@@ -1258,16 +1293,18 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         code_verifier = secrets.token_urlsafe(64)
         code_challenge_bytes = hashlib.sha256(code_verifier.encode("ascii")).digest()
         code_challenge_b64 = (
-            base64.urlsafe_b64encode(code_challenge_bytes)
-            .rstrip(b"=")
-            .decode("ascii")
+            base64.urlsafe_b64encode(code_challenge_bytes).rstrip(b"=").decode("ascii")
         )
 
         state_token = secrets.token_urlsafe(32)
 
-        # Backend callback URL — e2e script passes port via env; default to 8787
-        api_port = os.environ.get("RIGOVO_API_PORT", "8787")
-        redirect_uri = f"http://127.0.0.1:{api_port}/v1/auth/callback"
+        # Redirect URI — must match EXACTLY what is configured in the
+        # WorkOS dashboard.  WORKOS_REDIRECT_URI env var overrides;
+        # otherwise always use port 8787 (the canonical local port).
+        redirect_uri = os.environ.get(
+            "WORKOS_REDIRECT_URI",
+            "http://127.0.0.1:8787/v1/auth/callback",
+        )
 
         params: dict[str, str] = {
             "response_type": "code",
@@ -1295,7 +1332,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         return {"url": url, "state": state_token}
 
     @app.get("/v1/auth/callback")
-    def auth_callback(code: str = "", state: str = "", error: str = "", error_description: str = "") -> HTMLResponse:
+    def auth_callback(
+        code: str = "", state: str = "", error: str = "", error_description: str = ""
+    ) -> HTMLResponse:
         """WorkOS redirects here after authentication. Exchanges code for user."""
         if error:
             return HTMLResponse(
@@ -1311,7 +1350,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         pending = _pending_auth.pop(state, None)
         if not pending:
             return HTMLResponse(
-                _auth_result_html(False, "Invalid or expired state token. Please try signing in again."),
+                _auth_result_html(
+                    False, "Invalid or expired state token. Please try signing in again."
+                ),
                 status_code=400,
             )
 
@@ -1382,7 +1423,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                                 memberships = memberships_res.json().get("data", [])
                                 if memberships:
                                     role_data = memberships[0].get("role", {})
-                                    user_role = role_data.get("slug", "admin") if role_data else "admin"
+                                    user_role = (
+                                        role_data.get("slug", "admin") if role_data else "admin"
+                                    )
                 except Exception:
                     logger.warning("Failed to enrich WorkOS org details", exc_info=True)
 
@@ -1539,6 +1582,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             # Derive label from path basename if not explicitly set
             if workspace_path and not workspace_label:
                 import os
+
                 workspace_label = os.path.basename(workspace_path.rstrip("/\\"))
             items.append(
                 {
@@ -1561,6 +1605,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         title = req.title.strip()[:200]
         if not title:
             from fastapi import HTTPException
+
             raise HTTPException(status_code=400, detail="title cannot be empty")
         db = container.get_db()
         db.execute(
@@ -1579,33 +1624,36 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         tasks = await task_repo.list_by_workspace(_workspace_id(), limit=limit)
         pending = [t for t in tasks if t.status == TaskStatus.AWAITING_APPROVAL]
         for t in pending:
-            items.append({
-                "id": f"apv_{str(t.id)[:8]}",
-                "taskId": str(t.id),
-                "summary": t.approval_data.get("summary", "Pending human approval"),
-                "tier": "approve",
-                "requestedBy": "master-agent",
-                "age": _relative(t.started_at or t.created_at),
-            })
+            items.append(
+                {
+                    "id": f"apv_{str(t.id)[:8]}",
+                    "taskId": str(t.id),
+                    "summary": t.approval_data.get("summary", "Pending human approval"),
+                    "tier": "approve",
+                    "requestedBy": "master-agent",
+                    "age": _relative(t.started_at or t.created_at),
+                }
+            )
 
         # ── 2. Non-blocking gate notifications (tier="notify") ───────────
         # Show the most recent GATE_NOTIFICATION audit entries as info cards.
         try:
             audit_repo = SqliteAuditRepository(container.get_db())
             all_entries = await audit_repo.list_by_workspace(_workspace_id(), limit=100)
-            notify_entries = [
-                e for e in all_entries
-                if e.action == AuditAction.GATE_NOTIFICATION
-            ][:limit]
+            notify_entries = [e for e in all_entries if e.action == AuditAction.GATE_NOTIFICATION][
+                :limit
+            ]
             for e in notify_entries:
-                items.append({
-                    "id": f"ntf_{str(e.id)[:8]}",
-                    "taskId": str(e.task_id) if e.task_id else "",
-                    "summary": e.summary or "Gate passed (notify tier)",
-                    "tier": "notify",
-                    "requestedBy": "master-agent",
-                    "age": _relative(e.created_at),
-                })
+                items.append(
+                    {
+                        "id": f"ntf_{str(e.id)[:8]}",
+                        "taskId": str(e.task_id) if e.task_id else "",
+                        "summary": e.summary or "Gate passed (notify tier)",
+                        "tier": "notify",
+                        "requestedBy": "master-agent",
+                        "age": _relative(e.created_at),
+                    }
+                )
         except Exception:
             pass  # audit log query failure must not break approve items
 
@@ -1736,30 +1784,35 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             for ps in task.pipeline_steps:
                 gate_results = []
                 if ps.gate_passed is not None:
-                    gate_results.append({
-                        "gate": "rigour",
-                        "passed": ps.gate_passed,
-                        "message": f"Score: {ps.gate_score:.1f}" if ps.gate_score else "",
-                        "severity": "info" if ps.gate_passed else "error",
-                    })
-                steps.append({
-                    "agent": ps.agent_role,
-                    "agent_name": ps.agent_name,
-                    "status": ps.status,
-                    "started_at": ps.started_at.isoformat() if ps.started_at else None,
-                    "completed_at": ps.completed_at.isoformat() if ps.completed_at else None,
-                    "output": ps.summary,
-                    "files_changed": ps.files_changed or [],
-                    "tokens": ps.total_tokens,
-                    "cost_usd": ps.cost_usd,
-                    "duration_ms": ps.duration_ms,
-                    "gate_results": gate_results,
-                })
+                    gate_results.append(
+                        {
+                            "gate": "rigour",
+                            "passed": ps.gate_passed,
+                            "message": f"Score: {ps.gate_score:.1f}" if ps.gate_score else "",
+                            "severity": "info" if ps.gate_passed else "error",
+                        }
+                    )
+                steps.append(
+                    {
+                        "agent": ps.agent_role,
+                        "agent_name": ps.agent_name,
+                        "status": ps.status,
+                        "started_at": ps.started_at.isoformat() if ps.started_at else None,
+                        "completed_at": ps.completed_at.isoformat() if ps.completed_at else None,
+                        "output": ps.summary,
+                        "files_changed": ps.files_changed or [],
+                        "tokens": ps.total_tokens,
+                        "cost_usd": ps.cost_usd,
+                        "duration_ms": ps.duration_ms,
+                        "gate_results": gate_results,
+                    }
+                )
 
         # Cost info
         cost = None
         try:
             from rigovo.infrastructure.persistence.sqlite_cost_repo import SqliteCostRepository
+
             cost_repo = SqliteCostRepository(container.get_db())
             entries = await cost_repo.list_by_task(task.id)
             if entries:
@@ -1798,12 +1851,14 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         default_model = config.llm.model
         try:
             from rigovo.infrastructure.llm.model_catalog import detect_provider
+
             provider = detect_provider(default_model)
         except ImportError:
             provider = "anthropic"  # safe default
 
         if provider != "ollama":
             from rigovo.infrastructure.llm.llm_factory import _PROVIDER_DB_KEY
+
             db_key = _PROVIDER_DB_KEY.get(provider, "")
             if db_key:
                 repo = _settings_repo()
@@ -1811,22 +1866,27 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 if not key_val:
                     # Also check env/config fallback
                     from rigovo.infrastructure.llm.llm_factory import _PROVIDER_KEY_ATTR
+
                     attr = _PROVIDER_KEY_ATTR.get(provider, "")
                     env_val = getattr(config.llm, attr, "") if attr else ""
                     if not env_val:
                         raise HTTPException(
                             status_code=400,
                             detail=f"No API key configured for {provider}. "
-                                   f"Go to Settings → API Keys and add your {provider.title()} key.",
+                            f"Go to Settings → API Keys and add your {provider.title()} key.",
                         )
 
         task_id = str(uuid4())
         safe_tier = req.tier if req.tier in ("auto", "notify", "approve") else "auto"
         safe_project_id = req.project_id.strip() if req.project_id else ""
         import logging as _logging
+
         _logging.getLogger("rigovo.audit").info(
             "Task created: id=%s tier=%s project=%s desc=%r",
-            task_id, safe_tier, safe_project_id or "none", req.description.strip()[:100],
+            task_id,
+            safe_tier,
+            safe_project_id or "none",
+            req.description.strip()[:100],
         )
         background_tasks.add_task(
             _resume_task_async,
@@ -1917,7 +1977,13 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         _, task = await _load_task(task_id)
 
         # Guard: don't spawn another run if already running
-        if task.status in (TaskStatus.RUNNING, TaskStatus.ASSEMBLING, TaskStatus.ROUTING, TaskStatus.CLASSIFYING, TaskStatus.QUALITY_CHECK):
+        if task.status in (
+            TaskStatus.RUNNING,
+            TaskStatus.ASSEMBLING,
+            TaskStatus.ROUTING,
+            TaskStatus.CLASSIFYING,
+            TaskStatus.QUALITY_CHECK,
+        ):
             return {"status": "already_running", "task_id": task_id}
 
         # Restore the original tier so approval gates behave identically to first run
@@ -1996,16 +2062,34 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             return 0.0
 
         merged_events = sorted(merged_events, key=_event_ts)[-400:]
-        messages = [m for m in (stored_messages if isinstance(stored_messages, list) else []) if isinstance(m, dict)][-400:]
+        messages = [
+            m
+            for m in (stored_messages if isinstance(stored_messages, list) else [])
+            if isinstance(m, dict)
+        ][-400:]
 
         summary = {
-            "consult_requests": sum(1 for e in merged_events if str(e.get("type", "")) == "agent_consult_requested"),
-            "consult_completions": sum(1 for e in merged_events if str(e.get("type", "")) == "agent_consult_completed"),
-            "debate_rounds": sum(1 for e in merged_events if str(e.get("type", "")) == "debate_round"),
-            "integration_invoked": sum(1 for e in merged_events if str(e.get("type", "")) == "integration_invoked"),
-            "integration_blocked": sum(1 for e in merged_events if str(e.get("type", "")) == "integration_blocked"),
-            "replan_triggered": sum(1 for e in merged_events if str(e.get("type", "")) == "replan_triggered"),
-            "replan_failed": sum(1 for e in merged_events if str(e.get("type", "")) == "replan_failed"),
+            "consult_requests": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "agent_consult_requested"
+            ),
+            "consult_completions": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "agent_consult_completed"
+            ),
+            "debate_rounds": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "debate_round"
+            ),
+            "integration_invoked": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "integration_invoked"
+            ),
+            "integration_blocked": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "integration_blocked"
+            ),
+            "replan_triggered": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "replan_triggered"
+            ),
+            "replan_failed": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "replan_failed"
+            ),
         }
 
         return {
@@ -2034,7 +2118,10 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         collab = (task.approval_data or {}).get("collaboration", {})
         events = collab.get("events", []) if isinstance(collab, dict) else []
         if task_id in _live_task_events:
-            events = [*(events if isinstance(events, list) else []), *_live_task_events.get(task_id, [])]
+            events = [
+                *(events if isinstance(events, list) else []),
+                *_live_task_events.get(task_id, []),
+            ]
 
         timeline: list[dict[str, Any]] = []
         for a in audits:
@@ -2043,7 +2130,11 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             decision = "info"
             if action in {"approval_requested", "approval_granted", "approval_denied"}:
                 category = "approval"
-                decision = "allow" if action == "approval_granted" else ("deny" if action == "approval_denied" else "pending")
+                decision = (
+                    "allow"
+                    if action == "approval_granted"
+                    else ("deny" if action == "approval_denied" else "pending")
+                )
             elif action in {"replan_triggered", "replan_failed"}:
                 category = "replan"
                 decision = "allow" if action == "replan_triggered" else "deny"
@@ -2155,6 +2246,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         """Per-agent cost breakdown for a task."""
         try:
             from rigovo.infrastructure.persistence.sqlite_cost_repo import SqliteCostRepository
+
             cost_repo = SqliteCostRepository(container.get_db())
             entries = await cost_repo.list_by_task(UUID(task_id))
             per_agent: dict[str, dict] = {}
@@ -2163,7 +2255,12 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             for e in entries:
                 role = e.agent_role if hasattr(e, "agent_role") and e.agent_role else "unknown"
                 if role not in per_agent:
-                    per_agent[role] = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "model": ""}
+                    per_agent[role] = {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cost_usd": 0.0,
+                        "model": "",
+                    }
                 per_agent[role]["input_tokens"] += e.input_tokens
                 per_agent[role]["output_tokens"] += e.output_tokens
                 per_agent[role]["cost_usd"] += e.cost_usd
@@ -2256,7 +2353,10 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         else:
             risk_level = "low"
 
-        cost_data = {"total_tokens": int(task.total_tokens or 0), "total_cost_usd": float(task.total_cost_usd or 0.0)}
+        cost_data = {
+            "total_tokens": int(task.total_tokens or 0),
+            "total_cost_usd": float(task.total_cost_usd or 0.0),
+        }
 
         policies = {
             "parallel_agents": bool(orchestration.parallel_agents),
@@ -2264,7 +2364,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "subagents_enabled": bool(orchestration.subagents.enabled),
             "replan_enabled": bool(orchestration.replan.enabled),
             "max_replans_per_task": int(orchestration.replan.max_replans_per_task),
-            "filesystem_sandbox": str(os.environ.get("RIGOVO_FILESYSTEM_SANDBOX_MODE", "project_root")),
+            "filesystem_sandbox": str(
+                os.environ.get("RIGOVO_FILESYSTEM_SANDBOX_MODE", "project_root")
+            ),
             "worktree_mode": str(os.environ.get("RIGOVO_WORKTREE_MODE", "project")),
             "plugins_enabled": bool(plugins.enabled),
             "connector_tools": bool(plugins.enable_connector_tools),
@@ -2356,7 +2458,10 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 output = step.get("output", "")
                 files = step.get("files_changed", [])
                 if file_path in files and output:
-                    return {"path": file_path, "content": f"// Content from {step.get('role', 'agent')} output:\n{output}"}
+                    return {
+                        "path": file_path,
+                        "content": f"// Content from {step.get('role', 'agent')} output:\n{output}",
+                    }
 
             return {"path": file_path, "content": "", "error": "File content not available"}
         except Exception:
@@ -2370,7 +2475,17 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
     # Google, DeepSeek, Groq, Mistral, Ollama) plus any
     # OpenAI-compatible endpoint via custom base_url.
 
-    AGENT_ROLES = ["planner", "coder", "reviewer", "qa", "security", "devops", "sre", "docs", "lead"]
+    AGENT_ROLES = [
+        "planner",
+        "coder",
+        "reviewer",
+        "qa",
+        "security",
+        "devops",
+        "sre",
+        "docs",
+        "lead",
+    ]
     DEFAULT_MODELS = {
         "lead": "claude-opus-4-6",
         "coder": "claude-opus-4-6",
@@ -2385,40 +2500,109 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
 
     # All providers with their env var name and console link
     PROVIDERS = {
-        "anthropic": {"key_env": "ANTHROPIC_API_KEY", "label": "Anthropic", "link": "https://console.anthropic.com/settings/keys"},
-        "openai":    {"key_env": "OPENAI_API_KEY",    "label": "OpenAI",    "link": "https://platform.openai.com/api-keys"},
-        "google":    {"key_env": "GOOGLE_API_KEY",     "label": "Google AI", "link": "https://aistudio.google.com/apikey"},
-        "deepseek":  {"key_env": "DEEPSEEK_API_KEY",   "label": "DeepSeek",  "link": "https://platform.deepseek.com/api_keys"},
-        "groq":      {"key_env": "GROQ_API_KEY",       "label": "Groq",      "link": "https://console.groq.com/keys"},
-        "mistral":   {"key_env": "MISTRAL_API_KEY",     "label": "Mistral",   "link": "https://console.mistral.ai/api-keys"},
-        "ollama":    {"key_env": "",                     "label": "Ollama (Local)", "link": "https://ollama.com"},
+        "anthropic": {
+            "key_env": "ANTHROPIC_API_KEY",
+            "label": "Anthropic",
+            "link": "https://console.anthropic.com/settings/keys",
+        },
+        "openai": {
+            "key_env": "OPENAI_API_KEY",
+            "label": "OpenAI",
+            "link": "https://platform.openai.com/api-keys",
+        },
+        "google": {
+            "key_env": "GOOGLE_API_KEY",
+            "label": "Google AI",
+            "link": "https://aistudio.google.com/apikey",
+        },
+        "deepseek": {
+            "key_env": "DEEPSEEK_API_KEY",
+            "label": "DeepSeek",
+            "link": "https://platform.deepseek.com/api_keys",
+        },
+        "groq": {
+            "key_env": "GROQ_API_KEY",
+            "label": "Groq",
+            "link": "https://console.groq.com/keys",
+        },
+        "mistral": {
+            "key_env": "MISTRAL_API_KEY",
+            "label": "Mistral",
+            "link": "https://console.mistral.ai/api-keys",
+        },
+        "ollama": {"key_env": "", "label": "Ollama (Local)", "link": "https://ollama.com"},
     }
 
     AVAILABLE_MODELS = [
         # Anthropic
-        {"id": "claude-opus-4-6",   "label": "Claude Opus 4.6",   "provider": "anthropic", "tier": "premium"},
-        {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "provider": "anthropic", "tier": "standard"},
-        {"id": "claude-haiku-4-5",  "label": "Claude Haiku 4.5",  "provider": "anthropic", "tier": "budget"},
+        {
+            "id": "claude-opus-4-6",
+            "label": "Claude Opus 4.6",
+            "provider": "anthropic",
+            "tier": "premium",
+        },
+        {
+            "id": "claude-sonnet-4-6",
+            "label": "Claude Sonnet 4.6",
+            "provider": "anthropic",
+            "tier": "standard",
+        },
+        {
+            "id": "claude-haiku-4-5",
+            "label": "Claude Haiku 4.5",
+            "provider": "anthropic",
+            "tier": "budget",
+        },
         # OpenAI
-        {"id": "gpt-4o",      "label": "GPT-4o",      "provider": "openai", "tier": "premium"},
+        {"id": "gpt-4o", "label": "GPT-4o", "provider": "openai", "tier": "premium"},
         {"id": "gpt-4o-mini", "label": "GPT-4o Mini", "provider": "openai", "tier": "budget"},
-        {"id": "o1",          "label": "o1",           "provider": "openai", "tier": "premium"},
-        {"id": "o3-mini",     "label": "o3-mini",      "provider": "openai", "tier": "standard"},
+        {"id": "o1", "label": "o1", "provider": "openai", "tier": "premium"},
+        {"id": "o3-mini", "label": "o3-mini", "provider": "openai", "tier": "standard"},
         # Google
-        {"id": "gemini-2.0-flash", "label": "Gemini 2.0 Flash", "provider": "google",   "tier": "standard"},
-        {"id": "gemini-2.5-pro",   "label": "Gemini 2.5 Pro",   "provider": "google",   "tier": "premium"},
+        {
+            "id": "gemini-2.0-flash",
+            "label": "Gemini 2.0 Flash",
+            "provider": "google",
+            "tier": "standard",
+        },
+        {
+            "id": "gemini-2.5-pro",
+            "label": "Gemini 2.5 Pro",
+            "provider": "google",
+            "tier": "premium",
+        },
         # DeepSeek
-        {"id": "deepseek-chat",     "label": "DeepSeek V3",       "provider": "deepseek", "tier": "budget"},
-        {"id": "deepseek-reasoner", "label": "DeepSeek R1",       "provider": "deepseek", "tier": "standard"},
+        {"id": "deepseek-chat", "label": "DeepSeek V3", "provider": "deepseek", "tier": "budget"},
+        {
+            "id": "deepseek-reasoner",
+            "label": "DeepSeek R1",
+            "provider": "deepseek",
+            "tier": "standard",
+        },
         # Groq
-        {"id": "llama-3.3-70b-versatile", "label": "Llama 3.3 70B (Groq)", "provider": "groq", "tier": "budget"},
-        {"id": "mixtral-8x7b-32768",      "label": "Mixtral 8x7B (Groq)",  "provider": "groq", "tier": "budget"},
+        {
+            "id": "llama-3.3-70b-versatile",
+            "label": "Llama 3.3 70B (Groq)",
+            "provider": "groq",
+            "tier": "budget",
+        },
+        {
+            "id": "mixtral-8x7b-32768",
+            "label": "Mixtral 8x7B (Groq)",
+            "provider": "groq",
+            "tier": "budget",
+        },
         # Mistral
-        {"id": "mistral-large-latest", "label": "Mistral Large",    "provider": "mistral", "tier": "premium"},
-        {"id": "codestral-latest",     "label": "Codestral",        "provider": "mistral", "tier": "standard"},
+        {
+            "id": "mistral-large-latest",
+            "label": "Mistral Large",
+            "provider": "mistral",
+            "tier": "premium",
+        },
+        {"id": "codestral-latest", "label": "Codestral", "provider": "mistral", "tier": "standard"},
         # Ollama / Local
-        {"id": "llama3",   "label": "Llama 3 (Ollama)",   "provider": "ollama", "tier": "local"},
-        {"id": "codellama","label": "Code Llama (Ollama)", "provider": "ollama", "tier": "local"},
+        {"id": "llama3", "label": "Llama 3 (Ollama)", "provider": "ollama", "tier": "local"},
+        {"id": "codellama", "label": "Code Llama (Ollama)", "provider": "ollama", "tier": "local"},
     ]
 
     def _settings_repo() -> SqliteSettingsRepository:
@@ -2511,6 +2695,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             rigovo_yml_to_string,
             save_rigovo_yml,
         )
+
         yml_path = root / "rigovo.yml"
         if yml_path.exists():
             # Merge on-disk values with current schema defaults (fills any gaps)
@@ -2537,10 +2722,16 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "enable_action_tools": bool(config.yml.plugins.enable_action_tools),
                 "min_trust_level": str(config.yml.plugins.min_trust_level),
                 "dry_run": bool(config.yml.plugins.dry_run),
-                "allow_approval_required_actions": bool(config.yml.plugins.allow_approval_required_actions),
-                "allow_sensitive_payload_keys": bool(config.yml.plugins.allow_sensitive_payload_keys),
+                "allow_approval_required_actions": bool(
+                    config.yml.plugins.allow_approval_required_actions
+                ),
+                "allow_sensitive_payload_keys": bool(
+                    config.yml.plugins.allow_sensitive_payload_keys
+                ),
                 "allowed_plugin_ids": list(config.yml.plugins.allowed_plugin_ids),
-                "allowed_connector_operations": list(config.yml.plugins.allowed_connector_operations),
+                "allowed_connector_operations": list(
+                    config.yml.plugins.allowed_connector_operations
+                ),
                 "allowed_mcp_operations": list(config.yml.plugins.allowed_mcp_operations),
                 "allowed_action_operations": list(config.yml.plugins.allowed_action_operations),
             },
@@ -2558,6 +2749,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         """Update LLM settings — API keys stored encrypted in SQLite."""
         await asyncio.sleep(0)
         import logging as _logging
+
         _logger = _logging.getLogger("rigovo.api.settings")
         changes: list[str] = []
         errors: list[str] = []
@@ -2577,7 +2769,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                         _logger.warning("Unknown provider '%s' — skipping", provider_name)
             except Exception as exc:
                 _logger.error("Failed to save API keys: %s", exc, exc_info=True)
-                errors.append(f"Failed to save API keys: {str(exc)}")
+                errors.append(f"Failed to save API keys: {exc!s}")
 
         # 2. Save other settings (model, URLs — not secrets, plain text)
         try:
@@ -2592,7 +2784,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 changes.append("OPENAI_BASE_URL")
         except Exception as exc:
             _logger.error("Failed to save settings: %s", exc, exc_info=True)
-            errors.append(f"Failed to save settings: {str(exc)}")
+            errors.append(f"Failed to save settings: {exc!s}")
 
         # 3. Database backend settings (rigovo.yml + .env)
         if req.db_backend is not None or req.local_db_path is not None or req.db_url is not None:
@@ -2626,10 +2818,12 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                     changes.append("RIGOVO_DB_URL")
                     restart_required = True
 
-                yml_path.write_text(yaml.dump(yml_data, default_flow_style=False, sort_keys=False), encoding="utf-8")
+                yml_path.write_text(
+                    yaml.dump(yml_data, default_flow_style=False, sort_keys=False), encoding="utf-8"
+                )
             except Exception as exc:
                 _logger.error("Failed to update database settings: %s", exc, exc_info=True)
-                errors.append(f"Failed to update database settings: {str(exc)}")
+                errors.append(f"Failed to update database settings: {exc!s}")
 
         # 4. If raw YAML is provided, write it directly
         if req.yml_raw is not None:
@@ -2641,10 +2835,10 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 changes.append("rigovo.yml (raw)")
                 _logger.info("Updated rigovo.yml from raw editor")
             except yaml.YAMLError as exc:
-                errors.append(f"Invalid YAML syntax: {str(exc)}")
+                errors.append(f"Invalid YAML syntax: {exc!s}")
             except Exception as exc:
                 _logger.error("Failed to write rigovo.yml: %s", exc, exc_info=True)
-                errors.append(f"Failed to write rigovo.yml: {str(exc)}")
+                errors.append(f"Failed to write rigovo.yml: {exc!s}")
 
         # 5. Structured rigovo.yml updates for models/tools/plugin policy.
         elif req.agent_models or req.agent_tools or req.plugin_policy:
@@ -2663,7 +2857,11 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                         if role not in AGENT_ROLES:
                             continue
                         if model == DEFAULT_MODELS.get(role, ""):
-                            if role in agents and isinstance(agents.get(role), dict) and "model" in agents[role]:
+                            if (
+                                role in agents
+                                and isinstance(agents.get(role), dict)
+                                and "model" in agents[role]
+                            ):
                                 del agents[role]["model"]
                                 if not agents[role]:
                                     del agents[role]
@@ -2724,19 +2922,27 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 _logger.info("Updated rigovo.yml structured settings")
             except Exception as exc:
                 _logger.error("Failed to update rigovo.yml: %s", exc, exc_info=True)
-                errors.append(f"Failed to write rigovo.yml: {str(exc)}")
+                errors.append(f"Failed to write rigovo.yml: {exc!s}")
 
         if errors:
             from fastapi.responses import JSONResponse
+
             return JSONResponse(
                 status_code=500,
-                content={"status": "error", "detail": "; ".join(errors), "errors": errors, "changes": changes},
+                content={
+                    "status": "error",
+                    "detail": "; ".join(errors),
+                    "errors": errors,
+                    "changes": changes,
+                },
             )
 
         # LLM key/model changes apply immediately. DB backend/path changes require restart.
         note = ""
         if restart_required:
-            note = "Database settings saved. Restart the engine/app to apply backend or DSN changes."
+            note = (
+                "Database settings saved. Restart the engine/app to apply backend or DSN changes."
+            )
 
         return {
             "status": "updated",
@@ -2758,12 +2964,16 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         for f in sorted(log_dir.iterdir()):
             if f.is_file() and f.suffix == ".log":
                 stat = f.stat()
-                files.append({
-                    "name": f.name,
-                    "size_bytes": stat.st_size,
-                    "size_human": _human_size(stat.st_size),
-                    "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-                })
+                files.append(
+                    {
+                        "name": f.name,
+                        "size_bytes": stat.st_size,
+                        "size_human": _human_size(stat.st_size),
+                        "modified_at": datetime.fromtimestamp(
+                            stat.st_mtime, tz=timezone.utc
+                        ).isoformat(),
+                    }
+                )
         return {"log_dir": str(log_dir), "files": files}
 
     @app.get("/v1/logs/{log_name}")
@@ -2808,6 +3018,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
     @app.middleware("http")
     async def log_requests(request: Request, call_next):  # type: ignore[no-untyped-def]
         import time
+
         start = time.time()
         response = await call_next(request)
         duration_ms = (time.time() - start) * 1000
@@ -2815,13 +3026,18 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         if request.url.path != "/health":
             logger.info(
                 "%s %s → %d (%.0fms)",
-                request.method, request.url.path, response.status_code, duration_ms,
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_ms,
             )
             # Log errors to audit
             if response.status_code >= 400:
                 logging.getLogger("rigovo.audit").warning(
                     "API error: %s %s → %d",
-                    request.method, request.url.path, response.status_code,
+                    request.method,
+                    request.url.path,
+                    response.status_code,
                 )
         return response
 

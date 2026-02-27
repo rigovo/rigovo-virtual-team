@@ -6,8 +6,8 @@ import asyncio
 from typing import Any
 
 from rigovo.application.graph.state import TaskState
-from rigovo.domain.entities.task import TaskType, TaskComplexity
 from rigovo.domain.entities.agent import Agent
+from rigovo.domain.entities.task import TaskComplexity, TaskType
 from rigovo.domain.services.team_assembler import TeamAssemblerService
 
 
@@ -77,7 +77,8 @@ async def assemble_node(
         "agent_messages": state.get("agent_messages", []),
         "retry_count": 0,
         "status": "assembled",
-        "events": state.get("events", []) + [
+        "events": state.get("events", [])
+        + [
             {
                 "type": "pipeline_assembled",
                 "agent_count": pipeline.agent_count,

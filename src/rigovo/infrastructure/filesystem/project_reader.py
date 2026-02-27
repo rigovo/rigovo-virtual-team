@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -11,18 +10,47 @@ logger = logging.getLogger(__name__)
 
 # Files that indicate project tech stack
 DEPENDENCY_FILES = [
-    "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
-    "pyproject.toml", "requirements.txt", "Pipfile", "setup.py", "setup.cfg",
-    "Cargo.toml", "go.mod", "Gemfile", "pom.xml", "build.gradle",
-    "composer.json", "mix.exs", "CMakeLists.txt", "Makefile",
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "pyproject.toml",
+    "requirements.txt",
+    "Pipfile",
+    "setup.py",
+    "setup.cfg",
+    "Cargo.toml",
+    "go.mod",
+    "Gemfile",
+    "pom.xml",
+    "build.gradle",
+    "composer.json",
+    "mix.exs",
+    "CMakeLists.txt",
+    "Makefile",
 ]
 
 # Directories to skip during search
 SKIP_DIRS = {
-    "node_modules", ".git", "__pycache__", ".venv", "venv",
-    "dist", "build", ".next", ".rigovo", ".rigour",
-    "target", "vendor", ".tox", ".mypy_cache", ".pytest_cache",
-    ".ruff_cache", "coverage", "htmlcov", ".eggs",
+    "node_modules",
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".next",
+    ".rigovo",
+    ".rigour",
+    "target",
+    "vendor",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "coverage",
+    "htmlcov",
+    ".eggs",
 }
 
 # Max file size to read (1MB)
@@ -46,9 +74,7 @@ class ProjectReader:
         try:
             resolved.relative_to(self._root)
         except ValueError:
-            raise PermissionError(
-                f"Path traversal detected: {relative_path} escapes project root"
-            )
+            raise PermissionError(f"Path traversal detected: {relative_path} escapes project root")
         return resolved
 
     def read_file(
@@ -183,11 +209,13 @@ class ProjectReader:
 
             for i, line in enumerate(content.splitlines(), 1):
                 if regex.search(line):
-                    matches.append({
-                        "file": str(filepath.relative_to(self._root)),
-                        "line": i,
-                        "content": line.strip()[:200],
-                    })
+                    matches.append(
+                        {
+                            "file": str(filepath.relative_to(self._root)),
+                            "line": i,
+                            "content": line.strip()[:200],
+                        }
+                    )
                     if len(matches) >= max_results:
                         return {"pattern": pattern, "matches": matches, "truncated": True}
 
@@ -243,13 +271,18 @@ class ProjectReader:
         pkg_json = self._root / "package.json"
         if pkg_json.is_file():
             import json
+
             try:
                 pkg = json.loads(pkg_json.read_text())
                 deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
                 framework_checks = [
-                    ("next", "Next.js"), ("react", "React"), ("vue", "Vue"),
-                    ("express", "Express"), ("fastify", "Fastify"),
-                    ("@angular/core", "Angular"), ("svelte", "Svelte"),
+                    ("next", "Next.js"),
+                    ("react", "React"),
+                    ("vue", "Vue"),
+                    ("express", "Express"),
+                    ("fastify", "Fastify"),
+                    ("@angular/core", "Angular"),
+                    ("svelte", "Svelte"),
                 ]
                 for dep, name in framework_checks:
                     if dep in deps:

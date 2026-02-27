@@ -67,14 +67,14 @@ class AgentEvaluator:
         needs_attention = False
         if agent.stats:
             prev_quality_proxy = agent.stats.first_pass_rate * 100
-            if prev_quality_proxy > 0 and quality_score < prev_quality_proxy * (1 - self.DEGRADATION_THRESHOLD):
+            if prev_quality_proxy > 0 and quality_score < prev_quality_proxy * (
+                1 - self.DEGRADATION_THRESHOLD
+            ):
                 needs_attention = True
 
         # Needs enrichment if quality is poor or retries happened
         needs_enrichment = (
-            quality_score < self.POOR_QUALITY_THRESHOLD
-            or retry_count > 0
-            or needs_attention
+            quality_score < self.POOR_QUALITY_THRESHOLD or retry_count > 0 or needs_attention
         )
 
         summary = self._build_summary(
@@ -121,8 +121,10 @@ class AgentEvaluator:
             # No gates ran (e.g., non-code-producing role)
             return 85.0  # Reasonable default
 
-        base_score = gate_result.score if gate_result.score is not None else (
-            100.0 if gate_result.status == GateStatus.PASSED else 40.0
+        base_score = (
+            gate_result.score
+            if gate_result.score is not None
+            else (100.0 if gate_result.status == GateStatus.PASSED else 40.0)
         )
 
         # Penalize retries

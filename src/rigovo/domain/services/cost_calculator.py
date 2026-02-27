@@ -5,13 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 # --- Named constants for pricing defaults and estimation ---
-DEFAULT_INPUT_PRICE_PER_M = 5.00   # Conservative default for unknown models
+DEFAULT_INPUT_PRICE_PER_M = 5.00  # Conservative default for unknown models
 DEFAULT_OUTPUT_PRICE_PER_M = 15.00
 TOKENS_PER_MILLION = 1_000_000
-COST_PRECISION = 6                 # Decimal places for cost rounding
+COST_PRECISION = 6  # Decimal places for cost rounding
 ESTIMATE_PRECISION = 4
 DEFAULT_AVG_TOKENS_PER_AGENT = 4000
-INPUT_TOKEN_RATIO = 0.7            # 70% input, 30% output estimate
+INPUT_TOKEN_RATIO = 0.7  # 70% input, 30% output estimate
 OUTPUT_TOKEN_RATIO = 0.3
 
 
@@ -24,36 +24,38 @@ class ModelPricing:
     change pricing. Defaults to a conservative estimate for unknown models.
     """
 
-    prices: dict[str, dict[str, float]] = field(default_factory=lambda: {
-        # Anthropic (Feb 2026)
-        "claude-opus-4-6": {"input": 5.00, "output": 25.00},
-        "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
-        "claude-opus-4-5-20250624": {"input": 5.00, "output": 25.00},
-        "claude-sonnet-4-5-20250929": {"input": 3.00, "output": 15.00},
-        "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
-        # OpenAI (Feb 2026)
-        "gpt-5": {"input": 1.25, "output": 10.00},
-        "gpt-5-mini": {"input": 0.25, "output": 2.00},
-        "gpt-4o": {"input": 5.00, "output": 15.00},
-        "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-        "o1": {"input": 15.00, "output": 60.00},
-        "o3-mini": {"input": 1.10, "output": 4.40},
-        # Google (Feb 2026)
-        "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
-        "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
-        # DeepSeek (Feb 2026) — dramatically cheaper
-        "deepseek-chat": {"input": 0.27, "output": 0.42},
-        "deepseek-reasoner": {"input": 0.12, "output": 0.20},
-        # Mistral (Feb 2026)
-        "mistral-large-latest": {"input": 2.00, "output": 6.00},
-        "mistral-medium-latest": {"input": 0.40, "output": 2.00},
-        "codestral-latest": {"input": 0.30, "output": 0.90},
-        # Groq (hosted open-source)
-        "llama-3.3-70b-versatile": {"input": 0.59, "output": 0.79},
-        # Ollama (local — free, but track for comparison)
-        "ollama/llama3": {"input": 0.0, "output": 0.0},
-        "ollama/codellama": {"input": 0.0, "output": 0.0},
-    })
+    prices: dict[str, dict[str, float]] = field(
+        default_factory=lambda: {
+            # Anthropic (Feb 2026)
+            "claude-opus-4-6": {"input": 5.00, "output": 25.00},
+            "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
+            "claude-opus-4-5-20250624": {"input": 5.00, "output": 25.00},
+            "claude-sonnet-4-5-20250929": {"input": 3.00, "output": 15.00},
+            "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
+            # OpenAI (Feb 2026)
+            "gpt-5": {"input": 1.25, "output": 10.00},
+            "gpt-5-mini": {"input": 0.25, "output": 2.00},
+            "gpt-4o": {"input": 5.00, "output": 15.00},
+            "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+            "o1": {"input": 15.00, "output": 60.00},
+            "o3-mini": {"input": 1.10, "output": 4.40},
+            # Google (Feb 2026)
+            "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
+            "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
+            # DeepSeek (Feb 2026) — dramatically cheaper
+            "deepseek-chat": {"input": 0.27, "output": 0.42},
+            "deepseek-reasoner": {"input": 0.12, "output": 0.20},
+            # Mistral (Feb 2026)
+            "mistral-large-latest": {"input": 2.00, "output": 6.00},
+            "mistral-medium-latest": {"input": 0.40, "output": 2.00},
+            "codestral-latest": {"input": 0.30, "output": 0.90},
+            # Groq (hosted open-source)
+            "llama-3.3-70b-versatile": {"input": 0.59, "output": 0.79},
+            # Ollama (local — free, but track for comparison)
+            "ollama/llama3": {"input": 0.0, "output": 0.0},
+            "ollama/codellama": {"input": 0.0, "output": 0.0},
+        }
+    )
 
     # Default pricing for unknown models (conservative estimate)
     default_input: float = DEFAULT_INPUT_PRICE_PER_M

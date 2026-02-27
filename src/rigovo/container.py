@@ -7,7 +7,7 @@ Modules depend on interfaces, container provides implementations.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
 from uuid import UUID
 
 from rigovo.config import AppConfig
@@ -69,11 +69,13 @@ class Container:
                 from rigovo.infrastructure.persistence.postgres_local import (
                     PostgresDatabase,
                 )
+
                 self._db = PostgresDatabase(self.config.db_url)
             else:
                 from rigovo.infrastructure.persistence.sqlite_local import (
                     LocalDatabase,
                 )
+
                 db_path = self.config.local_db_full_path
                 db_path.parent.mkdir(parents=True, exist_ok=True)
                 self._db = LocalDatabase(str(db_path))
@@ -85,6 +87,7 @@ class Container:
             from rigovo.infrastructure.persistence.sqlite_settings_repo import (
                 SqliteSettingsRepository,
             )
+
             self._settings_repo = SqliteSettingsRepository(self.get_db())
         return self._settings_repo
 
@@ -102,16 +105,14 @@ class Container:
         """Get or create the in-process event emitter."""
         if self._event_emitter is None:
             from rigovo.infrastructure.events import InProcessEventEmitter
+
             self._event_emitter = InProcessEventEmitter()
         return self._event_emitter
 
     def get_domain(self, domain_id: str) -> DomainPlugin:
         """Get a domain plugin by ID."""
         if domain_id not in self.domains:
-            raise ValueError(
-                f"Unknown domain: {domain_id}. "
-                f"Available: {list(self.domains.keys())}"
-            )
+            raise ValueError(f"Unknown domain: {domain_id}. Available: {list(self.domains.keys())}")
         return self.domains[domain_id]
 
     def get_llm(self, model: str | None = None) -> LLMProvider:
@@ -138,6 +139,7 @@ class Container:
             from rigovo.infrastructure.cloud.sync_client import (
                 CloudSyncClient,
             )
+
             workspace_id = None
             if self.config.workspace_id:
                 try:
@@ -156,6 +158,7 @@ class Container:
         from rigovo.infrastructure.embeddings.local_embeddings import (
             LocalEmbeddingProvider,
         )
+
         return LocalEmbeddingProvider()
 
     def build_run_task_command(
@@ -170,11 +173,7 @@ class Container:
         """Build a fully-wired RunTaskCommand."""
         from rigovo.application.commands.run_task import RunTaskCommand
 
-        workspace_id = (
-            UUID(self.config.workspace_id)
-            if self.config.workspace_id
-            else UUID(int=0)
-        )
+        workspace_id = UUID(self.config.workspace_id) if self.config.workspace_id else UUID(int=0)
 
         return RunTaskCommand(
             workspace_id=workspace_id,
@@ -204,9 +203,13 @@ class Container:
                 "enable_action_tools": self.config.yml.plugins.enable_action_tools,
                 "min_trust_level": self.config.yml.plugins.min_trust_level,
                 "allowed_plugin_ids": list(self.config.yml.plugins.allowed_plugin_ids),
-                "allowed_connector_operations": list(self.config.yml.plugins.allowed_connector_operations),
+                "allowed_connector_operations": list(
+                    self.config.yml.plugins.allowed_connector_operations
+                ),
                 "allowed_mcp_operations": list(self.config.yml.plugins.allowed_mcp_operations),
-                "allowed_action_operations": list(self.config.yml.plugins.allowed_action_operations),
+                "allowed_action_operations": list(
+                    self.config.yml.plugins.allowed_action_operations
+                ),
                 "allow_approval_required_actions": bool(
                     self.config.yml.plugins.allow_approval_required_actions
                 ),

@@ -20,7 +20,10 @@ def register(app: typer.Typer) -> None:
 
 def doctor(
     project_dir: str | None = typer.Option(
-        None, "--project", "-p", help="Project directory",
+        None,
+        "--project",
+        "-p",
+        help="Project directory",
     ),
 ) -> None:
     """Diagnose your Rigovo setup — checks dependencies and configuration."""
@@ -75,8 +78,7 @@ def doctor(
             console.print()
     else:
         console.print(
-            f"  [bold red]{failed} issue(s)[/bold red] found, "
-            f"{passed} passed, {warned} warnings",
+            f"  [bold red]{failed} issue(s)[/bold red] found, {passed} passed, {warned} warnings",
         )
     console.print()
 
@@ -87,6 +89,7 @@ def _check_config(root: Path, ok, fail, warn) -> None:
         ok("rigovo.yml found")
         try:
             from rigovo.config_schema import load_rigovo_yml
+
             yml = load_rigovo_yml(root)
             ok(f"rigovo.yml valid (version {yml.version})")
             if yml.project.language:
@@ -133,8 +136,10 @@ def _check_config(root: Path, ok, fail, warn) -> None:
 def _check_packages(root: Path, ok, fail, warn) -> None:
     """Check required and optional packages."""
     for pkg_name, desc in [
-        ("typer", "CLI framework"), ("rich", "Terminal UI"),
-        ("pydantic", "Configuration"), ("yaml", "YAML parsing"),
+        ("typer", "CLI framework"),
+        ("rich", "Terminal UI"),
+        ("pydantic", "Configuration"),
+        ("yaml", "YAML parsing"),
         ("httpx", "HTTP client"),
     ]:
         try:
@@ -144,7 +149,8 @@ def _check_packages(root: Path, ok, fail, warn) -> None:
             fail(f"{pkg_name} not installed ({desc})")
 
     for pkg_name, desc in [
-        ("anthropic", "Anthropic SDK"), ("openai", "OpenAI SDK"),
+        ("anthropic", "Anthropic SDK"),
+        ("openai", "OpenAI SDK"),
         ("langgraph", "LangGraph orchestration"),
     ]:
         try:
@@ -155,6 +161,7 @@ def _check_packages(root: Path, ok, fail, warn) -> None:
 
     try:
         from rigovo.config import load_config
+
         cfg = load_config(root)
         if str(cfg.db_backend).strip().lower() == "postgres":
             try:

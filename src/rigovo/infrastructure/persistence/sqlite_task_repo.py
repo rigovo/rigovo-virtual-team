@@ -8,7 +8,11 @@ from datetime import datetime
 from uuid import UUID
 
 from rigovo.domain.entities.task import (
-    Task, TaskStatus, TaskType, TaskComplexity, PipelineStep,
+    PipelineStep,
+    Task,
+    TaskComplexity,
+    TaskStatus,
+    TaskType,
 )
 from rigovo.domain.interfaces.repositories import TaskRepository
 from rigovo.infrastructure.persistence.sqlite_local import LocalDatabase

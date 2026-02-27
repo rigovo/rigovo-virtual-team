@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
 from rigovo.domain._compat import StrEnum
 
 
@@ -17,22 +18,22 @@ class GateStatus(StrEnum):
 class ViolationSeverity(StrEnum):
     """How serious a violation is."""
 
-    ERROR = "error"      # Must fix — blocks pipeline
+    ERROR = "error"  # Must fix — blocks pipeline
     WARNING = "warning"  # Should fix — counted in score
-    INFO = "info"        # Informational — no score impact
+    INFO = "info"  # Informational — no score impact
 
 
 @dataclass
 class Violation:
     """A single quality gate violation."""
 
-    gate_id: str          # e.g., "hallucinated-imports", "file-size"
+    gate_id: str  # e.g., "hallucinated-imports", "file-size"
     message: str
     severity: ViolationSeverity
     file_path: str | None = None
     line: int | None = None
     column: int | None = None
-    category: str = ""    # "security", "complexity", "style", "correctness"
+    category: str = ""  # "security", "complexity", "style", "correctness"
     suggestion: str = ""  # Machine-readable fix suggestion
 
 
@@ -47,7 +48,7 @@ class GateResult:
     """
 
     status: GateStatus
-    score: float = 100.0       # 0-100, higher is better
+    score: float = 100.0  # 0-100, higher is better
     violations: list[Violation] = field(default_factory=list)
     gates_run: int = 0
     gates_passed: int = 0
@@ -59,15 +60,11 @@ class GateResult:
 
     @property
     def error_count(self) -> int:
-        return sum(
-            1 for v in self.violations if v.severity == ViolationSeverity.ERROR
-        )
+        return sum(1 for v in self.violations if v.severity == ViolationSeverity.ERROR)
 
     @property
     def warning_count(self) -> int:
-        return sum(
-            1 for v in self.violations if v.severity == ViolationSeverity.WARNING
-        )
+        return sum(1 for v in self.violations if v.severity == ViolationSeverity.WARNING)
 
 
 @dataclass

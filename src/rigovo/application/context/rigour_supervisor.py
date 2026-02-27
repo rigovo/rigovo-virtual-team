@@ -20,13 +20,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
 from rigovo.domain.entities.quality import (
     GateResult,
     GateStatus,
-    Violation,
-    ViolationSeverity,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,9 +108,7 @@ class FixPacket:
                 entry += f"\n   Fix: {item.suggestion}"
             parts.append(entry)
 
-        parts.append(
-            "\nFix ONLY the listed violations. Do not refactor unrelated code."
-        )
+        parts.append("\nFix ONLY the listed violations. Do not refactor unrelated code.")
 
         return "\n".join(parts)
 
@@ -185,7 +180,10 @@ class RigourSupervisor:
         if packet.attempt >= packet.max_attempts:
             logger.warning(
                 "Agent %s exhausted retries (%d/%d) with %d violations",
-                packet.role, packet.attempt, packet.max_attempts, packet.count,
+                packet.role,
+                packet.attempt,
+                packet.max_attempts,
+                packet.count,
             )
             return False
 
@@ -209,8 +207,6 @@ class RigourSupervisor:
         patterns = []
         for rule, count in rule_counts.items():
             if count >= 2:
-                patterns.append(
-                    f"Repeated violation: '{rule}' ({count}x). {rule_messages[rule]}"
-                )
+                patterns.append(f"Repeated violation: '{rule}' ({count}x). {rule_messages[rule]}")
 
         return patterns

@@ -9,7 +9,6 @@ from rigovo.application.graph.state import TaskState
 from rigovo.application.master.classifier import TaskClassifier
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 
-
 CLASSIFICATION_PROMPT = """\
 You are a task classifier for a software engineering team.
 
@@ -50,12 +49,15 @@ async def classify_node(
                     "cost": 0.0,
                 },
             },
-            "events": state.get("events", []) + [{
-                "type": "task_classified",
-                "task_type": classification.get("task_type"),
-                "complexity": classification.get("complexity"),
-                "reasoning": classification.get("reasoning"),
-            }],
+            "events": state.get("events", [])
+            + [
+                {
+                    "type": "task_classified",
+                    "task_type": classification.get("task_type"),
+                    "complexity": classification.get("complexity"),
+                    "reasoning": classification.get("reasoning"),
+                }
+            ],
         }
 
     response = await llm.invoke(
@@ -93,10 +95,13 @@ async def classify_node(
                 "cost": 0.0,  # Will be calculated by cost tracker
             },
         },
-        "events": state.get("events", []) + [{
-            "type": "task_classified",
-            "task_type": classification.get("task_type"),
-            "complexity": classification.get("complexity"),
-            "reasoning": classification.get("reasoning"),
-        }],
+        "events": state.get("events", [])
+        + [
+            {
+                "type": "task_classified",
+                "task_type": classification.get("task_type"),
+                "complexity": classification.get("complexity"),
+                "reasoning": classification.get("reasoning"),
+            }
+        ],
     }

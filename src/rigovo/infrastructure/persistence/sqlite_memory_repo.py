@@ -133,6 +133,8 @@ class SqliteMemoryRepository(MemoryRepository):
             embedding=embedding,
             usage_count=row["usage_count"] or 0,
             cross_project_usage=row["cross_project_usage"] or 0,
-            last_used_at=datetime.fromisoformat(row["last_used_at"]) if row["last_used_at"] else None,
+            last_used_at=datetime.fromisoformat(row["last_used_at"])
+            if row["last_used_at"]
+            else None,
             created_at=datetime.fromisoformat(row["created_at"]),
         )

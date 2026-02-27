@@ -4,19 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from rigovo.domain._compat import StrEnum
 from uuid import UUID, uuid4
+
+from rigovo.domain._compat import StrEnum
 
 
 class MemoryType(StrEnum):
     """Categories of learned knowledge."""
 
-    TASK_OUTCOME = "task_outcome"       # What happened, what worked
-    PATTERN = "pattern"                 # Recurring patterns (e.g., "CSRF always missed on POST")
-    ERROR_FIX = "error_fix"            # How a specific error was resolved
-    TECH_STACK = "tech_stack"          # Technology conventions ("uses Stripe SDK v12")
-    CONVENTION = "convention"          # Code/team conventions ("always use useCallback in React")
-    DOMAIN_KNOWLEDGE = "domain_knowledge"  # Domain-specific facts ("PCI requires encryption at rest")
+    TASK_OUTCOME = "task_outcome"  # What happened, what worked
+    PATTERN = "pattern"  # Recurring patterns (e.g., "CSRF always missed on POST")
+    ERROR_FIX = "error_fix"  # How a specific error was resolved
+    TECH_STACK = "tech_stack"  # Technology conventions ("uses Stripe SDK v12")
+    CONVENTION = "convention"  # Code/team conventions ("always use useCallback in React")
+    DOMAIN_KNOWLEDGE = (
+        "domain_knowledge"  # Domain-specific facts ("PCI requires encryption at rest")
+    )
 
 
 @dataclass

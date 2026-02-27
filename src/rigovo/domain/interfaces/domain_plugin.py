@@ -13,14 +13,14 @@ from rigovo.domain.interfaces.quality_gate import QualityGate
 class AgentRoleDefinition:
     """Defines an available agent role within a domain."""
 
-    role_id: str               # 'coder', 'reviewer', 'annotator', etc.
-    name: str                  # "Software Engineer", "Data Annotator"
+    role_id: str  # 'coder', 'reviewer', 'annotator', etc.
+    name: str  # "Software Engineer", "Data Annotator"
     description: str = ""
     default_system_prompt: str = ""
     default_tools: list[str] = field(default_factory=list)
-    default_llm_model: str = ""          # Empty = use configured default
-    preferred_tier: str = "standard"     # budget | standard | premium
-    pipeline_order: int = 0    # Default execution order
+    default_llm_model: str = ""  # Empty = use configured default
+    preferred_tier: str = "standard"  # budget | standard | premium
+    pipeline_order: int = 0  # Default execution order
     produces_code: bool = False  # Whether gates should run on this role's output
 
 
@@ -28,7 +28,7 @@ class AgentRoleDefinition:
 class TaskTypeDefinition:
     """Defines a task type that this domain handles."""
 
-    type_id: str               # 'feature', 'bug', 'annotation', etc.
+    type_id: str  # 'feature', 'bug', 'annotation', etc.
     name: str
     description: str = ""
     default_complexity: str = "medium"
