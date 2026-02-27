@@ -358,6 +358,46 @@ class RunTaskCommand:
                 pipeline_steps.append(step)
             task.pipeline_steps = pipeline_steps
 
+        # Persist collaboration evidence so UI can replay consult/debate/tool interactions.
+        raw_events = final_state.get("events", [])
+        raw_messages = final_state.get("agent_messages", [])
+        collaboration_events = []
+        if isinstance(raw_events, list):
+            for ev in raw_events:
+                if not isinstance(ev, dict):
+                    continue
+                ev_type = str(ev.get("type", "")).strip()
+                if ev_type in {
+                    "agent_consult_requested",
+                    "agent_consult_completed",
+                    "debate_round",
+                    "integration_invoked",
+                    "integration_blocked",
+                    "replan_triggered",
+                    "replan_failed",
+                    "approval_requested",
+                    "approval_granted",
+                    "approval_denied",
+                }:
+                    event_copy = dict(ev)
+                    event_copy.setdefault("created_at", time.time())
+                    collaboration_events.append(event_copy)
+        collaboration_messages = []
+        if isinstance(raw_messages, list):
+            for msg in raw_messages:
+                if not isinstance(msg, dict):
+                    continue
+                if str(msg.get("type", "")).strip() in {"consult_request", "consult_response"}:
+                    collaboration_messages.append(msg)
+        task.approval_data = {
+            **(task.approval_data or {}),
+            "collaboration": {
+                "events": collaboration_events[-200:],
+                "messages": collaboration_messages[-200:],
+                "debate_round": int(final_state.get("debate_round", 0) or 0),
+            },
+        }
+
         if self._task_repo:
             await self._task_repo.save(task)
 
@@ -589,6 +629,14 @@ class RunTaskCommand:
                 c.id: list(getattr(c, "outbound_actions", []) or [])
                 for c in getattr(manifest, "connectors", [])
             }
+            mcp_operations = {
+                m.id: list(getattr(m, "operations", []) or [])
+                for m in getattr(manifest, "mcp_servers", [])
+            }
+            action_requires_approval = {
+                a.id: bool(getattr(a, "requires_approval", False))
+                for a in getattr(manifest, "actions", [])
+            }
             catalog[manifest.id] = {
                 "name": manifest.name,
                 "enabled": bool(getattr(manifest, "enabled", True)),
@@ -597,7 +645,9 @@ class RunTaskCommand:
                 "connectors": [c.id for c in getattr(manifest, "connectors", [])],
                 "connector_operations": connector_operations,
                 "mcp_servers": [m.id for m in getattr(manifest, "mcp_servers", [])],
+                "mcp_operations": mcp_operations,
                 "actions": [a.id for a in getattr(manifest, "actions", [])],
+                "action_requires_approval": action_requires_approval,
             }
         return catalog
 

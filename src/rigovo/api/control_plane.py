@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import hashlib
 import json
 import os
 import secrets
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -34,6 +36,7 @@ from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskReposit
 # The detail endpoint reads this for running tasks; completed tasks
 # fall back to persisted pipeline_steps in SQLite.
 _live_agent_progress: dict[str, dict[str, dict]] = {}  # task_id -> {role -> step_data}
+_live_task_events: dict[str, list[dict[str, Any]]] = {}  # task_id -> rolling runtime events
 
 
 def _on_agent_event(event: dict) -> None:
@@ -76,6 +79,21 @@ def _on_agent_event(event: dict) -> None:
     elif etype in ("task_finalized", "task_failed"):
         # Clean up live state once task is done
         _live_agent_progress.pop(task_id, None)
+        _live_task_events.pop(task_id, None)
+
+
+def _on_runtime_event(event: dict) -> None:
+    """Capture live collaboration/policy events for active task playback."""
+    task_id = str(event.get("task_id", "") or "").strip()
+    if not task_id:
+        return
+    bucket = _live_task_events.setdefault(task_id, [])
+    normalized = dict(event)
+    normalized.setdefault("created_at", time.time())
+    bucket.append(normalized)
+    # Keep memory bounded.
+    if len(bucket) > 500:
+        del bucket[:-500]
 
 
 class TaskActionRequest(BaseModel):
@@ -118,8 +136,16 @@ class UpdateSettingsRequest(BaseModel):
     custom_base_url: str | None = None            # For OpenAI-compatible endpoints
     # Per-agent model overrides (written to rigovo.yml)
     agent_models: dict[str, str] | None = None
+    # Per-agent tool/capability overrides (written to rigovo.yml)
+    agent_tools: dict[str, list[str]] | None = None
+    # Plugin/integration policy override (written to rigovo.yml.plugins)
+    plugin_policy: dict[str, Any] | None = None
     # Raw YAML override (written directly to rigovo.yml)
     yml_raw: str | None = None
+    # Database/runtime storage settings
+    db_backend: str | None = None          # sqlite|postgres
+    local_db_path: str | None = None       # Used when backend=sqlite
+    db_url: str | None = None              # Postgres DSN (persisted to .env)
 
 
 class PersonaMember(BaseModel):
@@ -232,6 +258,37 @@ def _relative(ts: datetime | None) -> str:
         return f"{hours}h ago"
     days = hours // 24
     return f"{days}d ago"
+
+
+def _to_utc(ts: datetime | None) -> datetime | None:
+    """Normalize timestamps to UTC for safe comparisons."""
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def _safe_rate(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(numerator / denominator, 4)
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    """Compute percentile using linear interpolation."""
+    if not values:
+        return 0.0
+    if pct <= 0:
+        return float(min(values))
+    if pct >= 100:
+        return float(max(values))
+    ordered = sorted(float(v) for v in values)
+    idx = (len(ordered) - 1) * (pct / 100.0)
+    low = int(idx)
+    high = min(low + 1, len(ordered) - 1)
+    weight = idx - low
+    return ordered[low] + (ordered[high] - ordered[low]) * weight
 
 
 def _tier_from_task(task) -> str:
@@ -383,6 +440,19 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         emitter.on("agent_complete", _on_agent_event)
         emitter.on("task_finalized", _on_agent_event)
         emitter.on("task_failed", _on_agent_event)
+        for evt_name in [
+            "agent_consult_requested",
+            "agent_consult_completed",
+            "debate_round",
+            "integration_invoked",
+            "integration_blocked",
+            "replan_triggered",
+            "replan_failed",
+            "approval_requested",
+            "approval_granted",
+            "approval_denied",
+        ]:
+            emitter.on(evt_name, _on_runtime_event)
         logger.info("Live agent progress tracking enabled")
     except Exception:
         logger.debug("Could not wire event emitter for live tracking", exc_info=True)
@@ -620,17 +690,34 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "enable_mcp_tools": bool(plugins.enable_mcp_tools),
                 "enable_action_tools": bool(plugins.enable_action_tools),
                 "min_trust_level": str(plugins.min_trust_level),
+                "allowed_plugin_ids": list(plugins.allowed_plugin_ids),
+                "allowed_connector_operations": list(plugins.allowed_connector_operations),
+                "allowed_mcp_operations": list(plugins.allowed_mcp_operations),
+                "allowed_action_operations": list(plugins.allowed_action_operations),
+                "allow_approval_required_actions": bool(
+                    plugins.allow_approval_required_actions
+                ),
+                "allow_sensitive_payload_keys": bool(
+                    plugins.allow_sensitive_payload_keys
+                ),
                 "allowed_shell_commands": list(plugins.allowed_shell_commands),
                 "dry_run": bool(plugins.dry_run),
             },
             "runtime": {
-                "filesystem_sandbox": "project_root",
+                "filesystem_sandbox": str(
+                    os.environ.get("RIGOVO_FILESYSTEM_SANDBOX_MODE", "project_root")
+                ),
                 "worktree_mode": str(os.environ.get("RIGOVO_WORKTREE_MODE", "project")),
                 "worktree_root": str(os.environ.get("RIGOVO_WORKTREE_ROOT", "")),
                 "debate_enabled": True,
                 "debate_max_rounds": 2,
                 "quality_gate_enabled": True,
                 "memory_learning_enabled": True,
+            },
+            "database": {
+                "backend": str(config.db_backend),
+                "local_path": str(config.local_db_path),
+                "dsn_configured": bool(config.db_url),
             },
         }
 
@@ -657,6 +744,223 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "cross_project_usage_total": cross_project_total,
             "avg_usage_per_memory": round(total_usage / total, 3) if total else 0.0,
             "utilization_rate": round(used / total, 3) if total else 0.0,
+        }
+
+    @app.get("/v1/integrations/policy")
+    def integrations_policy() -> dict[str, Any]:
+        """Return effective connector/MCP/action policy + plugin gate outcomes."""
+        plugins_cfg = config.yml.plugins
+        policy = {
+            "plugins_enabled": bool(plugins_cfg.enabled),
+            "enable_connector_tools": bool(plugins_cfg.enable_connector_tools),
+            "enable_mcp_tools": bool(plugins_cfg.enable_mcp_tools),
+            "enable_action_tools": bool(plugins_cfg.enable_action_tools),
+            "min_trust_level": str(plugins_cfg.min_trust_level),
+            "allowed_plugin_ids": list(plugins_cfg.allowed_plugin_ids),
+            "allowed_connector_operations": list(plugins_cfg.allowed_connector_operations),
+            "allowed_mcp_operations": list(plugins_cfg.allowed_mcp_operations),
+            "allowed_action_operations": list(plugins_cfg.allowed_action_operations),
+            "allow_approval_required_actions": bool(
+                plugins_cfg.allow_approval_required_actions
+            ),
+            "allow_sensitive_payload_keys": bool(plugins_cfg.allow_sensitive_payload_keys),
+            "allowed_shell_commands": list(plugins_cfg.allowed_shell_commands),
+            "dry_run": bool(plugins_cfg.dry_run),
+        }
+        if not plugins_cfg.enabled:
+            return {
+                "policy": policy,
+                "plugins": [],
+                "summary": {
+                    "loaded_plugins": 0,
+                    "allowed_plugins": 0,
+                    "blocked_plugins": 0,
+                },
+            }
+
+        trust_order = {"community": 0, "verified": 1, "internal": 2}
+        min_rank = trust_order.get(str(plugins_cfg.min_trust_level).lower(), 1)
+        allowlist = set(plugins_cfg.allowed_plugin_ids or [])
+
+        try:
+            registry = container.get_plugin_registry()
+            manifests = registry.load(include_disabled=True)
+        except Exception as exc:
+            logger.warning("Failed to load plugin registry for policy view: %s", exc)
+            return {
+                "policy": policy,
+                "plugins": [],
+                "summary": {
+                    "loaded_plugins": 0,
+                    "allowed_plugins": 0,
+                    "blocked_plugins": 0,
+                    "error": "registry_load_failed",
+                },
+            }
+
+        rows: list[dict[str, Any]] = []
+        allowed_plugins = 0
+        blocked_plugins = 0
+        for manifest in manifests:
+            plugin_id = str(manifest.id)
+            trust_level = str(getattr(manifest, "trust_level", "community")).lower()
+            trust_ok = trust_order.get(trust_level, 0) >= min_rank
+            allowlisted = not allowlist or plugin_id in allowlist
+            enabled = bool(getattr(manifest, "enabled", True))
+            plugin_allowed = enabled and trust_ok and allowlisted
+            reasons: list[str] = []
+            if not enabled:
+                reasons.append("disabled")
+            if not trust_ok:
+                reasons.append("trust_below_policy")
+            if not allowlisted:
+                reasons.append("not_allowlisted")
+            if plugin_allowed:
+                allowed_plugins += 1
+            else:
+                blocked_plugins += 1
+
+            rows.append(
+                {
+                    "id": plugin_id,
+                    "name": str(getattr(manifest, "name", plugin_id)),
+                    "enabled": enabled,
+                    "trust_level": trust_level,
+                    "capabilities": list(getattr(manifest, "capabilities", [])),
+                    "allowed": plugin_allowed,
+                    "blocked_reasons": reasons,
+                    "connectors": [
+                        {
+                            "id": c.id,
+                            "operations": list(getattr(c, "outbound_actions", []) or []),
+                            "allowed": plugin_allowed and policy["enable_connector_tools"],
+                        }
+                        for c in getattr(manifest, "connectors", [])
+                    ],
+                    "mcp_servers": [
+                        {
+                            "id": m.id,
+                            "operations": list(getattr(m, "operations", []) or []),
+                            "allowed": plugin_allowed and policy["enable_mcp_tools"],
+                        }
+                        for m in getattr(manifest, "mcp_servers", [])
+                    ],
+                    "actions": [
+                        {
+                            "id": a.id,
+                            "requires_approval": bool(getattr(a, "requires_approval", False)),
+                            "allowed": (
+                                plugin_allowed
+                                and policy["enable_action_tools"]
+                                and (
+                                    not bool(getattr(a, "requires_approval", False))
+                                    or policy["allow_approval_required_actions"]
+                                )
+                            ),
+                        }
+                        for a in getattr(manifest, "actions", [])
+                    ],
+                }
+            )
+
+        return {
+            "policy": policy,
+            "plugins": rows,
+            "summary": {
+                "loaded_plugins": len(rows),
+                "allowed_plugins": allowed_plugins,
+                "blocked_plugins": blocked_plugins,
+            },
+        }
+
+    @app.get("/v1/observability/slo")
+    async def observability_slo(window_days: int = 7, task_limit: int = 500, audit_limit: int = 2000) -> dict[str, Any]:
+        """Aggregate launch SLO metrics from task and audit history."""
+        if window_days < 1 or window_days > 90:
+            raise HTTPException(status_code=400, detail="window_days must be between 1 and 90")
+        task_limit = min(max(task_limit, 25), 5000)
+        audit_limit = min(max(audit_limit, 100), 10000)
+
+        cutoff = _now_utc() - timedelta(days=window_days)
+        task_repo = SqliteTaskRepository(container.get_db())
+        audit_repo = SqliteAuditRepository(container.get_db())
+
+        tasks = await task_repo.list_by_workspace(_workspace_id(), limit=task_limit)
+        tasks_window = [
+            t for t in tasks
+            if (_to_utc(getattr(t, "created_at", None)) or _now_utc()) >= cutoff
+        ]
+        total = len(tasks_window)
+        completed = sum(1 for t in tasks_window if t.status == TaskStatus.COMPLETED)
+        failed = sum(1 for t in tasks_window if t.status == TaskStatus.FAILED)
+        rejected = sum(1 for t in tasks_window if t.status == TaskStatus.REJECTED)
+        awaiting_approval = sum(1 for t in tasks_window if t.status == TaskStatus.AWAITING_APPROVAL)
+        finished = [t for t in tasks_window if t.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.REJECTED}]
+
+        durations_ms = [float(t.duration_ms) for t in finished if int(getattr(t, "duration_ms", 0) or 0) > 0]
+        costs = [float(t.total_cost_usd or 0.0) for t in tasks_window]
+        tokens = [float(t.total_tokens or 0) for t in tasks_window]
+
+        audits = await audit_repo.list_by_workspace(_workspace_id(), limit=audit_limit)
+        audits_window = [
+            a for a in audits
+            if (_to_utc(getattr(a, "created_at", None)) or _now_utc()) >= cutoff
+        ]
+        replan_triggered = sum(1 for a in audits_window if a.action == AuditAction.REPLAN_TRIGGERED)
+        replan_failed = sum(1 for a in audits_window if a.action == AuditAction.REPLAN_FAILED)
+        approvals_requested = sum(1 for a in audits_window if a.action == AuditAction.APPROVAL_REQUESTED)
+        approvals_granted = sum(1 for a in audits_window if a.action == AuditAction.APPROVAL_GRANTED)
+        approvals_denied = sum(1 for a in audits_window if a.action == AuditAction.APPROVAL_DENIED)
+        memory_stored = sum(1 for a in audits_window if a.action == AuditAction.MEMORY_STORED)
+
+        duration_target_ms = int(config.yml.orchestration.timeout_per_agent) * 1000
+        slo_met = sum(1 for d in durations_ms if d <= duration_target_ms)
+
+        return {
+            "window_days": window_days,
+            "window_start_utc": cutoff.isoformat(),
+            "window_end_utc": _now_utc().isoformat(),
+            "tasks": {
+                "total": total,
+                "completed": completed,
+                "failed": failed,
+                "rejected": rejected,
+                "awaiting_approval": awaiting_approval,
+                "success_rate": _safe_rate(completed, total),
+                "failure_rate": _safe_rate(failed, total),
+                "approval_pending_rate": _safe_rate(awaiting_approval, total),
+            },
+            "performance": {
+                "duration_target_ms": duration_target_ms,
+                "duration_slo_met_rate": _safe_rate(slo_met, len(durations_ms)),
+                "duration_ms": {
+                    "avg": round(sum(durations_ms) / len(durations_ms), 2) if durations_ms else 0.0,
+                    "p50": round(_percentile(durations_ms, 50), 2),
+                    "p95": round(_percentile(durations_ms, 95), 2),
+                    "p99": round(_percentile(durations_ms, 99), 2),
+                    "max": round(max(durations_ms), 2) if durations_ms else 0.0,
+                },
+                "cost_usd": {
+                    "total": round(sum(costs), 4),
+                    "avg": round(sum(costs) / len(costs), 4) if costs else 0.0,
+                    "p95": round(_percentile(costs, 95), 4),
+                },
+                "tokens": {
+                    "total": int(sum(tokens)),
+                    "avg": round(sum(tokens) / len(tokens), 2) if tokens else 0.0,
+                    "p95": round(_percentile(tokens, 95), 2),
+                },
+            },
+            "workflow": {
+                "replan_triggered": replan_triggered,
+                "replan_failed": replan_failed,
+                "replan_trigger_rate": _safe_rate(replan_triggered, total),
+                "approvals_requested": approvals_requested,
+                "approvals_granted": approvals_granted,
+                "approvals_denied": approvals_denied,
+                "approval_grant_rate": _safe_rate(approvals_granted, approvals_requested),
+                "memory_stored_events": memory_stored,
+            },
         }
 
     @app.get("/v1/control/state")
@@ -853,8 +1157,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 detail = res.text[:500]
                 try:
                     detail = res.json().get("message", detail)
-                except Exception:
-                    pass
+                except (ValueError, TypeError, AttributeError):
+                    logger.debug("WorkOS error payload was not JSON-decodable", exc_info=True)
                 return HTMLResponse(
                     _auth_result_html(False, f"Code exchange failed: {detail}"),
                     status_code=400,
@@ -897,7 +1201,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                                     role_data = memberships[0].get("role", {})
                                     user_role = role_data.get("slug", "admin") if role_data else "admin"
                 except Exception:
-                    pass  # org fetch is best-effort, auth still succeeds
+                    logger.warning("Failed to enrich WorkOS org details", exc_info=True)
 
             # Store session with full identity
             cp_state = _read_state()
@@ -1220,18 +1524,6 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                     "gate_results": gate_results,
                 })
 
-        # --- Priority 3: Synthetic placeholders (legacy / no data) ---
-        if not steps:
-            agents = ["planner", "coder", "reviewer", "qa"]
-            for agent in agents:
-                if task.status.value in ("completed", "done"):
-                    steps.append({"agent": agent, "status": "complete", "started_at": None, "completed_at": None, "output": "", "files_changed": [], "gate_results": []})
-                elif task.status.value in ("running", "in_progress", "assembling", "routing", "classifying"):
-                    s = "complete" if agents.index(agent) < 1 else ("running" if agents.index(agent) == 1 else "pending")
-                    steps.append({"agent": agent, "status": s, "started_at": None, "completed_at": None, "output": "", "files_changed": [], "gate_results": []})
-                else:
-                    steps.append({"agent": agent, "status": "pending", "started_at": None, "completed_at": None, "output": "", "files_changed": [], "gate_results": []})
-
         # Cost info
         cost = None
         try:
@@ -1243,7 +1535,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 total_cost = sum(e.cost_usd for e in entries)
                 cost = {"total_tokens": total_tokens, "total_cost_usd": round(total_cost, 4)}
         except Exception:
-            pass
+            logger.warning("Unable to load cost details for task %s", task_id, exc_info=True)
 
         return {
             "id": str(task.id),
@@ -1266,6 +1558,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         background_tasks: BackgroundTasks,
     ) -> dict:
         """Create and run a new task from the desktop UI."""
+        await asyncio.sleep(0)
         if not req.description.strip():
             raise HTTPException(status_code=400, detail="Task description is required")
 
@@ -1390,6 +1683,190 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         except Exception:
             return {"task_id": task_id, "entries": []}
 
+    @app.get("/v1/tasks/{task_id}/collaboration")
+    async def task_collaboration(task_id: str) -> dict[str, Any]:
+        """Return collaboration timeline: consult, debate, integration, policy interactions."""
+        try:
+            task_uuid = UUID(task_id)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid task id") from exc
+
+        task_repo = SqliteTaskRepository(container.get_db())
+        task = await task_repo.get(task_uuid)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        stored = (task.approval_data or {}).get("collaboration", {})
+        stored_events = stored.get("events", []) if isinstance(stored, dict) else []
+        stored_messages = stored.get("messages", []) if isinstance(stored, dict) else []
+
+        live_events = _live_task_events.get(task_id, [])
+        merged_events = []
+        for ev in [*(stored_events if isinstance(stored_events, list) else []), *live_events]:
+            if isinstance(ev, dict):
+                merged_events.append(ev)
+
+        def _event_ts(ev: dict[str, Any]) -> float:
+            val = ev.get("created_at")
+            if isinstance(val, (int, float)):
+                return float(val)
+            return 0.0
+
+        merged_events = sorted(merged_events, key=_event_ts)[-400:]
+        messages = [m for m in (stored_messages if isinstance(stored_messages, list) else []) if isinstance(m, dict)][-400:]
+
+        summary = {
+            "consult_requests": sum(1 for e in merged_events if str(e.get("type", "")) == "agent_consult_requested"),
+            "consult_completions": sum(1 for e in merged_events if str(e.get("type", "")) == "agent_consult_completed"),
+            "debate_rounds": sum(1 for e in merged_events if str(e.get("type", "")) == "debate_round"),
+            "integration_invoked": sum(1 for e in merged_events if str(e.get("type", "")) == "integration_invoked"),
+            "integration_blocked": sum(1 for e in merged_events if str(e.get("type", "")) == "integration_blocked"),
+            "replan_triggered": sum(1 for e in merged_events if str(e.get("type", "")) == "replan_triggered"),
+            "replan_failed": sum(1 for e in merged_events if str(e.get("type", "")) == "replan_failed"),
+        }
+
+        return {
+            "task_id": task_id,
+            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "summary": summary,
+            "events": merged_events,
+            "messages": messages,
+        }
+
+    @app.get("/v1/tasks/{task_id}/governance")
+    async def task_governance(task_id: str) -> dict[str, Any]:
+        """Governance timeline: policy decisions, approvals, replans, and gate outcomes."""
+        try:
+            task_uuid = UUID(task_id)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid task id") from exc
+
+        task_repo = SqliteTaskRepository(container.get_db())
+        audit_repo = SqliteAuditRepository(container.get_db())
+        task = await task_repo.get(task_uuid)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        audits = await audit_repo.list_by_task(task_uuid, limit=300)
+        collab = (task.approval_data or {}).get("collaboration", {})
+        events = collab.get("events", []) if isinstance(collab, dict) else []
+        if task_id in _live_task_events:
+            events = [*(events if isinstance(events, list) else []), *_live_task_events.get(task_id, [])]
+
+        timeline: list[dict[str, Any]] = []
+        for a in audits:
+            action = a.action.value if hasattr(a.action, "value") else str(a.action)
+            category = "task"
+            decision = "info"
+            if action in {"approval_requested", "approval_granted", "approval_denied"}:
+                category = "approval"
+                decision = "allow" if action == "approval_granted" else ("deny" if action == "approval_denied" else "pending")
+            elif action in {"replan_triggered", "replan_failed"}:
+                category = "replan"
+                decision = "allow" if action == "replan_triggered" else "deny"
+            elif action in {"gate_failed", "gate_passed"}:
+                category = "quality_gate"
+                decision = "deny" if action == "gate_failed" else "allow"
+            elif action in {"task_failed", "task_completed"}:
+                category = "task"
+                decision = "deny" if action == "task_failed" else "allow"
+
+            timeline.append(
+                {
+                    "ts": a.created_at.isoformat() if a.created_at else None,
+                    "category": category,
+                    "decision": decision,
+                    "action": action,
+                    "actor": a.agent_role or "system",
+                    "summary": a.summary,
+                    "metadata": a.metadata or {},
+                    "source": "audit",
+                }
+            )
+
+        for ev in events if isinstance(events, list) else []:
+            if not isinstance(ev, dict):
+                continue
+            ev_type = str(ev.get("type", "")).strip()
+            if ev_type not in {
+                "integration_invoked",
+                "integration_blocked",
+                "replan_triggered",
+                "replan_failed",
+                "approval_requested",
+                "approval_granted",
+                "approval_denied",
+            }:
+                continue
+            ts_value = ev.get("created_at")
+            ts_iso = None
+            if isinstance(ts_value, (int, float)):
+                ts_iso = datetime.fromtimestamp(float(ts_value), tz=timezone.utc).isoformat()
+            elif isinstance(ts_value, str):
+                ts_iso = ts_value
+
+            category = "policy"
+            decision = "allow"
+            if ev_type in {"integration_blocked", "replan_failed", "approval_denied"}:
+                decision = "deny"
+            if ev_type == "approval_requested":
+                decision = "pending"
+                category = "approval"
+            elif ev_type.startswith("replan_"):
+                category = "replan"
+            elif ev_type.startswith("integration_"):
+                category = "policy"
+            elif ev_type.startswith("approval_"):
+                category = "approval"
+
+            summary = ""
+            if ev_type == "integration_invoked":
+                summary = (
+                    f"{ev.get('role', 'agent')} invoked {ev.get('kind', 'integration')}:"
+                    f"{ev.get('operation', 'op')}"
+                )
+            elif ev_type == "integration_blocked":
+                summary = (
+                    f"{ev.get('role', 'agent')} blocked for {ev.get('kind', 'integration')}:"
+                    f"{ev.get('operation', 'op')} ({ev.get('blocked_reason', 'policy')})"
+                )
+            else:
+                summary = ev_type.replace("_", " ")
+
+            timeline.append(
+                {
+                    "ts": ts_iso,
+                    "category": category,
+                    "decision": decision,
+                    "action": ev_type,
+                    "actor": ev.get("role") or ev.get("from_role") or "system",
+                    "summary": summary,
+                    "metadata": ev,
+                    "source": "event",
+                }
+            )
+
+        def _sort_key(item: dict[str, Any]) -> str:
+            return str(item.get("ts") or "")
+
+        timeline = sorted(timeline, key=_sort_key)[-400:]
+        summary = {
+            "allow": sum(1 for t in timeline if t.get("decision") == "allow"),
+            "deny": sum(1 for t in timeline if t.get("decision") == "deny"),
+            "pending": sum(1 for t in timeline if t.get("decision") == "pending"),
+            "approval_events": sum(1 for t in timeline if t.get("category") == "approval"),
+            "replan_events": sum(1 for t in timeline if t.get("category") == "replan"),
+            "policy_events": sum(1 for t in timeline if t.get("category") == "policy"),
+            "quality_gate_events": sum(1 for t in timeline if t.get("category") == "quality_gate"),
+        }
+
+        return {
+            "task_id": task_id,
+            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "summary": summary,
+            "timeline": timeline,
+        }
+
     @app.get("/v1/tasks/{task_id}/costs")
     async def task_costs(task_id: str) -> dict:
         """Per-agent cost breakdown for a task."""
@@ -1418,6 +1895,130 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             }
         except Exception:
             return {"task_id": task_id, "total_tokens": 0, "total_cost_usd": 0.0, "per_agent": {}}
+
+    @app.get("/v1/tasks/{task_id}/mission")
+    async def task_mission(task_id: str) -> dict:
+        """Mission-control summary: decisions, policy signals, and trust evidence."""
+        try:
+            task_uuid = UUID(task_id)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid task id") from exc
+
+        task_repo = SqliteTaskRepository(container.get_db())
+        audit_repo = SqliteAuditRepository(container.get_db())
+        task = await task_repo.get(task_uuid)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        audits = await audit_repo.list_by_task(task_uuid, limit=300)
+        orchestration = config.yml.orchestration
+        plugins = config.yml.plugins
+
+        workflow = {
+            "replan_triggered": 0,
+            "replan_failed": 0,
+            "approvals_requested": 0,
+            "approvals_granted": 0,
+            "approvals_denied": 0,
+            "gate_failed": 0,
+            "agent_failed": 0,
+            "agent_retried": 0,
+        }
+        trace: list[dict[str, Any]] = []
+        for entry in audits:
+            action = entry.action.value if hasattr(entry.action, "value") else str(entry.action)
+            if action in workflow:
+                workflow[action] += 1
+            elif action == "gate_failed":
+                workflow["gate_failed"] += 1
+            elif action == "agent_failed":
+                workflow["agent_failed"] += 1
+            elif action == "agent_retried":
+                workflow["agent_retried"] += 1
+
+            if action in {
+                "task_classified",
+                "task_assigned",
+                "task_started",
+                "replan_triggered",
+                "replan_failed",
+                "approval_requested",
+                "approval_granted",
+                "approval_denied",
+                "gate_failed",
+                "gate_passed",
+                "task_completed",
+                "task_failed",
+            }:
+                trace.append(
+                    {
+                        "ts": entry.created_at.isoformat() if entry.created_at else None,
+                        "action": action,
+                        "summary": entry.summary,
+                        "actor": entry.agent_role or "system",
+                        "metadata": entry.metadata or {},
+                    }
+                )
+
+        risk_points = 0
+        risk_points += workflow["gate_failed"] * 3
+        risk_points += workflow["agent_failed"] * 2
+        risk_points += workflow["replan_triggered"] * 2
+        risk_points += workflow["approvals_denied"] * 3
+        risk_points += workflow["agent_retried"]
+        if risk_points >= 8:
+            risk_level = "high"
+        elif risk_points >= 4:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+
+        cost_data = {"total_tokens": int(task.total_tokens or 0), "total_cost_usd": float(task.total_cost_usd or 0.0)}
+
+        policies = {
+            "parallel_agents": bool(orchestration.parallel_agents),
+            "consultation_enabled": bool(orchestration.consultation.enabled),
+            "subagents_enabled": bool(orchestration.subagents.enabled),
+            "replan_enabled": bool(orchestration.replan.enabled),
+            "max_replans_per_task": int(orchestration.replan.max_replans_per_task),
+            "filesystem_sandbox": str(os.environ.get("RIGOVO_FILESYSTEM_SANDBOX_MODE", "project_root")),
+            "worktree_mode": str(os.environ.get("RIGOVO_WORKTREE_MODE", "project")),
+            "plugins_enabled": bool(plugins.enabled),
+            "connector_tools": bool(plugins.enable_connector_tools),
+            "mcp_tools": bool(plugins.enable_mcp_tools),
+            "action_tools": bool(plugins.enable_action_tools),
+            "plugin_trust_floor": str(plugins.min_trust_level),
+            "approval_required_actions_allowed": bool(plugins.allow_approval_required_actions),
+            "sensitive_payload_keys_allowed": bool(plugins.allow_sensitive_payload_keys),
+            "quality_gate_enabled": True,
+            "debate_enabled": True,
+            "debate_max_rounds": 2,
+        }
+
+        team_roles: list[str] = []
+        if task.pipeline_steps:
+            team_roles = [s.agent_role for s in task.pipeline_steps if s.agent_role]
+        if not team_roles:
+            pipeline = (getattr(task, "metadata", {}) or {}).get("pipeline", [])
+            for step in pipeline:
+                role = str(step.get("role", "")).strip()
+                if role:
+                    team_roles.append(role)
+
+        return {
+            "task_id": task_id,
+            "task_status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "task_type": task.task_type or "unclassified",
+            "risk": {"level": risk_level, "points": risk_points},
+            "cost": cost_data,
+            "team": {"size": len(set(team_roles)), "roles": sorted(set(team_roles))},
+            "workflow": workflow,
+            "policies": policies,
+            "decision_trace": sorted(
+                trace,
+                key=lambda x: x["ts"] or "",
+            )[-80:],
+        }
 
     @app.get("/v1/tasks/{task_id}/files")
     async def task_files(task_id: str) -> dict:
@@ -1547,9 +2148,43 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             return f"{'•' * 8}…{val[-4:]}"
         return "•••"
 
+    def _mask_dsn(dsn: str) -> str:
+        if not dsn:
+            return ""
+        if "@" in dsn:
+            tail = dsn.rsplit("@", 1)[1]
+            return f"••••@{tail}"
+        if len(dsn) > 12:
+            return f"{dsn[:6]}••••{dsn[-4:]}"
+        return "••••"
+
+    def _upsert_env_var(key: str, value: str) -> None:
+        env_path = root / ".env"
+        lines: list[str] = []
+        if env_path.exists():
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+        updated = False
+        out: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in line:
+                out.append(line)
+                continue
+            k, _ = line.split("=", 1)
+            if k.strip() == key:
+                updated = True
+                if value:
+                    out.append(f"{key}={value}")
+                continue
+            out.append(line)
+        if value and not updated:
+            out.append(f"{key}={value}")
+        env_path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+
     @app.get("/v1/settings")
     async def get_settings() -> dict:
         """Read current LLM settings — keys masked, all providers listed."""
+        await asyncio.sleep(0)
         repo = _settings_repo()
         all_keys = [meta["key_env"] for meta in PROVIDERS.values() if meta["key_env"]]
         all_keys += ["LLM_MODEL", "OLLAMA_BASE_URL", "OPENAI_BASE_URL"]
@@ -1570,13 +2205,17 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         # Read per-agent model overrides from rigovo.yml
         yml = config.yml if hasattr(config, "yml") else None
         agent_models: dict[str, str] = {}
+        agent_tools: dict[str, list[str]] = {}
         for role in AGENT_ROLES:
             override = ""
+            tools_override: list[str] = []
             if yml and hasattr(yml, "teams"):
                 eng = yml.teams.get("engineering")
                 if eng and role in eng.agents:
                     override = eng.agents[role].model
+                    tools_override = list(getattr(eng.agents[role], "tools", []) or [])
             agent_models[role] = override or DEFAULT_MODELS.get(role, "claude-sonnet-4-6")
+            agent_tools[role] = tools_override
 
         # Read rigovo.yml raw for the config editor — generate defaults if missing
         yml_path = root / "rigovo.yml"
@@ -1592,21 +2231,44 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "providers": providers,
             "default_model": stored.get("LLM_MODEL", "") or config.llm.model,
             "agent_models": agent_models,
+            "agent_tools": agent_tools,
             "available_models": AVAILABLE_MODELS,
             "default_agent_models": DEFAULT_MODELS,
             "ollama_url": stored.get("OLLAMA_BASE_URL", "") or "http://localhost:11434",
             "custom_base_url": stored.get("OPENAI_BASE_URL", ""),
+            "plugins_policy": {
+                "enabled": bool(config.yml.plugins.enabled),
+                "enable_connector_tools": bool(config.yml.plugins.enable_connector_tools),
+                "enable_mcp_tools": bool(config.yml.plugins.enable_mcp_tools),
+                "enable_action_tools": bool(config.yml.plugins.enable_action_tools),
+                "min_trust_level": str(config.yml.plugins.min_trust_level),
+                "dry_run": bool(config.yml.plugins.dry_run),
+                "allow_approval_required_actions": bool(config.yml.plugins.allow_approval_required_actions),
+                "allow_sensitive_payload_keys": bool(config.yml.plugins.allow_sensitive_payload_keys),
+                "allowed_plugin_ids": list(config.yml.plugins.allowed_plugin_ids),
+                "allowed_connector_operations": list(config.yml.plugins.allowed_connector_operations),
+                "allowed_mcp_operations": list(config.yml.plugins.allowed_mcp_operations),
+                "allowed_action_operations": list(config.yml.plugins.allowed_action_operations),
+            },
+            "database": {
+                "backend": str(config.db_backend or "sqlite"),
+                "local_db_path": str(config.local_db_path or ".rigovo/local.db"),
+                "dsn_configured": bool(config.db_url),
+                "dsn_masked": _mask_dsn(str(config.db_url or "")),
+            },
             "yml_raw": yml_raw,
         }
 
     @app.post("/v1/settings")
     async def update_settings(req: UpdateSettingsRequest) -> dict:
         """Update LLM settings — API keys stored encrypted in SQLite."""
+        await asyncio.sleep(0)
         import logging as _logging
         _logger = _logging.getLogger("rigovo.api.settings")
         changes: list[str] = []
         errors: list[str] = []
         repo = _settings_repo()
+        restart_required = False
 
         # 1. Save API keys (encrypted at rest in SQLite)
         if req.api_keys:
@@ -1638,7 +2300,44 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             _logger.error("Failed to save settings: %s", exc, exc_info=True)
             errors.append(f"Failed to save settings: {str(exc)}")
 
-        # 3. If raw YAML is provided, write it directly
+        # 3. Database backend settings (rigovo.yml + .env)
+        if req.db_backend is not None or req.local_db_path is not None or req.db_url is not None:
+            try:
+                yml_path = root / "rigovo.yml"
+                yml_data: dict = {}
+                if yml_path.exists():
+                    yml_data = yaml.safe_load(yml_path.read_text(encoding="utf-8")) or {}
+
+                db_section = yml_data.setdefault("database", {})
+                if not isinstance(db_section, dict):
+                    db_section = {}
+                    yml_data["database"] = db_section
+
+                if req.db_backend is not None:
+                    backend = str(req.db_backend).strip().lower()
+                    if backend not in {"sqlite", "postgres"}:
+                        errors.append("db_backend must be either 'sqlite' or 'postgres'")
+                    else:
+                        db_section["backend"] = backend
+                        changes.append("database.backend")
+                        restart_required = True
+
+                if req.local_db_path is not None:
+                    db_section["local_path"] = str(req.local_db_path).strip() or ".rigovo/local.db"
+                    changes.append("database.local_path")
+                    restart_required = True
+
+                if req.db_url is not None:
+                    _upsert_env_var("RIGOVO_DB_URL", str(req.db_url).strip())
+                    changes.append("RIGOVO_DB_URL")
+                    restart_required = True
+
+                yml_path.write_text(yaml.dump(yml_data, default_flow_style=False, sort_keys=False), encoding="utf-8")
+            except Exception as exc:
+                _logger.error("Failed to update database settings: %s", exc, exc_info=True)
+                errors.append(f"Failed to update database settings: {str(exc)}")
+
+        # 4. If raw YAML is provided, write it directly
         if req.yml_raw is not None:
             try:
                 yml_path = root / "rigovo.yml"
@@ -1653,36 +2352,82 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 _logger.error("Failed to write rigovo.yml: %s", exc, exc_info=True)
                 errors.append(f"Failed to write rigovo.yml: {str(exc)}")
 
-        # 4. Update rigovo.yml for per-agent model overrides
-        elif req.agent_models:
+        # 5. Structured rigovo.yml updates for models/tools/plugin policy.
+        elif req.agent_models or req.agent_tools or req.plugin_policy:
             try:
                 yml_path = root / "rigovo.yml"
                 yml_data: dict = {}
                 if yml_path.exists():
-                    yml_data = yaml.safe_load(yml_path.read_text()) or {}
+                    yml_data = yaml.safe_load(yml_path.read_text(encoding="utf-8")) or {}
 
                 teams = yml_data.setdefault("teams", {})
                 eng = teams.setdefault("engineering", {})
                 agents = eng.setdefault("agents", {})
 
-                for role, model in req.agent_models.items():
-                    if role not in AGENT_ROLES:
-                        continue
-                    if model == DEFAULT_MODELS.get(role, ""):
-                        if role in agents and isinstance(agents.get(role), dict) and "model" in agents[role]:
-                            del agents[role]["model"]
-                            if not agents[role]:
-                                del agents[role]
-                    else:
+                if req.agent_models:
+                    for role, model in req.agent_models.items():
+                        if role not in AGENT_ROLES:
+                            continue
+                        if model == DEFAULT_MODELS.get(role, ""):
+                            if role in agents and isinstance(agents.get(role), dict) and "model" in agents[role]:
+                                del agents[role]["model"]
+                                if not agents[role]:
+                                    del agents[role]
+                        else:
+                            agent_cfg = agents.setdefault(role, {})
+                            if not isinstance(agent_cfg, dict):
+                                agents[role] = {"model": model}
+                            else:
+                                agent_cfg["model"] = model
+                        changes.append(f"agent.{role}.model")
+
+                if req.agent_tools:
+                    for role, tools in req.agent_tools.items():
+                        if role not in AGENT_ROLES:
+                            continue
+                        cleaned = [str(t).strip() for t in (tools or []) if str(t).strip()]
                         agent_cfg = agents.setdefault(role, {})
                         if not isinstance(agent_cfg, dict):
-                            agents[role] = {"model": model}
-                        else:
-                            agent_cfg["model"] = model
-                    changes.append(f"agent.{role}.model")
+                            agent_cfg = {}
+                            agents[role] = agent_cfg
+                        if cleaned:
+                            agent_cfg["tools"] = cleaned
+                        elif "tools" in agent_cfg:
+                            del agent_cfg["tools"]
+                            if not agent_cfg:
+                                del agents[role]
+                        changes.append(f"agent.{role}.tools")
 
-                yml_path.write_text(yaml.dump(yml_data, default_flow_style=False, sort_keys=False))
-                _logger.info("Updated rigovo.yml agent models: %s", list(req.agent_models.keys()))
+                if req.plugin_policy:
+                    plugins_section = yml_data.setdefault("plugins", {})
+                    if not isinstance(plugins_section, dict):
+                        plugins_section = {}
+                        yml_data["plugins"] = plugins_section
+                    allowed_keys = {
+                        "enabled",
+                        "enable_connector_tools",
+                        "enable_mcp_tools",
+                        "enable_action_tools",
+                        "min_trust_level",
+                        "dry_run",
+                        "allow_approval_required_actions",
+                        "allow_sensitive_payload_keys",
+                        "allowed_plugin_ids",
+                        "allowed_connector_operations",
+                        "allowed_mcp_operations",
+                        "allowed_action_operations",
+                    }
+                    for key, value in req.plugin_policy.items():
+                        if key not in allowed_keys:
+                            continue
+                        plugins_section[key] = value
+                        changes.append(f"plugins.{key}")
+
+                yml_path.write_text(
+                    yaml.dump(yml_data, default_flow_style=False, sort_keys=False),
+                    encoding="utf-8",
+                )
+                _logger.info("Updated rigovo.yml structured settings")
             except Exception as exc:
                 _logger.error("Failed to update rigovo.yml: %s", exc, exc_info=True)
                 errors.append(f"Failed to write rigovo.yml: {str(exc)}")
@@ -1694,12 +2439,15 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 content={"status": "error", "detail": "; ".join(errors), "errors": errors, "changes": changes},
             )
 
-        # No restart needed — the LLM factory reads keys from SQLite
-        # on every provider creation, so changes take effect immediately.
+        # LLM key/model changes apply immediately. DB backend/path changes require restart.
+        note = ""
+        if restart_required:
+            note = "Database settings saved. Restart the engine/app to apply backend or DSN changes."
 
         return {
             "status": "updated",
             "changes": changes,
+            "note": note,
         }
 
     # ── Logs API ──────────────────────────────────────────────────────
@@ -1709,6 +2457,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
     @app.get("/v1/logs")
     async def list_log_files() -> dict:
         """List available log files with sizes and last-modified times."""
+        await asyncio.sleep(0)
         if not log_dir.exists():
             return {"log_dir": str(log_dir), "files": []}
         files = []
@@ -1732,6 +2481,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             tail: Number of lines from the end to return (default 200)
         """
         # Sanitize — only allow .log files in the log directory
+        await asyncio.sleep(0)
         if ".." in log_name or "/" in log_name or not log_name.endswith(".log"):
             raise HTTPException(status_code=400, detail="Invalid log file name")
 

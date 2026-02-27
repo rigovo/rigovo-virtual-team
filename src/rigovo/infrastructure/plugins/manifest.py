@@ -33,6 +33,7 @@ class MCPServerSpec(BaseModel):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
     url: str = ""
+    operations: list[str] = Field(default_factory=list)
 
 
 class HookSpec(BaseModel):

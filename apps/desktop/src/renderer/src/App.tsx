@@ -48,6 +48,7 @@ export default function App(): JSX.Element {
   const [onboardingMsg, setOnboardingMsg] = useState("");
   const [actionMsg, setActionMsg] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [workspaceMeta, setWorkspaceMeta] = useState<{ org: string; users: number }>({ org: "", users: 0 });
 
   /* ---- Engine management ---- */
   const startEngine = useCallback(async (projectDir?: string): Promise<void> => {
@@ -80,9 +81,14 @@ export default function App(): JSX.Element {
 
       const session = await readJson<AuthSession>(`${API_BASE}/v1/auth/session`);
       const projectList = await readJson<Project[]>(`${API_BASE}/v1/projects`);
+      const controlState = await readJson<{ personas?: Array<unknown>; workspace?: { workspaceName?: string; workspaceSlug?: string } }>(`${API_BASE}/v1/control/state`);
       const auth = session ?? { signed_in: false, email: "", full_name: "", first_name: "", last_name: "", role: "", organization_id: "", organization_name: "", workspace: { name: "", slug: "", admin_email: "", region: "" } };
       if (!active) return;
       setAuthSession(auth.signed_in ? auth : null);
+      setWorkspaceMeta({
+        org: auth.organization_name || auth.workspace?.name || controlState?.workspace?.workspaceName || controlState?.workspace?.workspaceSlug || "",
+        users: Array.isArray(controlState?.personas) ? controlState.personas.length : 0,
+      });
       if (projectList?.length) { setProjects(projectList); setActiveProject(projectList[0]); }
       setRoute(auth.signed_in ? "control" : "auth");
     })();
@@ -284,6 +290,8 @@ export default function App(): JSX.Element {
       <Sidebar
         userName={userName}
         userInitials={userInitials}
+        organizationName={workspaceMeta.org}
+        totalUsers={workspaceMeta.users}
         inbox={inbox}
         selected={selected}
         onSelect={(id) => { setShowSettings(false); setSelected(id); }}

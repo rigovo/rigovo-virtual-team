@@ -776,7 +776,10 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         cost_calc = MagicMock()
         cost_calc.calculate.return_value = 0.08
         result = await execute_agent_node(state, llm_factory, cost_calc)
-        assert any(e.get("type") == "integration_blocked" for e in result["events"])
+        blocked_events = [e for e in result["events"] if e.get("type") == "integration_blocked"]
+        assert blocked_events
+        assert "trust" in str(blocked_events[0].get("blocked_reason", "")).lower()
+        assert isinstance(blocked_events[0].get("latency_ms"), int)
 
     async def test_spawn_subtask_counts_tokens_and_emits_events(self):
         """spawn_subtask should run child loop and include its tokens in accounting."""

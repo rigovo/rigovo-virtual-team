@@ -22,8 +22,114 @@ interface TaskDetailProps {
 interface AuditEntry { id: string; action: string; agent_role: string; summary: string; created_at: string | null }
 interface CostData { total_tokens: number; total_cost_usd: number; per_agent: Record<string, { input_tokens: number; output_tokens: number; cost_usd: number; model: string }> }
 interface FilesData { files: string[]; by_agent: Record<string, string[]> }
+interface CollaborationData {
+  task_id: string;
+  status: string;
+  summary: {
+    consult_requests: number;
+    consult_completions: number;
+    debate_rounds: number;
+    integration_invoked: number;
+    integration_blocked: number;
+    replan_triggered: number;
+    replan_failed: number;
+  };
+  events: Array<{
+    type: string;
+    role?: string;
+    from_role?: string;
+    to_role?: string;
+    message_id?: string;
+    round?: number;
+    reviewer_feedback?: string;
+    kind?: string;
+    plugin_id?: string;
+    target_id?: string;
+    operation?: string;
+    blocked_reason?: string;
+    status?: string;
+    created_at?: number | string;
+  }>;
+  messages: Array<{
+    id: string;
+    type: string;
+    from_role: string;
+    to_role: string;
+    content: string;
+    status: string;
+    linked_to?: string;
+    created_at?: number;
+  }>;
+}
+interface GovernanceData {
+  task_id: string;
+  status: string;
+  summary: {
+    allow: number;
+    deny: number;
+    pending: number;
+    approval_events: number;
+    replan_events: number;
+    policy_events: number;
+    quality_gate_events: number;
+  };
+  timeline: Array<{
+    ts: string | null;
+    category: string;
+    decision: "allow" | "deny" | "pending" | "info";
+    action: string;
+    actor: string;
+    summary: string;
+    metadata: Record<string, unknown>;
+    source: string;
+  }>;
+}
+interface MissionData {
+  task_id: string;
+  task_status: string;
+  task_type: string;
+  risk: { level: "low" | "medium" | "high"; points: number };
+  cost: { total_tokens: number; total_cost_usd: number };
+  team: { size: number; roles: string[] };
+  workflow: {
+    replan_triggered: number;
+    replan_failed: number;
+    approvals_requested: number;
+    approvals_granted: number;
+    approvals_denied: number;
+    gate_failed: number;
+    agent_failed: number;
+    agent_retried: number;
+  };
+  policies: {
+    parallel_agents: boolean;
+    consultation_enabled: boolean;
+    subagents_enabled: boolean;
+    replan_enabled: boolean;
+    max_replans_per_task: number;
+    filesystem_sandbox: string;
+    worktree_mode: string;
+    plugins_enabled: boolean;
+    connector_tools: boolean;
+    mcp_tools: boolean;
+    action_tools: boolean;
+    plugin_trust_floor: string;
+    approval_required_actions_allowed: boolean;
+    sensitive_payload_keys_allowed: boolean;
+    quality_gate_enabled: boolean;
+    debate_enabled: boolean;
+    debate_max_rounds: number;
+  };
+  decision_trace: Array<{
+    ts: string | null;
+    action: string;
+    summary: string;
+    actor: string;
+    metadata: Record<string, unknown>;
+  }>;
+}
 
-type SideTab = "files" | "activity" | "cost";
+type SideTab = "files" | "activity" | "collab" | "governance" | "cost";
 
 /* ---- Role colors (for side panels) ---- */
 const ROLE_COLORS: Record<string, string> = {
@@ -137,26 +243,105 @@ function ProcessingState({ status }: { status: string }) {
   );
 }
 
+function MissionControl({ mission }: { mission: MissionData | null }) {
+  if (!mission) return null;
+  const riskClass =
+    mission.risk.level === "high"
+      ? "text-rose-400 bg-rose-500/10 border-rose-500/30"
+      : mission.risk.level === "medium"
+        ? "text-amber-400 bg-amber-500/10 border-amber-500/30"
+        : "text-emerald-400 bg-emerald-500/10 border-emerald-500/30";
+  return (
+    <div className="mb-4 rounded-2xl border border-white/10 bg-white/[0.02] p-4 animate-fadeup">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Mission Control</span>
+        <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase ${riskClass}`}>
+          Risk {mission.risk.level}
+        </span>
+        <span className="rounded-md bg-white/5 px-2 py-0.5 text-[10px] text-slate-400">
+          Team {mission.team.size} agent{mission.team.size === 1 ? "" : "s"}
+        </span>
+        <span className="rounded-md bg-white/5 px-2 py-0.5 text-[10px] text-slate-400">
+          Tokens {mission.cost.total_tokens.toLocaleString()}
+        </span>
+        <span className="rounded-md bg-white/5 px-2 py-0.5 text-[10px] text-emerald-400">
+          ${mission.cost.total_cost_usd.toFixed(4)}
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Master Brain Signals</p>
+          <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
+            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Parallel: {mission.policies.parallel_agents ? "on" : "off"}</span>
+            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Consult: {mission.policies.consultation_enabled ? "on" : "off"}</span>
+            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Debate: {mission.policies.debate_enabled ? `on (${mission.policies.debate_max_rounds})` : "off"}</span>
+            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Replan: {mission.policies.replan_enabled ? `on (${mission.policies.max_replans_per_task})` : "off"}</span>
+          </div>
+          <p className="mt-2 text-[10px] text-slate-500">
+            Replans {mission.workflow.replan_triggered} · Retries {mission.workflow.agent_retried} · Agent failures {mission.workflow.agent_failed}
+          </p>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Policy & Trust</p>
+          <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
+            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Sandbox: {mission.policies.filesystem_sandbox}</span>
+            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Worktree: {mission.policies.worktree_mode}</span>
+            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Plugins: {mission.policies.plugins_enabled ? "on" : "off"}</span>
+            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Trust: {mission.policies.plugin_trust_floor}</span>
+            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">MCP: {mission.policies.mcp_tools ? "on" : "off"}</span>
+          </div>
+          <p className="mt-2 text-[10px] text-slate-500">
+            Approvals {mission.workflow.approvals_granted}/{mission.workflow.approvals_requested} · Gate failures {mission.workflow.gate_failed}
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 rounded-xl border border-white/10 bg-black/10 p-3">
+        <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Decision Trace</p>
+        <div className="max-h-40 overflow-y-auto space-y-1.5">
+          {mission.decision_trace.slice(-12).map((evt, idx) => (
+            <div key={`${evt.action}-${idx}`} className="flex items-start gap-2 text-[11px]">
+              <span className="w-14 flex-shrink-0 font-mono text-[10px] text-slate-600">
+                {evt.ts ? new Date(evt.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--"}
+              </span>
+              <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-slate-400">{evt.actor || "system"}</span>
+              <span className="text-slate-300">{evt.summary || evt.action}</span>
+            </div>
+          ))}
+          {mission.decision_trace.length === 0 && (
+            <p className="text-[11px] text-slate-600">No decision trace recorded yet.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ================================================================== */
 /*  SidePanel — files / activity / cost tabs                           */
 /* ================================================================== */
 function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetailType | null; steps: TaskStep[] }) {
-  const [tab, setTab] = useState<SideTab>("files");
+  const [tab, setTab] = useState<SideTab>("governance");
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [costs, setCosts] = useState<CostData | null>(null);
   const [files, setFiles] = useState<FilesData | null>(null);
+  const [collab, setCollab] = useState<CollaborationData | null>(null);
+  const [gov, setGov] = useState<GovernanceData | null>(null);
 
   /* Fetch enrichment data */
   const fetchSide = useCallback(async () => {
     if (task.id.startsWith("demo-")) return;
-    const [a, c, f] = await Promise.all([
+    const [a, c, f, cb, gv] = await Promise.all([
       readJson<{ entries: AuditEntry[] }>(`${API_BASE}/v1/tasks/${task.id}/audit`),
       readJson<CostData>(`${API_BASE}/v1/tasks/${task.id}/costs`),
       readJson<FilesData>(`${API_BASE}/v1/tasks/${task.id}/files`),
+      readJson<CollaborationData>(`${API_BASE}/v1/tasks/${task.id}/collaboration`),
+      readJson<GovernanceData>(`${API_BASE}/v1/tasks/${task.id}/governance`),
     ]);
     if (a?.entries) setAudit(a.entries);
     if (c) setCosts(c);
     if (f) setFiles(f);
+    if (cb) setCollab(cb);
+    if (gv) setGov(gv);
   }, [task.id]);
 
   useEffect(() => { void fetchSide(); }, [fetchSide]);
@@ -185,6 +370,8 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
         {([
           ["files", `Files${fileCount ? ` (${fileCount})` : ""}`],
           ["activity", `Log${auditCount ? ` (${auditCount})` : ""}`],
+          ["collab", `Collab${collab?.events?.length ? ` (${collab.events.length})` : ""}`],
+          ["governance", `Governance${gov?.timeline?.length ? ` (${gov.timeline.length})` : ""}`],
           ["cost", "Cost"],
         ] as [SideTab, string][]).map(([t, label]) => (
           <button key={t} type="button" onClick={() => setTab(t)}
@@ -247,6 +434,134 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
             {auditCount === 0 && !detail && (
               <p className="text-xs text-slate-600 py-4 text-center">No events yet</p>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Collaboration tab ── */}
+      {tab === "collab" && (
+        <div className="panel flex-1 min-h-0 flex flex-col">
+          <div className="panel-header">
+            <span className="text-[10px]">{"\uD83E\uDD1D"}</span>
+            <span className="panel-header-label">Agent collaboration</span>
+          </div>
+          <div className="panel-body flex-1 min-h-0 overflow-y-auto px-3 py-3">
+            <div className="mb-3 grid grid-cols-2 gap-2 text-[10px]">
+              <div className="rounded-md bg-white/5 px-2 py-1 text-slate-400">
+                Consult: <span className="text-slate-200">{collab?.summary.consult_completions ?? 0}/{collab?.summary.consult_requests ?? 0}</span>
+              </div>
+              <div className="rounded-md bg-white/5 px-2 py-1 text-slate-400">
+                Debate rounds: <span className="text-slate-200">{collab?.summary.debate_rounds ?? 0}</span>
+              </div>
+              <div className="rounded-md bg-white/5 px-2 py-1 text-slate-400">
+                Integrations: <span className="text-slate-200">{collab?.summary.integration_invoked ?? 0}</span>
+              </div>
+              <div className="rounded-md bg-white/5 px-2 py-1 text-slate-400">
+                Blocked: <span className="text-rose-400">{collab?.summary.integration_blocked ?? 0}</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {(collab?.events || []).slice(-30).map((e, idx) => {
+                const label =
+                  e.type === "agent_consult_requested"
+                    ? `${e.from_role || "agent"} asked ${e.to_role || "agent"}`
+                    : e.type === "agent_consult_completed"
+                      ? `${e.to_role || "agent"} replied to ${e.from_role || "agent"}`
+                      : e.type === "debate_round"
+                        ? `Debate round ${e.round || 0}`
+                        : e.type === "integration_invoked"
+                          ? `${e.role || "agent"} used ${e.kind || "integration"}:${e.operation || "op"}`
+                          : e.type === "integration_blocked"
+                            ? `${e.role || "agent"} blocked by policy (${e.blocked_reason || "blocked"})`
+                            : e.type;
+                const ts = typeof e.created_at === "number"
+                  ? new Date(e.created_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+                  : "--:--";
+                return (
+                  <div key={`${e.type}-${idx}`} className="rounded-md border border-white/10 bg-white/[0.02] px-2 py-1.5">
+                    <div className="flex items-center gap-2">
+                      <span className="w-14 flex-shrink-0 text-[10px] font-mono text-slate-600">{ts}</span>
+                      <span className="text-[10px] text-slate-300">{label}</span>
+                    </div>
+                    {e.reviewer_feedback && (
+                      <p className="mt-1 text-[10px] text-amber-300/90 line-clamp-2">{e.reviewer_feedback}</p>
+                    )}
+                  </div>
+                );
+              })}
+              {(!collab || collab.events.length === 0) && (
+                <p className="py-3 text-center text-xs text-slate-600">No collaboration events recorded yet</p>
+              )}
+            </div>
+
+            {collab?.messages?.length ? (
+              <div className="mt-3 border-t border-white/10 pt-3">
+                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">A2A message thread</p>
+                <div className="space-y-1.5">
+                  {collab.messages.slice(-20).map((m) => (
+                    <div key={m.id} className="rounded-md bg-white/[0.02] px-2 py-1 text-[10px] text-slate-400">
+                      <span className={roleColor(m.from_role || "system")}>{m.from_role || "agent"}</span>
+                      <span className="mx-1 text-slate-600">→</span>
+                      <span className={roleColor(m.to_role || "system")}>{m.to_role || "agent"}</span>
+                      <span className="mx-1 text-slate-600">·</span>
+                      <span className="text-slate-500">{String(m.content || "").slice(0, 140)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {/* ── Governance tab ── */}
+      {tab === "governance" && (
+        <div className="panel flex-1 min-h-0 flex flex-col">
+          <div className="panel-header">
+            <span className="text-[10px]">{"\u2696\uFE0F"}</span>
+            <span className="panel-header-label">Governance timeline</span>
+          </div>
+          <div className="panel-body flex-1 min-h-0 overflow-y-auto px-3 py-3">
+            <div className="mb-3 grid grid-cols-3 gap-2 text-[10px]">
+              <div className="rounded-md bg-emerald-500/10 px-2 py-1 text-emerald-300">
+                Allow: <span className="font-semibold">{gov?.summary.allow ?? 0}</span>
+              </div>
+              <div className="rounded-md bg-rose-500/10 px-2 py-1 text-rose-300">
+                Deny: <span className="font-semibold">{gov?.summary.deny ?? 0}</span>
+              </div>
+              <div className="rounded-md bg-amber-500/10 px-2 py-1 text-amber-300">
+                Pending: <span className="font-semibold">{gov?.summary.pending ?? 0}</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {(gov?.timeline || []).slice(-40).map((g, idx) => {
+                const badgeCls =
+                  g.decision === "allow"
+                    ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                    : g.decision === "deny"
+                      ? "bg-rose-500/15 text-rose-300 border-rose-500/30"
+                      : g.decision === "pending"
+                        ? "bg-amber-500/15 text-amber-300 border-amber-500/30"
+                        : "bg-white/5 text-slate-400 border-white/10";
+                const ts = g.ts ? new Date(g.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--";
+                return (
+                  <div key={`${g.action}-${idx}`} className="rounded-md border border-white/10 bg-white/[0.02] px-2 py-1.5">
+                    <div className="flex items-center gap-2">
+                      <span className="w-14 flex-shrink-0 text-[10px] font-mono text-slate-600">{ts}</span>
+                      <span className={`rounded border px-1.5 py-0.5 text-[10px] uppercase ${badgeCls}`}>{g.decision}</span>
+                      <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-slate-500">{g.category}</span>
+                      <span className="text-[10px] text-slate-400">{g.actor}</span>
+                    </div>
+                    <p className="mt-1 text-[10px] text-slate-300">{g.summary || g.action}</p>
+                  </div>
+                );
+              })}
+              {(!gov || gov.timeline.length === 0) && (
+                <p className="py-3 text-center text-xs text-slate-600">No governance events recorded yet</p>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -390,6 +705,7 @@ function AgentStatusStrip({ steps }: { steps: TaskStep[] }) {
 /*  TaskDetail — main export                                           */
 /* ================================================================== */
 export default function TaskDetail({ task, detail, onAction, actionMsg }: TaskDetailProps) {
+  const [mission, setMission] = useState<MissionData | null>(null);
   const st = task.status.toLowerCase();
   const isApproval = st.includes("approval");
   const isCompleted = st.includes("complete");
@@ -398,6 +714,19 @@ export default function TaskDetail({ task, detail, onAction, actionMsg }: TaskDe
   const canResume = isFailed;  // Only failed/rejected tasks can be resumed
   const hasSteps = detail && detail.steps.length > 0;
   const isProcessing = !detail || !hasSteps;
+
+  useEffect(() => {
+    if (task.id.startsWith("demo-")) {
+      setMission(null);
+      return;
+    }
+    let alive = true;
+    void (async () => {
+      const data = await readJson<MissionData>(`${API_BASE}/v1/tasks/${task.id}/mission`);
+      if (alive) setMission(data);
+    })();
+    return () => { alive = false; };
+  }, [task.id, detail?.steps.length]);
 
   return (
     <div className="animate-fadeup h-full flex flex-col">
@@ -449,6 +778,8 @@ export default function TaskDetail({ task, detail, onAction, actionMsg }: TaskDe
           </div>
         )}
       </div>
+
+      <MissionControl mission={mission} />
 
       {/* ── Multi-panel content ── */}
       {isProcessing ? (

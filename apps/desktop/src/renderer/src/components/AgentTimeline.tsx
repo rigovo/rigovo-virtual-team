@@ -4,6 +4,7 @@
 /* ------------------------------------------------------------------ */
 import { useEffect, useRef } from "react";
 import type { TaskStep } from "../types";
+import ResponseRenderer from "./ResponseRenderer";
 
 /* ---- Role definitions ---- */
 const ROLES: Record<string, { icon: string; label: string; color: string; bg: string; ring: string; accent: string }> = {
@@ -116,9 +117,7 @@ function ChatBubble({ step, index }: { step: TaskStep; index: number }) {
           {/* Running with partial output */}
           {isRunning && step.output && (
             <div>
-              <pre className="whitespace-pre-wrap text-[13px] text-slate-300 font-mono leading-relaxed max-h-64 overflow-y-auto">
-                {step.output}
-              </pre>
+              <ResponseRenderer output={step.output} maxHeightClass="max-h-64" />
               <div className={`mt-2 flex items-center gap-2 ${role.color}`}>
                 <TypingDots />
                 <span className="text-[10px] italic opacity-60">Still working...</span>
@@ -128,9 +127,14 @@ function ChatBubble({ step, index }: { step: TaskStep; index: number }) {
 
           {/* Complete / failed output */}
           {!isRunning && step.output && (
-            <pre className="whitespace-pre-wrap text-[13px] text-slate-300 font-mono leading-relaxed max-h-72 overflow-y-auto">
-              {step.output}
-            </pre>
+            <ResponseRenderer output={step.output} maxHeightClass="max-h-72" />
+          )}
+
+          {/* Completed/failed with no textual output */}
+          {!isRunning && !step.output && (
+            <p className="text-[12px] text-slate-500 italic">
+              {isFailed ? "Execution failed before producing output." : "Step finished. No textual output."}
+            </p>
           )}
 
           {/* Files changed — code-card style */}
@@ -271,24 +275,26 @@ interface AgentTimelineProps {
 
 export default function AgentTimeline({ steps, taskType }: AgentTimelineProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const visibleSteps = steps.filter((s) => s.status !== "pending" || Boolean(s.output) || Boolean(s.started_at) || Boolean(s.completed_at));
+  const queuedAgents = steps.filter((s) => !visibleSteps.includes(s));
 
   /* Auto-scroll to bottom when new steps arrive or status changes */
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [steps.length, steps[steps.length - 1]?.status]);
+  }, [visibleSteps.length, visibleSteps[visibleSteps.length - 1]?.status]);
 
   if (steps.length === 0) return null;
 
   /* Group parallel steps together */
   const groups: Array<{ type: "single" | "parallel"; steps: TaskStep[]; startIndex: number }> = [];
   let i = 0;
-  while (i < steps.length) {
-    if (PARALLEL_ROLES.has(steps[i].agent.toLowerCase())) {
+  while (i < visibleSteps.length) {
+    if (PARALLEL_ROLES.has(visibleSteps[i].agent.toLowerCase())) {
       // Collect consecutive parallel-eligible agents
       const parallelSteps: TaskStep[] = [];
       const start = i;
-      while (i < steps.length && PARALLEL_ROLES.has(steps[i].agent.toLowerCase())) {
-        parallelSteps.push(steps[i]);
+      while (i < visibleSteps.length && PARALLEL_ROLES.has(visibleSteps[i].agent.toLowerCase())) {
+        parallelSteps.push(visibleSteps[i]);
         i++;
       }
       if (parallelSteps.length > 1) {
@@ -297,7 +303,7 @@ export default function AgentTimeline({ steps, taskType }: AgentTimelineProps) {
         groups.push({ type: "single", steps: parallelSteps, startIndex: start });
       }
     } else {
-      groups.push({ type: "single", steps: [steps[i]], startIndex: i });
+      groups.push({ type: "single", steps: [visibleSteps[i]], startIndex: i });
       i++;
     }
   }
@@ -326,6 +332,19 @@ export default function AgentTimeline({ steps, taskType }: AgentTimelineProps) {
           )}
         </div>
       ))}
+
+      {queuedAgents.length > 0 && (
+        <div className="ml-[52px] rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Queued agents</p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {queuedAgents.map((s, idx) => (
+              <span key={`${s.agent}-${idx}`} className={`rounded-md bg-white/5 px-2 py-0.5 text-[10px] ${getRole(s.agent).color}`}>
+                {getRole(s.agent).label}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Scroll anchor */}
       <div ref={bottomRef} />

@@ -11,7 +11,6 @@ export interface ElectronAPI {
     host?: string;
     port?: number;
     projectDir?: string;
-    rigovoBin?: string;
   }) => Promise<{ running: boolean; pid: number | null; apiUrl: string }>;
   stopEngine: () => Promise<{ running: boolean; pid: number | null; apiUrl: string }>;
   openExternal: (url: string) => Promise<void>;
@@ -27,4 +26,4 @@ const api: ElectronAPI = {
   openFolder: () => ipcRenderer.invoke("dialog:open-folder"),
 };
 
-contextBridge.exposeInMainWorld("electronAPI", api);
+contextBridge.exposeInMainWorld("electronAPI", Object.freeze(api));

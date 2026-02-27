@@ -351,6 +351,143 @@ class TestToolExecutor:
         assert result["blocked"] is True
         assert "payload" in result["error"].lower()
 
+    def test_invoke_integration_blocks_action_requiring_approval(self, project_dir):
+        executor = ToolExecutor(
+            project_dir,
+            integration_catalog={
+                "acme-actions": {
+                    "enabled": True,
+                    "trust_level": "verified",
+                    "capabilities": ["action"],
+                    "connectors": [],
+                    "mcp_servers": [],
+                    "actions": ["delete_records"],
+                    "action_requires_approval": {"delete_records": True},
+                }
+            },
+            integration_policy={
+                "enable_connector_tools": False,
+                "enable_mcp_tools": False,
+                "enable_action_tools": True,
+                "min_trust_level": "verified",
+                "allow_approval_required_actions": False,
+            },
+        )
+        result = executor._handle_invoke_integration(
+            {
+                "kind": "action",
+                "plugin_id": "acme-actions",
+                "target_id": "delete_records",
+                "operation": "run",
+                "payload": {"dataset": "prod-users"},
+            }
+        )
+        assert result["blocked"] is True
+        assert "requires approval" in result["error"].lower()
+
+    def test_invoke_integration_allows_action_requiring_approval_with_policy_override(self, project_dir):
+        executor = ToolExecutor(
+            project_dir,
+            integration_catalog={
+                "acme-actions": {
+                    "enabled": True,
+                    "trust_level": "verified",
+                    "capabilities": ["action"],
+                    "connectors": [],
+                    "mcp_servers": [],
+                    "actions": ["delete_records"],
+                    "action_requires_approval": {"delete_records": True},
+                }
+            },
+            integration_policy={
+                "enable_connector_tools": False,
+                "enable_mcp_tools": False,
+                "enable_action_tools": True,
+                "min_trust_level": "verified",
+                "allow_approval_required_actions": True,
+                "dry_run": True,
+            },
+        )
+        result = executor._handle_invoke_integration(
+            {
+                "kind": "action",
+                "plugin_id": "acme-actions",
+                "target_id": "delete_records",
+                "operation": "run",
+                "payload": {"dataset": "prod-users"},
+            }
+        )
+        assert result["blocked"] is False
+        assert result["dry_run"] is True
+
+    def test_invoke_integration_blocks_sensitive_payload_keys_by_default(self, project_dir):
+        executor = ToolExecutor(
+            project_dir,
+            integration_catalog={
+                "acme-slack": {
+                    "enabled": True,
+                    "trust_level": "verified",
+                    "capabilities": ["connector"],
+                    "connectors": ["slack"],
+                    "connector_operations": {"slack": ["post_message"]},
+                    "mcp_servers": [],
+                    "actions": [],
+                }
+            },
+            integration_policy={
+                "enable_connector_tools": True,
+                "enable_mcp_tools": False,
+                "enable_action_tools": False,
+                "min_trust_level": "verified",
+                "allow_sensitive_payload_keys": False,
+            },
+        )
+        result = executor._handle_invoke_integration(
+            {
+                "kind": "connector",
+                "plugin_id": "acme-slack",
+                "target_id": "slack",
+                "operation": "post_message",
+                "payload": {"channel": "alerts", "api_key": "secret-value"},
+            }
+        )
+        assert result["blocked"] is True
+        assert "sensitive payload" in result["error"].lower()
+
+    def test_invoke_integration_blocks_mcp_operation_not_allowlisted(self, project_dir):
+        executor = ToolExecutor(
+            project_dir,
+            integration_catalog={
+                "acme-mcp": {
+                    "enabled": True,
+                    "trust_level": "verified",
+                    "capabilities": ["mcp"],
+                    "connectors": [],
+                    "mcp_servers": ["knowledge"],
+                    "mcp_operations": {"knowledge": ["query"]},
+                    "actions": [],
+                }
+            },
+            integration_policy={
+                "enable_connector_tools": False,
+                "enable_mcp_tools": True,
+                "enable_action_tools": False,
+                "min_trust_level": "verified",
+                "allowed_mcp_operations": ["query"],
+            },
+        )
+        result = executor._handle_invoke_integration(
+            {
+                "kind": "mcp",
+                "plugin_id": "acme-mcp",
+                "target_id": "knowledge",
+                "operation": "write",
+                "payload": {"doc": "x"},
+            }
+        )
+        assert result["blocked"] is True
+        assert "mcp" in result["error"].lower()
+
     def test_tool_executor_worktree_sandbox_writes_inside_worktree(self, project_dir):
         worktree = project_dir / "worktrees" / "w1"
         worktree.mkdir(parents=True)

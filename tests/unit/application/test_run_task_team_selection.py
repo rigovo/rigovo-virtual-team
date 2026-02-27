@@ -8,6 +8,12 @@ from uuid import UUID
 import pytest
 
 from rigovo.application.commands.run_task import RunTaskCommand
+from rigovo.infrastructure.plugins.manifest import (
+    ActionSpec,
+    ConnectorSpec,
+    MCPServerSpec,
+    PluginManifest,
+)
 
 
 class _MockDomainPlugin:
@@ -61,3 +67,46 @@ def test_build_available_teams_raises_for_missing_requested_team():
     with pytest.raises(ValueError, match="Requested team"):
         cmd._build_available_teams("missing-team")
 
+
+def test_build_integration_catalog_exposes_action_and_mcp_policy_metadata():
+    cmd = _make_cmd()
+    cmd._plugin_registry = SimpleNamespace(
+        load=lambda include_disabled=False: [
+            PluginManifest(
+                id="acme-suite",
+                name="ACME Suite",
+                version="1.0.0",
+                trust_level="verified",
+                capabilities=["connector", "mcp", "action"],
+                connectors=[
+                    ConnectorSpec(
+                        id="slack",
+                        provider="slack",
+                        outbound_actions=["post_message"],
+                    )
+                ],
+                mcp_servers=[
+                    MCPServerSpec(
+                        id="knowledge",
+                        transport="stdio",
+                        command="acme-mcp",
+                        operations=["query", "fetch_context"],
+                    )
+                ],
+                actions=[
+                    ActionSpec(
+                        id="delete_records",
+                        description="Delete records",
+                        requires_approval=True,
+                    )
+                ],
+            )
+        ]
+    )
+
+    catalog = cmd._build_integration_catalog()
+    plugin = catalog["acme-suite"]
+
+    assert plugin["connector_operations"]["slack"] == ["post_message"]
+    assert plugin["mcp_operations"]["knowledge"] == ["query", "fetch_context"]
+    assert plugin["action_requires_approval"]["delete_records"] is True

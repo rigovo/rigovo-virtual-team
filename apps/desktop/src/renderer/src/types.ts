@@ -184,7 +184,6 @@ export interface ElectronAPI {
     host?: string;
     port?: number;
     projectDir?: string;
-    rigovoBin?: string;
   }) => Promise<EngineStatus>;
   stopEngine: () => Promise<EngineStatus>;
   openExternal: (url: string) => Promise<void>;

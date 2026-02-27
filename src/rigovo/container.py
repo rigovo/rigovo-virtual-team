@@ -204,6 +204,15 @@ class Container:
                 "enable_action_tools": self.config.yml.plugins.enable_action_tools,
                 "min_trust_level": self.config.yml.plugins.min_trust_level,
                 "allowed_plugin_ids": list(self.config.yml.plugins.allowed_plugin_ids),
+                "allowed_connector_operations": list(self.config.yml.plugins.allowed_connector_operations),
+                "allowed_mcp_operations": list(self.config.yml.plugins.allowed_mcp_operations),
+                "allowed_action_operations": list(self.config.yml.plugins.allowed_action_operations),
+                "allow_approval_required_actions": bool(
+                    self.config.yml.plugins.allow_approval_required_actions
+                ),
+                "allow_sensitive_payload_keys": bool(
+                    self.config.yml.plugins.allow_sensitive_payload_keys
+                ),
                 "allowed_shell_commands": list(self.config.yml.plugins.allowed_shell_commands),
                 "dry_run": self.config.yml.plugins.dry_run,
             },

@@ -7,6 +7,8 @@ import { statusClass } from "../defaults";
 interface SidebarProps {
   userName: string;
   userInitials: string;
+  organizationName?: string;
+  totalUsers?: number;
   inbox: InboxTask[];
   selected: string;
   onSelect: (id: string) => void;
@@ -24,7 +26,8 @@ function splitTasks(inbox: InboxTask[]) {
   const active: InboxTask[] = [];
   const done: InboxTask[] = [];
   for (const t of inbox) {
-    if (t.status.includes("complete") || t.status.includes("fail") || t.status.includes("reject")) {
+    const s = String(t.status || "").toLowerCase();
+    if (s.includes("complete") || s.includes("fail") || s.includes("reject")) {
       done.push(t);
     } else {
       active.push(t);
@@ -34,7 +37,7 @@ function splitTasks(inbox: InboxTask[]) {
 }
 
 export default function Sidebar({
-  userName, userInitials, inbox, selected, onSelect,
+  userName, userInitials, organizationName, totalUsers, inbox, selected, onSelect,
   onNewTask, onOpenFolder, activeProject, projectLoading,
   onSignOut, apiReachable, onOpenSettings
 }: SidebarProps) {
@@ -48,10 +51,22 @@ export default function Sidebar({
           R
         </div>
         <span className="text-sm font-semibold text-slate-200">Rigovo</span>
+        {organizationName && (
+          <span className="text-[10px] text-slate-500 truncate max-w-[90px]" title={organizationName}>
+            {organizationName}
+          </span>
+        )}
         <span className={`ml-auto h-2 w-2 rounded-full ${
           apiReachable === null ? "bg-slate-600" : apiReachable ? "bg-emerald-500" : "bg-rose-400"
         }`} title={apiReachable === null ? "Checking..." : apiReachable ? "Connected" : "Disconnected"} />
       </div>
+      {(organizationName || typeof totalUsers === "number") && (
+        <div className="px-4 pb-2">
+          <p className="text-[10px] text-slate-600">
+            {organizationName ? `${organizationName}` : "Workspace"}{typeof totalUsers === "number" ? ` · ${totalUsers} users` : ""}
+          </p>
+        </div>
+      )}
 
       {/* New task + open folder */}
       <div className="px-3 mb-1">

@@ -66,6 +66,7 @@ function fileIcon(path: string): string {
 export default function FileViewer({ taskId, filesByAgent, allFiles }: FileViewerProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<FileContent | null>(null);
+  const [fileError, setFileError] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set(Object.keys(filesByAgent)));
 
@@ -73,21 +74,17 @@ export default function FileViewer({ taskId, filesByAgent, allFiles }: FileViewe
   const fetchFileContent = useCallback(async (path: string) => {
     setLoading(true);
     setFileContent(null);
+    setFileError("");
 
     // Try fetching from backend
-    const res = await readJson<{ content: string; path: string }>(
+    const res = await readJson<{ content: string; path: string; error?: string }>(
       `${API_BASE}/v1/tasks/${taskId}/files/${encodeURIComponent(path)}`
     );
 
-    if (res?.content) {
+    if (res?.content && res.content.length > 0) {
       setFileContent({ path, content: res.content, language: detectLanguage(path) });
     } else {
-      // For demo mode or if endpoint doesn't exist yet, show placeholder
-      setFileContent({
-        path,
-        content: `// File: ${path}\n// Content will be available when the backend returns file data.\n// This is a placeholder showing the file was modified by agents.\n`,
-        language: detectLanguage(path),
-      });
+      setFileError(res?.error || "File content is unavailable for this run. The file path is recorded, but content was not persisted.");
     }
     setLoading(false);
   }, [taskId]);
@@ -208,6 +205,13 @@ export default function FileViewer({ taskId, filesByAgent, allFiles }: FileViewe
                   links: false,
                 }}
               />
+            ) : fileError ? (
+              <div className="flex h-full items-start justify-start p-3">
+                <div className="w-full rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-300">Evidence unavailable</p>
+                  <p className="mt-1 text-xs text-amber-100/90">{fileError}</p>
+                </div>
+              </div>
             ) : null}
           </div>
         </div>

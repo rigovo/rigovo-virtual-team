@@ -253,6 +253,11 @@ class PluginsSchema(BaseModel):
     enable_action_tools: bool = False
     min_trust_level: str = "verified"  # community|verified|internal
     allowed_plugin_ids: list[str] = Field(default_factory=list)
+    allowed_connector_operations: list[str] = Field(default_factory=list)
+    allowed_mcp_operations: list[str] = Field(default_factory=list)
+    allowed_action_operations: list[str] = Field(default_factory=list)
+    allow_approval_required_actions: bool = False
+    allow_sensitive_payload_keys: bool = False
     allowed_shell_commands: list[str] = Field(default_factory=list)
     dry_run: bool = True
 

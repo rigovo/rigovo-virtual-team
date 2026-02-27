@@ -841,8 +841,10 @@ async def _run_agentic_loop(
                         events=events,
                     )
             else:
+                started = time.monotonic()
                 result_str = await tool_executor.execute(tc["name"], tc["input"])
                 if tc["name"] == "invoke_integration":
+                    elapsed_ms = int((time.monotonic() - started) * MS_PER_SECOND)
                     try:
                         integration_result = json.loads(result_str)
                     except json.JSONDecodeError:
@@ -860,6 +862,9 @@ async def _run_agentic_loop(
                         "target_id": str(tc.get("input", {}).get("target_id", "")),
                         "operation": str(tc.get("input", {}).get("operation", "")),
                         "dry_run": bool(integration_result.get("dry_run", False)),
+                        "blocked_reason": str(integration_result.get("error", "")),
+                        "status": str(integration_result.get("status", "")),
+                        "latency_ms": elapsed_ms,
                     })
             return tc, result_str
 

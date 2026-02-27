@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import { ChildProcess, spawn } from "node:child_process";
+import { statSync } from "node:fs";
 import { is } from "@electron-toolkit/utils";
 
 /* ------------------------------------------------------------------ */
@@ -19,6 +20,32 @@ interface RuntimeConfig {
   electronSandbox: boolean;
   worktreeMode: "project" | "git_worktree";
   worktreeRoot: string;
+}
+
+const SAFE_ENGINE_HOSTS = new Set([
+  "127.0.0.1",
+  "localhost",
+  "::1",
+]);
+
+function sanitizeEngineHost(raw?: string): string {
+  const host = String(raw ?? "127.0.0.1").trim().toLowerCase();
+  return SAFE_ENGINE_HOSTS.has(host) ? host : "127.0.0.1";
+}
+
+function sanitizeEnginePort(raw?: number): number {
+  if (typeof raw !== "number" || !Number.isInteger(raw)) return 8787;
+  if (raw < 1 || raw > 65535) return 8787;
+  return raw;
+}
+
+function isSafeExternalUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" || u.protocol === "http:";
+  } catch {
+    return false;
+  }
 }
 
 function parseBoolEnv(name: string, defaultValue: boolean): boolean {
@@ -48,18 +75,30 @@ function engineStatus(host = "127.0.0.1", port = 8787): EngineStatus {
 function startEngine(
   host = "127.0.0.1",
   port = 8787,
-  projectDir?: string,
-  rigovoBin = "rigovo"
+  projectDir?: string
 ): EngineStatus {
   const status = engineStatus(host, port);
   if (status.running) return status;
 
+  const rigovoBin = String(process.env.RIGOVO_BIN ?? "rigovo").trim() || "rigovo";
   const args = ["serve", "--host", host, "--port", String(port)];
+  let safeProjectDir: string | undefined;
   if (projectDir) {
-    args.push("--project", projectDir);
+    const candidate = String(projectDir).trim();
+    try {
+      const stats = statSync(candidate);
+      if (stats.isDirectory()) {
+        safeProjectDir = candidate;
+      }
+    } catch {
+      safeProjectDir = undefined;
+    }
+  }
+  if (safeProjectDir) {
+    args.push("--project", safeProjectDir);
   }
   const opts: { cwd?: string } = {};
-  if (projectDir) opts.cwd = projectDir;
+  if (safeProjectDir) opts.cwd = safeProjectDir;
   const runtime = runtimeConfig();
 
   engineProcess = spawn(rigovoBin, args, {
@@ -101,14 +140,21 @@ function registerIpc(): void {
 
   ipcMain.handle(
     "engine:start",
-    (_event, args: { host?: string; port?: number; projectDir?: string; rigovoBin?: string }) =>
-      startEngine(args.host, args.port, args.projectDir, args.rigovoBin)
+    (_event, args: { host?: string; port?: number; projectDir?: string }) =>
+      startEngine(
+        sanitizeEngineHost(args?.host),
+        sanitizeEnginePort(args?.port),
+        args?.projectDir
+      )
   );
 
   ipcMain.handle("engine:stop", () => stopEngine());
 
   // Open URL in system browser (for WorkOS AuthKit redirect flow)
   ipcMain.handle("shell:open-external", (_event, url: string) => {
+    if (!isSafeExternalUrl(url)) {
+      throw new Error("Blocked unsafe external URL");
+    }
     return shell.openExternal(url);
   });
 
@@ -162,13 +208,20 @@ function createWindow(): void {
 /*  App lifecycle                                                     */
 /* ------------------------------------------------------------------ */
 
-app.whenReady().then(() => {
+async function bootstrapDesktop(): Promise<void> {
+  await app.whenReady();
   registerIpc();
   createWindow();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+}
+
+void bootstrapDesktop().catch((err: unknown) => {
+  // eslint-disable-next-line no-console
+  console.error("Failed to initialize Electron app", err);
+  app.exit(1);
 });
 
 app.on("window-all-closed", () => {

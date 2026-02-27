@@ -61,11 +61,13 @@ check_env_var() {
 start_api() {
   API_URL="http://${API_HOST}:${API_PORT}"
   echo "[rigovo-e2e] starting control-plane API at ${API_URL}"
-  (
-    cd "${ROOT_DIR}"
-    RIGOVO_API_PORT="${API_PORT}" python3 -m rigovo.main serve --host "${API_HOST}" --port "${API_PORT}" --project "${ROOT_DIR}"
-  ) >"${API_LOG}" 2>&1 &
-  API_PID=$!
+(
+  cd "${ROOT_DIR}"
+  PYTHONPATH="${ROOT_DIR}/src:${PYTHONPATH:-}" \
+  RIGOVO_API_PORT="${API_PORT}" \
+  python3 -m rigovo.main serve --host "${API_HOST}" --port "${API_PORT}" --project "${ROOT_DIR}"
+) >"${API_LOG}" 2>&1 &
+API_PID=$!
 
   sleep 0.5
   if ! kill -0 "${API_PID}" >/dev/null 2>&1; then

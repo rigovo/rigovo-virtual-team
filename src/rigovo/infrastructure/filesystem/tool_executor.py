@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_RESULT_CHARS = 30_000
 MAX_INTEGRATION_PAYLOAD_CHARS = 20_000
 OPERATION_PATTERN = re.compile(r"^[a-zA-Z0-9_.:-]{1,64}$")
+SENSITIVE_KEY_PATTERN = re.compile(
+    r"(password|secret|token|api[_-]?key|private[_-]?key|client[_-]?secret)",
+    re.IGNORECASE,
+)
 
 
 def _truncate_result(result_str: str) -> str:
@@ -28,6 +32,23 @@ def _truncate_result(result_str: str) -> str:
         return result_str
     truncated = result_str[:MAX_TOOL_RESULT_CHARS]
     return truncated + f"\n... [truncated, {len(result_str):,} chars total]"
+
+
+def _collect_sensitive_payload_keys(payload: Any, prefix: str = "") -> list[str]:
+    """Collect payload key paths that look like sensitive material."""
+    hits: list[str] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            key_str = str(key)
+            path = f"{prefix}.{key_str}" if prefix else key_str
+            if SENSITIVE_KEY_PATTERN.search(key_str):
+                hits.append(path)
+            hits.extend(_collect_sensitive_payload_keys(value, path))
+    elif isinstance(payload, list):
+        for idx, value in enumerate(payload):
+            path = f"{prefix}[{idx}]" if prefix else f"[{idx}]"
+            hits.extend(_collect_sensitive_payload_keys(value, path))
+    return hits
 
 
 class ToolExecutor:
@@ -270,6 +291,15 @@ class ToolExecutor:
                 f"Payload too large; max {MAX_INTEGRATION_PAYLOAD_CHARS} chars"
             )
 
+        if not bool(self._integration_policy.get("allow_sensitive_payload_keys", False)):
+            sensitive_keys = _collect_sensitive_payload_keys(payload)
+            if sensitive_keys:
+                preview = ", ".join(sensitive_keys[:5])
+                return (
+                    "Sensitive payload keys require explicit policy allow-list "
+                    f"(found: {preview})"
+                )
+
         policy_flag_by_kind = {
             "connector": "enable_connector_tools",
             "mcp": "enable_mcp_tools",
@@ -312,6 +342,16 @@ class ToolExecutor:
             return (
                 f"Target '{target_id}' not exposed by plugin '{plugin_id}' for kind '{kind}'"
             )
+        global_ops_by_kind = {
+            "connector": set(self._integration_policy.get("allowed_connector_operations", []) or []),
+            "mcp": set(self._integration_policy.get("allowed_mcp_operations", []) or []),
+            "action": set(self._integration_policy.get("allowed_action_operations", []) or []),
+        }
+        global_ops = global_ops_by_kind[kind]
+        if global_ops and operation not in global_ops:
+            return (
+                f"Operation '{operation}' is not allowed by global {kind} policy"
+            )
         if kind == "connector":
             connector_ops = plugin.get("connector_operations", {}) or {}
             allowed_ops = connector_ops.get(target_id, [])
@@ -319,7 +359,23 @@ class ToolExecutor:
                 return (
                     f"Operation '{operation}' not allowed for connector target '{target_id}'"
                 )
+        if kind == "mcp":
+            mcp_ops = plugin.get("mcp_operations", {}) or {}
+            allowed_ops = mcp_ops.get(target_id, [])
+            if isinstance(allowed_ops, list) and allowed_ops and operation not in set(allowed_ops):
+                return (
+                    f"Operation '{operation}' not allowed for MCP target '{target_id}'"
+                )
         if kind == "action":
+            requires_approval = (
+                (plugin.get("action_requires_approval", {}) or {}).get(target_id, False)
+            )
+            if bool(requires_approval) and not bool(
+                self._integration_policy.get("allow_approval_required_actions", False)
+            ):
+                return (
+                    f"Action '{target_id}' requires approval and is blocked by policy"
+                )
             if operation not in {"run", target_id}:
                 return (
                     f"Operation '{operation}' not allowed for action target '{target_id}'"

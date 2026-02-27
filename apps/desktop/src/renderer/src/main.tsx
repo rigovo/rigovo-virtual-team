@@ -14,7 +14,7 @@ function renderBootError(message: string): void {
   pre.style.background = "#fff1f2";
   pre.style.color = "#881337";
   pre.textContent = `Rigovo desktop failed to boot:\n${message}`;
-  document.body.innerHTML = "";
+  document.body.replaceChildren();
   document.body.appendChild(pre);
 }
 
