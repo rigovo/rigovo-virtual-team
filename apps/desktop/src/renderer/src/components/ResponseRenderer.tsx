@@ -39,7 +39,7 @@ function inlineCode(text: string): Array<string | JSX.Element> {
   return parts.map((part, idx) => {
     if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
       return (
-        <code key={idx} className="rounded bg-white/10 px-1 py-0.5 text-[12px] text-slate-200">
+        <code key={idx} className="rounded bg-[rgba(0,0,0,0.05)] px-1 py-0.5 text-[12px] text-[var(--ui-text)]">
           {part.slice(1, -1)}
         </code>
       );
@@ -54,7 +54,7 @@ function renderParagraph(text: string, key: string) {
 
   if (lines.every((line) => /^\s*[-*]\s+/.test(line))) {
     return (
-      <ul key={key} className="list-disc space-y-1 pl-5 text-[13px] leading-relaxed text-slate-300">
+      <ul key={key} className="list-disc space-y-1 pl-5 text-[13px] leading-relaxed text-[var(--ui-text-secondary)]">
         {lines.map((line, idx) => (
           <li key={`${key}-li-${idx}`}>{inlineCode(line.replace(/^\s*[-*]\s+/, ""))}</li>
         ))}
@@ -64,7 +64,7 @@ function renderParagraph(text: string, key: string) {
 
   if (lines.every((line) => /^\s*\d+\.\s+/.test(line))) {
     return (
-      <ol key={key} className="list-decimal space-y-1 pl-5 text-[13px] leading-relaxed text-slate-300">
+      <ol key={key} className="list-decimal space-y-1 pl-5 text-[13px] leading-relaxed text-[var(--ui-text-secondary)]">
         {lines.map((line, idx) => (
           <li key={`${key}-li-${idx}`}>{inlineCode(line.replace(/^\s*\d+\.\s+/, ""))}</li>
         ))}
@@ -78,10 +78,10 @@ function renderParagraph(text: string, key: string) {
     const content = line.replace(/^#{1,4}\s+/, "");
     const cls =
       level <= 1
-        ? "text-[15px] font-semibold text-slate-100"
+        ? "text-[15px] font-semibold text-[var(--ui-text)]"
         : level === 2
-          ? "text-[14px] font-semibold text-slate-200"
-          : "text-[13px] font-semibold text-slate-300";
+          ? "text-[14px] font-semibold text-[var(--ui-text)]"
+          : "text-[13px] font-semibold text-[var(--ui-text-secondary)]";
     return (
       <p key={key} className={cls}>
         {inlineCode(content)}
@@ -90,7 +90,7 @@ function renderParagraph(text: string, key: string) {
   }
 
   return (
-    <p key={key} className="text-[13px] leading-relaxed text-slate-300">
+    <p key={key} className="text-[13px] leading-relaxed text-[var(--ui-text-secondary)]">
       {lines.map((line, idx) => (
         <Fragment key={`${key}-line-${idx}`}>
           {inlineCode(line)}
@@ -109,9 +109,9 @@ function renderText(text: string, key: string) {
     if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
       const pretty = JSON.stringify(JSON.parse(trimmed), null, 2);
       return (
-        <div key={key} className="overflow-x-auto rounded-xl border border-white/10 bg-black/20 p-3">
-          <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">JSON</p>
-          <pre className="whitespace-pre-wrap text-[12px] leading-relaxed text-slate-300">{pretty}</pre>
+        <div key={key} className="overflow-x-auto rounded-xl border border-[var(--ui-border)] bg-[rgba(0,0,0,0.02)] p-3">
+          <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-muted)]">JSON</p>
+          <pre className="whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--ui-text-secondary)]">{pretty}</pre>
         </div>
       );
     }
@@ -139,11 +139,11 @@ export default function ResponseRenderer({ output, maxHeightClass = "max-h-72" }
       {segments.map((segment, idx) => {
         if (segment.type === "code") {
           return (
-            <div key={`code-${idx}`} className="overflow-x-auto rounded-xl border border-white/10 bg-black/20 p-3">
-              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            <div key={`code-${idx}`} className="overflow-x-auto rounded-xl border border-[var(--ui-border)] bg-[rgba(0,0,0,0.02)] p-3">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-muted)]">
                 {segment.language || "code"}
               </p>
-              <pre className="whitespace-pre-wrap text-[12px] leading-relaxed text-slate-300">{segment.value}</pre>
+              <pre className="whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--ui-text-secondary)]">{segment.value}</pre>
             </div>
           );
         }

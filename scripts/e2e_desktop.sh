@@ -5,9 +5,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 API_HOST="${RIGOVO_API_HOST:-127.0.0.1}"
 API_PORT="${RIGOVO_API_PORT:-8787}"
 API_URL="http://${API_HOST}:${API_PORT}"
+CALLBACK_URI="http://127.0.0.1:${API_PORT}/v1/auth/callback"
 API_LOG="${ROOT_DIR}/.rigovo/e2e-api.log"
 API_PID=""
 E2E_INSTALL="${RIGOVO_E2E_INSTALL:-auto}" # auto|always|never
+DEMO_MODE=0
 
 cleanup() {
   echo "[rigovo-e2e] cleaning up..."
@@ -115,26 +117,34 @@ trap cleanup EXIT INT TERM
 # ── Start API (prefer fixed port 8787 for stable WorkOS callback URI) ──
 selected_port="$(find_open_port "${API_PORT}")"
 if [[ -z "${selected_port}" ]]; then
-  echo "[rigovo-e2e] no free local API port found"
-  exit 1
-fi
-if [[ "${selected_port}" != "${API_PORT}" ]]; then
-  echo "[rigovo-e2e] warning: preferred port ${API_PORT} in use, falling back to ${selected_port}"
-  echo "[rigovo-e2e] update WorkOS callback URI if needed"
-fi
-API_PORT="${selected_port}"
-API_URL="http://${API_HOST}:${API_PORT}"
-CALLBACK_URI="http://127.0.0.1:${API_PORT}/v1/auth/callback"
-start_api
+  echo "[rigovo-e2e] no free local API port found via probe; trying existing API at ${API_URL}"
+  if curl -fsS "${API_URL}/health" >/dev/null 2>&1; then
+    echo "[rigovo-e2e] reusing existing API at ${API_URL}"
+  else
+    echo "[rigovo-e2e] no reusable API found; continuing in desktop demo mode"
+    API_URL="http://127.0.0.1:9"
+    CALLBACK_URI="(demo mode)"
+    DEMO_MODE=1
+  fi
+else
+  if [[ "${selected_port}" != "${API_PORT}" ]]; then
+    echo "[rigovo-e2e] warning: preferred port ${API_PORT} in use, falling back to ${selected_port}"
+    echo "[rigovo-e2e] update WorkOS callback URI if needed"
+  fi
+  API_PORT="${selected_port}"
+  API_URL="http://${API_HOST}:${API_PORT}"
+  CALLBACK_URI="http://127.0.0.1:${API_PORT}/v1/auth/callback"
+  start_api
 
-if ! wait_for_health; then
-  echo "[rigovo-e2e] API failed health check after 30s. tailing logs:"
-  tail -n 120 "${API_LOG}" || true
-  exit 1
-fi
+  if ! wait_for_health; then
+    echo "[rigovo-e2e] API failed health check after 30s. tailing logs:"
+    tail -n 120 "${API_LOG}" || true
+    exit 1
+  fi
 
-echo "[rigovo-e2e] API healthy at ${API_URL}"
-echo "[rigovo-e2e] logs: ${API_LOG}"
+  echo "[rigovo-e2e] API healthy at ${API_URL}"
+  echo "[rigovo-e2e] logs: ${API_LOG}"
+fi
 
 # ── Launch Electron desktop app ──
 echo ""
@@ -148,4 +158,11 @@ echo "  │  Register this callback URI in WorkOS Dashboard:    │"
 echo "  │  https://dashboard.workos.com → Redirects           │"
 echo "  └─────────────────────────────────────────────────────┘"
 echo ""
-VITE_RIGOVO_API="${API_URL}" RIGOVO_API_PORT="${API_PORT}" pnpm -C "${ROOT_DIR}/apps/desktop" run dev
+if [[ "${DEMO_MODE}" == "1" ]]; then
+  echo "[rigovo-e2e] demo mode active; building desktop bundle for visual QA"
+  VITE_RIGOVO_API="${API_URL}" RIGOVO_API_PORT="${API_PORT}" pnpm -C "${ROOT_DIR}/apps/desktop" run build
+  echo "[rigovo-e2e] build complete. Run manually on local machine to visualize live UI:"
+  echo "  VITE_RIGOVO_API=${API_URL} RIGOVO_API_PORT=${API_PORT} pnpm -C apps/desktop run dev"
+else
+  VITE_RIGOVO_API="${API_URL}" RIGOVO_API_PORT="${API_PORT}" pnpm -C "${ROOT_DIR}/apps/desktop" run dev
+fi

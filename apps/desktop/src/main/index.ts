@@ -2,7 +2,6 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import { ChildProcess, spawn } from "node:child_process";
 import { statSync } from "node:fs";
-import { is } from "@electron-toolkit/utils";
 
 /* ------------------------------------------------------------------ */
 /*  Engine lifecycle – same semantics as the old Tauri Rust backend   */
@@ -27,6 +26,7 @@ const SAFE_ENGINE_HOSTS = new Set([
   "localhost",
   "::1",
 ]);
+const hasElectronRuntime = Boolean(app && typeof app.whenReady === "function");
 
 function sanitizeEngineHost(raw?: string): string {
   const host = String(raw ?? "127.0.0.1").trim().toLowerCase();
@@ -177,12 +177,15 @@ function registerIpc(): void {
 
 function createWindow(): void {
   const runtime = runtimeConfig();
+  const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
   const mainWindow = new BrowserWindow({
     width: 1480,
     height: 920,
     minWidth: 1080,
     minHeight: 720,
     title: "Rigovo Control Plane",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 14, y: 14 },
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: runtime.electronSandbox
@@ -197,7 +200,7 @@ function createWindow(): void {
 
   // Dev mode → Vite dev server HMR
   // Production → static files from out/renderer/
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+  if (isDev && process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
     mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
@@ -209,6 +212,11 @@ function createWindow(): void {
 /* ------------------------------------------------------------------ */
 
 async function bootstrapDesktop(): Promise<void> {
+  if (!hasElectronRuntime) {
+    // eslint-disable-next-line no-console
+    console.error("Electron runtime is unavailable in this process.");
+    return;
+  }
   await app.whenReady();
   registerIpc();
   createWindow();
@@ -218,14 +226,16 @@ async function bootstrapDesktop(): Promise<void> {
   });
 }
 
-void bootstrapDesktop().catch((err: unknown) => {
-  // eslint-disable-next-line no-console
-  console.error("Failed to initialize Electron app", err);
-  app.exit(1);
-});
+if (hasElectronRuntime) {
+  void bootstrapDesktop().catch((err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error("Failed to initialize Electron app", err);
+    app.exit(1);
+  });
 
-app.on("window-all-closed", () => {
-  // Kill engine subprocess before quitting
-  stopEngine();
-  if (process.platform !== "darwin") app.quit();
-});
+  app.on("window-all-closed", () => {
+    // Kill engine subprocess before quitting
+    stopEngine();
+    if (process.platform !== "darwin") app.quit();
+  });
+}

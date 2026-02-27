@@ -133,12 +133,12 @@ type SideTab = "files" | "activity" | "collab" | "governance" | "cost";
 
 /* ---- Role colors (for side panels) ---- */
 const ROLE_COLORS: Record<string, string> = {
-  planner: "text-violet-400", lead: "text-purple-400", coder: "text-sky-400",
-  reviewer: "text-emerald-400", qa: "text-amber-400", security: "text-rose-400",
-  devops: "text-indigo-400", sre: "text-cyan-400", docs: "text-stone-400",
-  orchestrator: "text-indigo-400", rigour: "text-emerald-400", system: "text-slate-500",
+  planner: "text-violet-600", lead: "text-purple-600", coder: "text-sky-600",
+  reviewer: "text-emerald-600", qa: "text-amber-600", security: "text-rose-600",
+  devops: "text-indigo-600", sre: "text-cyan-600", docs: "text-stone-500",
+  orchestrator: "text-indigo-600", rigour: "text-emerald-600", system: "text-[var(--ui-text-muted)]",
 };
-const roleColor = (r: string) => ROLE_COLORS[r.toLowerCase()] ?? "text-slate-400";
+const roleColor = (r: string) => ROLE_COLORS[r.toLowerCase()] ?? "text-[var(--ui-text-muted)]";
 
 /* ---- Pipeline phase info (for processing state) ---- */
 const PHASE_INFO: Record<string, { icon: string; title: string; desc: string }> = {
@@ -167,77 +167,45 @@ function ProcessingState({ status }: { status: string }) {
   // Terminal states — show result, not a spinner
   if (isTerminal) {
     return (
-      <div className="animate-fadeup">
-        <div className="flex items-center gap-3 mb-4">
-          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl text-lg ${
-            isFailed ? "bg-rose-500/15 ring-1 ring-rose-500/30" : "bg-emerald-500/15 ring-1 ring-emerald-500/30"
-          }`}>
-            {isFailed ? "\u274C" : "\u2705"}
+      <div className="animate-fadeup rounded-2xl border border-[var(--ui-border)] bg-[rgba(0,0,0,0.02)] p-5">
+        <div className="flex items-center gap-3">
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl text-lg ${isFailed ? "bg-rose-500/15" : "bg-emerald-500/15"}`}>
+            {isFailed ? "✕" : "✓"}
           </div>
           <div>
-            <span className="text-sm font-semibold text-brand-light">Orchestrator</span>
-            <span className="ml-2 text-[10px] text-slate-600">Master Brain</span>
+            <p className="text-sm font-semibold text-[var(--ui-text)]">Master Brain</p>
+            <p className="text-[11px] text-[var(--ui-text-muted)]">{isFailed ? "Run ended with failures" : "Run finished successfully"}</p>
           </div>
         </div>
-        <div className={`ml-[52px] rounded-2xl border p-5 ${
-          isFailed ? "border-rose-500/15 bg-rose-500/5" : "border-emerald-500/15 bg-emerald-500/5"
-        }`}>
-          <h3 className="text-sm font-semibold text-slate-200 mb-1">
-            {isFailed ? "Task failed" : "Task completed"}
-          </h3>
-          <p className="text-[13px] text-slate-400 leading-relaxed">
-            {isFailed
-              ? "The task could not be completed. Check the error logs in Settings \u2192 Logs, or click Resume to retry."
-              : "All agents finished successfully."}
-          </p>
-        </div>
+        <p className="mt-3 text-[13px] text-[var(--ui-text-muted)]">
+          {isFailed ? "Review evidence and retry from the failed phase." : "All queued agents completed and governance checks passed."}
+        </p>
       </div>
     );
   }
 
   // Active states — show progress animation
   const phase = getPhase(status);
-  const steps = ["Understanding the request", "Classifying task type", "Selecting agents"];
   return (
-    <div className="animate-fadeup">
-      <div className="flex items-center gap-3 mb-4">
-        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-brand/15 ring-1 ring-brand/30 text-lg animate-pulse-glow">
+    <div className="animate-fadeup rounded-2xl border border-[var(--ui-border)] bg-[rgba(0,0,0,0.02)] p-5">
+      <div className="flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[rgba(0,0,0,0.04)] text-lg">
           {phase.icon}
         </div>
         <div>
-          <span className="text-sm font-semibold text-brand-light">Orchestrator</span>
-          <span className="ml-2 text-[10px] text-slate-600">Master Brain</span>
+          <p className="text-sm font-semibold text-[var(--ui-text)]">Master Brain</p>
+          <p className="text-[11px] text-[var(--ui-text-muted)]">Coordinating virtual team</p>
         </div>
       </div>
-      <div className="ml-[52px] rounded-2xl border border-brand/15 bg-brand/5 p-5">
-        <h3 className="text-sm font-semibold text-slate-200 mb-1">{phase.title}</h3>
-        <p className="text-[13px] text-slate-400 leading-relaxed mb-4">{phase.desc}</p>
-        <div className="space-y-2.5">
-          {steps.map((step, i) => (
-            <div key={step} className="flex items-center gap-3 animate-fadeup" style={{ animationDelay: `${(i + 1) * 300}ms` }}>
-              <div className={`flex h-5 w-5 items-center justify-center rounded-md text-[10px] ${
-                i === 0 ? "bg-emerald-500/20 text-emerald-400" :
-                i === 1 && status.includes("classif") ? "bg-sky-500/20 text-sky-400" :
-                i === 1 ? "bg-emerald-500/20 text-emerald-400" :
-                "bg-slate-700/50 text-slate-500"
-              }`}>
-                {i === 0 ? "\u2713" :
-                 i === 1 && status.includes("classif") ? <span className="inline-block h-2.5 w-2.5 animate-spin rounded-full border border-sky-400/30 border-t-sky-400" /> :
-                 i === 1 ? "\u2713" :
-                 status.includes("rout") || status.includes("assembl") ? <span className="inline-block h-2.5 w-2.5 animate-spin rounded-full border border-sky-400/30 border-t-sky-400" /> : "\u00B7"}
-              </div>
-              <span className={`text-xs ${i <= 1 || status.includes("rout") || status.includes("assembl") ? "text-slate-300" : "text-slate-600"}`}>{step}</span>
-            </div>
-          ))}
-        </div>
+      <div className="mt-4 rounded-xl border border-[var(--ui-border)] bg-[rgba(0,0,0,0.03)] p-4">
+        <h3 className="text-sm font-semibold text-[var(--ui-text)]">{phase.title}</h3>
+        <p className="mt-1 text-[13px] text-[var(--ui-text-muted)] leading-relaxed">{phase.desc}</p>
       </div>
-      <div className="ml-[52px] mt-3 flex items-center gap-2">
-        <div className="flex items-center gap-1 text-brand-light/60">
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-typing-1" />
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-typing-2" />
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-typing-3" />
-        </div>
-        <span className="text-[11px] text-slate-600 italic">Orchestrator is thinking...</span>
+      <div className="mt-3 flex items-center gap-2 text-[var(--ui-text-muted)]">
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-typing-1" />
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-typing-2" />
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-typing-3" />
+        <span className="text-[11px] italic">Planning in progress…</span>
       </div>
     </div>
   );
@@ -247,68 +215,68 @@ function MissionControl({ mission }: { mission: MissionData | null }) {
   if (!mission) return null;
   const riskClass =
     mission.risk.level === "high"
-      ? "text-rose-400 bg-rose-500/10 border-rose-500/30"
+      ? "text-rose-600 bg-rose-500/10 border-rose-200"
       : mission.risk.level === "medium"
-        ? "text-amber-400 bg-amber-500/10 border-amber-500/30"
-        : "text-emerald-400 bg-emerald-500/10 border-emerald-500/30";
+        ? "text-amber-600 bg-amber-500/10 border-amber-200"
+        : "text-emerald-600 bg-emerald-500/10 border-emerald-200";
   return (
-    <div className="mb-4 rounded-2xl border border-white/10 bg-white/[0.02] p-4 animate-fadeup">
+    <div className="mb-4 rounded-2xl border border-[var(--ui-border)] bg-[rgba(0,0,0,0.015)] p-4 animate-fadeup">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Mission Control</span>
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ui-text-muted)]">Mission Control</span>
         <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase ${riskClass}`}>
           Risk {mission.risk.level}
         </span>
-        <span className="rounded-md bg-white/5 px-2 py-0.5 text-[10px] text-slate-400">
+        <span className="rounded-md bg-[rgba(0,0,0,0.03)] px-2 py-0.5 text-[10px] text-[var(--ui-text-muted)]">
           Team {mission.team.size} agent{mission.team.size === 1 ? "" : "s"}
         </span>
-        <span className="rounded-md bg-white/5 px-2 py-0.5 text-[10px] text-slate-400">
+        <span className="rounded-md bg-[rgba(0,0,0,0.03)] px-2 py-0.5 text-[10px] text-[var(--ui-text-muted)]">
           Tokens {mission.cost.total_tokens.toLocaleString()}
         </span>
-        <span className="rounded-md bg-white/5 px-2 py-0.5 text-[10px] text-emerald-400">
+        <span className="rounded-md bg-[rgba(0,0,0,0.03)] px-2 py-0.5 text-[10px] text-emerald-600">
           ${mission.cost.total_cost_usd.toFixed(4)}
         </span>
       </div>
       <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Master Brain Signals</p>
+        <div className="rounded-xl border border-[var(--ui-border)] bg-[rgba(0,0,0,0.015)] p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-muted)]">Master Brain Signals</p>
           <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
-            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Parallel: {mission.policies.parallel_agents ? "on" : "off"}</span>
-            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Consult: {mission.policies.consultation_enabled ? "on" : "off"}</span>
-            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Debate: {mission.policies.debate_enabled ? `on (${mission.policies.debate_max_rounds})` : "off"}</span>
-            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Replan: {mission.policies.replan_enabled ? `on (${mission.policies.max_replans_per_task})` : "off"}</span>
+            <span className="rounded bg-[rgba(0,0,0,0.03)] px-2 py-0.5 text-[var(--ui-text-muted)]">Parallel: {mission.policies.parallel_agents ? "on" : "off"}</span>
+            <span className="rounded bg-[rgba(0,0,0,0.03)] px-2 py-0.5 text-[var(--ui-text-muted)]">Consult: {mission.policies.consultation_enabled ? "on" : "off"}</span>
+            <span className="rounded bg-[rgba(0,0,0,0.03)] px-2 py-0.5 text-[var(--ui-text-muted)]">Debate: {mission.policies.debate_enabled ? `on (${mission.policies.debate_max_rounds})` : "off"}</span>
+            <span className="rounded bg-[rgba(0,0,0,0.03)] px-2 py-0.5 text-[var(--ui-text-muted)]">Replan: {mission.policies.replan_enabled ? `on (${mission.policies.max_replans_per_task})` : "off"}</span>
           </div>
-          <p className="mt-2 text-[10px] text-slate-500">
+          <p className="mt-2 text-[10px] text-[var(--ui-text-muted)]">
             Replans {mission.workflow.replan_triggered} · Retries {mission.workflow.agent_retried} · Agent failures {mission.workflow.agent_failed}
           </p>
         </div>
-        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Policy & Trust</p>
+        <div className="rounded-xl border border-[var(--ui-border)] bg-[rgba(0,0,0,0.015)] p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-muted)]">Policy & Trust</p>
           <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
-            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Sandbox: {mission.policies.filesystem_sandbox}</span>
-            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Worktree: {mission.policies.worktree_mode}</span>
-            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Plugins: {mission.policies.plugins_enabled ? "on" : "off"}</span>
-            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">Trust: {mission.policies.plugin_trust_floor}</span>
-            <span className="rounded bg-white/5 px-2 py-0.5 text-slate-400">MCP: {mission.policies.mcp_tools ? "on" : "off"}</span>
+            <span className="rounded bg-[rgba(0,0,0,0.03)] px-2 py-0.5 text-[var(--ui-text-muted)]">Sandbox: {mission.policies.filesystem_sandbox}</span>
+            <span className="rounded bg-[rgba(0,0,0,0.03)] px-2 py-0.5 text-[var(--ui-text-muted)]">Worktree: {mission.policies.worktree_mode}</span>
+            <span className="rounded bg-[rgba(0,0,0,0.03)] px-2 py-0.5 text-[var(--ui-text-muted)]">Plugins: {mission.policies.plugins_enabled ? "on" : "off"}</span>
+            <span className="rounded bg-[rgba(0,0,0,0.03)] px-2 py-0.5 text-[var(--ui-text-muted)]">Trust: {mission.policies.plugin_trust_floor}</span>
+            <span className="rounded bg-[rgba(0,0,0,0.03)] px-2 py-0.5 text-[var(--ui-text-muted)]">MCP: {mission.policies.mcp_tools ? "on" : "off"}</span>
           </div>
-          <p className="mt-2 text-[10px] text-slate-500">
+          <p className="mt-2 text-[10px] text-[var(--ui-text-muted)]">
             Approvals {mission.workflow.approvals_granted}/{mission.workflow.approvals_requested} · Gate failures {mission.workflow.gate_failed}
           </p>
         </div>
       </div>
-      <div className="mt-3 rounded-xl border border-white/10 bg-black/10 p-3">
-        <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Decision Trace</p>
+      <div className="mt-3 rounded-xl border border-[var(--ui-border)] bg-[rgba(0,0,0,0.03)] p-3">
+        <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-muted)]">Decision Trace</p>
         <div className="max-h-40 overflow-y-auto space-y-1.5">
           {mission.decision_trace.slice(-12).map((evt, idx) => (
             <div key={`${evt.action}-${idx}`} className="flex items-start gap-2 text-[11px]">
-              <span className="w-14 flex-shrink-0 font-mono text-[10px] text-slate-600">
+              <span className="w-14 flex-shrink-0 font-mono text-[10px] text-[var(--ui-text-subtle)]">
                 {evt.ts ? new Date(evt.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--"}
               </span>
-              <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-slate-400">{evt.actor || "system"}</span>
-              <span className="text-slate-300">{evt.summary || evt.action}</span>
+              <span className="rounded bg-[rgba(0,0,0,0.03)] px-1.5 py-0.5 text-[10px] text-[var(--ui-text-muted)]">{evt.actor || "system"}</span>
+              <span className="text-[var(--ui-text-secondary)]">{evt.summary || evt.action}</span>
             </div>
           ))}
           {mission.decision_trace.length === 0 && (
-            <p className="text-[11px] text-slate-600">No decision trace recorded yet.</p>
+            <p className="text-[11px] text-[var(--ui-text-subtle)]">No decision trace recorded yet.</p>
           )}
         </div>
       </div>
@@ -366,7 +334,7 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
   return (
     <div className="side-panels flex flex-col gap-3 min-h-0">
       {/* Tab bar */}
-      <div className="flex items-center gap-1 bg-white/[0.03] rounded-xl p-1">
+      <div className="flex items-center gap-1 bg-[rgba(0,0,0,0.02)] rounded-xl p-1">
         {([
           ["files", `Files${fileCount ? ` (${fileCount})` : ""}`],
           ["activity", `Log${auditCount ? ` (${auditCount})` : ""}`],
@@ -387,7 +355,7 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
           <div className="panel-header">
             <span className="text-[10px]">{"\uD83D\uDCC1"}</span>
             <span className="panel-header-label">Changed files</span>
-            <span className="ml-auto text-[10px] text-slate-600">{fileCount} file{fileCount !== 1 ? "s" : ""}</span>
+            <span className="ml-auto text-[10px] text-[var(--ui-text-subtle)]">{fileCount} file{fileCount !== 1 ? "s" : ""}</span>
           </div>
           <div className="panel-body flex-1 min-h-0">
             <FileViewer
@@ -405,7 +373,7 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
           <div className="panel-header">
             <span className="text-[10px]">{"\uD83D\uDCCB"}</span>
             <span className="panel-header-label">Activity log</span>
-            <span className="ml-auto text-[10px] text-slate-600">{auditCount} events</span>
+            <span className="ml-auto text-[10px] text-[var(--ui-text-subtle)]">{auditCount} events</span>
           </div>
           <div className="panel-body flex-1 min-h-0 overflow-y-auto">
             {/* Build entries from detail if no audit API data */}
@@ -413,26 +381,26 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
               <ActivityFromDetail detail={detail} />
             )}
             {audit.map((e, i) => (
-              <div key={e.id || i} className="flex items-start gap-2.5 px-3 py-2 border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors">
-                <span className="text-[10px] font-mono text-slate-600 tabular-nums w-14 flex-shrink-0 pt-0.5">
+              <div key={e.id || i} className="flex items-start gap-2.5 px-3 py-2 border-b border-[var(--ui-border)] hover:bg-[rgba(0,0,0,0.015)] transition-colors">
+                <span className="text-[10px] font-mono text-[var(--ui-text-subtle)] tabular-nums w-14 flex-shrink-0 pt-0.5">
                   {e.created_at ? new Date(e.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--"}
                 </span>
                 <span className={`mt-1 h-1.5 w-1.5 rounded-full flex-shrink-0 ${
                   e.action.includes("complete") || e.action.includes("passed") ? "bg-emerald-500" :
                   e.action.includes("start") ? "bg-sky-500" :
                   e.action.includes("fail") ? "bg-rose-500" :
-                  "bg-slate-600"
+                  "bg-[var(--ui-text-subtle)]"
                 }`} />
                 <div className="flex-1 min-w-0">
                   <span className={`text-[10px] font-semibold ${roleColor(e.agent_role || "system")}`}>
                     {e.agent_role ? e.agent_role.charAt(0).toUpperCase() + e.agent_role.slice(1) : "System"}
                   </span>
-                  <span className="text-[10px] text-slate-500 ml-1.5">{e.summary}</span>
+                  <span className="text-[10px] text-[var(--ui-text-muted)] ml-1.5">{e.summary}</span>
                 </div>
               </div>
             ))}
             {auditCount === 0 && !detail && (
-              <p className="text-xs text-slate-600 py-4 text-center">No events yet</p>
+              <p className="text-xs text-[var(--ui-text-subtle)] py-4 text-center">No events yet</p>
             )}
           </div>
         </div>
@@ -447,17 +415,17 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
           </div>
           <div className="panel-body flex-1 min-h-0 overflow-y-auto px-3 py-3">
             <div className="mb-3 grid grid-cols-2 gap-2 text-[10px]">
-              <div className="rounded-md bg-white/5 px-2 py-1 text-slate-400">
-                Consult: <span className="text-slate-200">{collab?.summary.consult_completions ?? 0}/{collab?.summary.consult_requests ?? 0}</span>
+              <div className="rounded-md bg-[rgba(0,0,0,0.03)] px-2 py-1 text-[var(--ui-text-muted)]">
+                Consult: <span className="text-[var(--ui-text)]">{collab?.summary.consult_completions ?? 0}/{collab?.summary.consult_requests ?? 0}</span>
               </div>
-              <div className="rounded-md bg-white/5 px-2 py-1 text-slate-400">
-                Debate rounds: <span className="text-slate-200">{collab?.summary.debate_rounds ?? 0}</span>
+              <div className="rounded-md bg-[rgba(0,0,0,0.03)] px-2 py-1 text-[var(--ui-text-muted)]">
+                Debate rounds: <span className="text-[var(--ui-text)]">{collab?.summary.debate_rounds ?? 0}</span>
               </div>
-              <div className="rounded-md bg-white/5 px-2 py-1 text-slate-400">
-                Integrations: <span className="text-slate-200">{collab?.summary.integration_invoked ?? 0}</span>
+              <div className="rounded-md bg-[rgba(0,0,0,0.03)] px-2 py-1 text-[var(--ui-text-muted)]">
+                Integrations: <span className="text-[var(--ui-text)]">{collab?.summary.integration_invoked ?? 0}</span>
               </div>
-              <div className="rounded-md bg-white/5 px-2 py-1 text-slate-400">
-                Blocked: <span className="text-rose-400">{collab?.summary.integration_blocked ?? 0}</span>
+              <div className="rounded-md bg-[rgba(0,0,0,0.03)] px-2 py-1 text-[var(--ui-text-muted)]">
+                Blocked: <span className="text-rose-600">{collab?.summary.integration_blocked ?? 0}</span>
               </div>
             </div>
 
@@ -479,33 +447,33 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
                   ? new Date(e.created_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
                   : "--:--";
                 return (
-                  <div key={`${e.type}-${idx}`} className="rounded-md border border-white/10 bg-white/[0.02] px-2 py-1.5">
+                  <div key={`${e.type}-${idx}`} className="rounded-md border border-[var(--ui-border)] bg-[rgba(0,0,0,0.015)] px-2 py-1.5">
                     <div className="flex items-center gap-2">
-                      <span className="w-14 flex-shrink-0 text-[10px] font-mono text-slate-600">{ts}</span>
-                      <span className="text-[10px] text-slate-300">{label}</span>
+                      <span className="w-14 flex-shrink-0 text-[10px] font-mono text-[var(--ui-text-subtle)]">{ts}</span>
+                      <span className="text-[10px] text-[var(--ui-text-secondary)]">{label}</span>
                     </div>
                     {e.reviewer_feedback && (
-                      <p className="mt-1 text-[10px] text-amber-300/90 line-clamp-2">{e.reviewer_feedback}</p>
+                      <p className="mt-1 text-[10px] text-amber-700/90 line-clamp-2">{e.reviewer_feedback}</p>
                     )}
                   </div>
                 );
               })}
               {(!collab || collab.events.length === 0) && (
-                <p className="py-3 text-center text-xs text-slate-600">No collaboration events recorded yet</p>
+                <p className="py-3 text-center text-xs text-[var(--ui-text-subtle)]">No collaboration events recorded yet</p>
               )}
             </div>
 
             {collab?.messages?.length ? (
-              <div className="mt-3 border-t border-white/10 pt-3">
-                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">A2A message thread</p>
+              <div className="mt-3 border-t border-[var(--ui-border)] pt-3">
+                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-muted)]">A2A message thread</p>
                 <div className="space-y-1.5">
                   {collab.messages.slice(-20).map((m) => (
-                    <div key={m.id} className="rounded-md bg-white/[0.02] px-2 py-1 text-[10px] text-slate-400">
+                    <div key={m.id} className="rounded-md bg-[rgba(0,0,0,0.015)] px-2 py-1 text-[10px] text-[var(--ui-text-muted)]">
                       <span className={roleColor(m.from_role || "system")}>{m.from_role || "agent"}</span>
-                      <span className="mx-1 text-slate-600">→</span>
+                      <span className="mx-1 text-[var(--ui-text-subtle)]">→</span>
                       <span className={roleColor(m.to_role || "system")}>{m.to_role || "agent"}</span>
-                      <span className="mx-1 text-slate-600">·</span>
-                      <span className="text-slate-500">{String(m.content || "").slice(0, 140)}</span>
+                      <span className="mx-1 text-[var(--ui-text-subtle)]">·</span>
+                      <span className="text-[var(--ui-text-muted)]">{String(m.content || "").slice(0, 140)}</span>
                     </div>
                   ))}
                 </div>
@@ -524,13 +492,13 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
           </div>
           <div className="panel-body flex-1 min-h-0 overflow-y-auto px-3 py-3">
             <div className="mb-3 grid grid-cols-3 gap-2 text-[10px]">
-              <div className="rounded-md bg-emerald-500/10 px-2 py-1 text-emerald-300">
+              <div className="rounded-md bg-emerald-500/10 px-2 py-1 text-emerald-700">
                 Allow: <span className="font-semibold">{gov?.summary.allow ?? 0}</span>
               </div>
-              <div className="rounded-md bg-rose-500/10 px-2 py-1 text-rose-300">
+              <div className="rounded-md bg-rose-500/10 px-2 py-1 text-rose-700">
                 Deny: <span className="font-semibold">{gov?.summary.deny ?? 0}</span>
               </div>
-              <div className="rounded-md bg-amber-500/10 px-2 py-1 text-amber-300">
+              <div className="rounded-md bg-amber-500/10 px-2 py-1 text-amber-700">
                 Pending: <span className="font-semibold">{gov?.summary.pending ?? 0}</span>
               </div>
             </div>
@@ -539,27 +507,27 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
               {(gov?.timeline || []).slice(-40).map((g, idx) => {
                 const badgeCls =
                   g.decision === "allow"
-                    ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                    ? "bg-emerald-500/15 text-emerald-700 border-emerald-200"
                     : g.decision === "deny"
-                      ? "bg-rose-500/15 text-rose-300 border-rose-500/30"
+                      ? "bg-rose-500/15 text-rose-700 border-rose-200"
                       : g.decision === "pending"
-                        ? "bg-amber-500/15 text-amber-300 border-amber-500/30"
-                        : "bg-white/5 text-slate-400 border-white/10";
+                        ? "bg-amber-500/15 text-amber-700 border-amber-200"
+                        : "bg-[rgba(0,0,0,0.03)] text-[var(--ui-text-muted)] border-[var(--ui-border)]";
                 const ts = g.ts ? new Date(g.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--";
                 return (
-                  <div key={`${g.action}-${idx}`} className="rounded-md border border-white/10 bg-white/[0.02] px-2 py-1.5">
+                  <div key={`${g.action}-${idx}`} className="rounded-md border border-[var(--ui-border)] bg-[rgba(0,0,0,0.015)] px-2 py-1.5">
                     <div className="flex items-center gap-2">
-                      <span className="w-14 flex-shrink-0 text-[10px] font-mono text-slate-600">{ts}</span>
+                      <span className="w-14 flex-shrink-0 text-[10px] font-mono text-[var(--ui-text-subtle)]">{ts}</span>
                       <span className={`rounded border px-1.5 py-0.5 text-[10px] uppercase ${badgeCls}`}>{g.decision}</span>
-                      <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-slate-500">{g.category}</span>
-                      <span className="text-[10px] text-slate-400">{g.actor}</span>
+                      <span className="rounded bg-[rgba(0,0,0,0.03)] px-1.5 py-0.5 text-[10px] text-[var(--ui-text-muted)]">{g.category}</span>
+                      <span className="text-[10px] text-[var(--ui-text-muted)]">{g.actor}</span>
                     </div>
-                    <p className="mt-1 text-[10px] text-slate-300">{g.summary || g.action}</p>
+                    <p className="mt-1 text-[10px] text-[var(--ui-text-secondary)]">{g.summary || g.action}</p>
                   </div>
                 );
               })}
               {(!gov || gov.timeline.length === 0) && (
-                <p className="py-3 text-center text-xs text-slate-600">No governance events recorded yet</p>
+                <p className="py-3 text-center text-xs text-[var(--ui-text-subtle)]">No governance events recorded yet</p>
               )}
             </div>
           </div>
@@ -575,16 +543,16 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
           </div>
           <div className="panel-body flex-1 min-h-0 overflow-y-auto px-3 py-3">
             {/* Totals */}
-            <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/5">
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-[var(--ui-border)]">
               <div>
-                <p className="text-[10px] text-slate-600 uppercase tracking-wider">Total tokens</p>
-                <p className="text-sm font-semibold text-slate-200 tabular-nums">
+                <p className="text-[10px] text-[var(--ui-text-subtle)] uppercase tracking-wider">Total tokens</p>
+                <p className="text-sm font-semibold text-[var(--ui-text)] tabular-nums">
                   {(costs?.total_tokens || detail?.cost?.total_tokens || 0).toLocaleString()}
                 </p>
               </div>
               <div className="text-right">
-                <p className="text-[10px] text-slate-600 uppercase tracking-wider">Total cost</p>
-                <p className="text-sm font-semibold text-emerald-400 tabular-nums">
+                <p className="text-[10px] text-[var(--ui-text-subtle)] uppercase tracking-wider">Total cost</p>
+                <p className="text-sm font-semibold text-emerald-600 tabular-nums">
                   ${(costs?.total_cost_usd || detail?.cost?.total_cost_usd || 0).toFixed(4)}
                 </p>
               </div>
@@ -599,13 +567,13 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
                       {role.charAt(0).toUpperCase() + role.slice(1)}
                     </span>
                     {/* Bar */}
-                    <div className="flex-1 h-2 rounded-full bg-white/5 overflow-hidden">
+                    <div className="flex-1 h-2 rounded-full bg-[rgba(0,0,0,0.03)] overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-brand/40"
+                        className="h-full rounded-full bg-[var(--ui-text)]"
                         style={{ width: `${Math.min(100, ((data.input_tokens + data.output_tokens) / (costs.total_tokens || 1)) * 100)}%` }}
                       />
                     </div>
-                    <span className="text-[10px] text-slate-500 tabular-nums w-14 text-right">
+                    <span className="text-[10px] text-[var(--ui-text-muted)] tabular-nums w-14 text-right">
                       ${data.cost_usd.toFixed(3)}
                     </span>
                   </div>
@@ -614,19 +582,19 @@ function SidePanel({ task, detail, steps }: { task: InboxTask; detail: TaskDetai
             ) : (
               /* Fallback from detail.cost */
               detail?.cost ? (
-                <p className="text-xs text-slate-500">Per-agent breakdown not available yet.</p>
+                <p className="text-xs text-[var(--ui-text-muted)]">Per-agent breakdown not available yet.</p>
               ) : (
-                <p className="text-xs text-slate-600 text-center py-4">No cost data yet</p>
+                <p className="text-xs text-[var(--ui-text-subtle)] text-center py-4">No cost data yet</p>
               )
             )}
 
             {/* Model info */}
             {costs?.per_agent && Object.values(costs.per_agent).some((d) => d.model) && (
-              <div className="mt-4 pt-3 border-t border-white/5">
-                <p className="text-[10px] text-slate-600 uppercase tracking-wider mb-2">Models used</p>
+              <div className="mt-4 pt-3 border-t border-[var(--ui-border)]">
+                <p className="text-[10px] text-[var(--ui-text-subtle)] uppercase tracking-wider mb-2">Models used</p>
                 <div className="flex flex-wrap gap-1.5">
                   {[...new Set(Object.values(costs.per_agent).map((d) => d.model).filter(Boolean))].map((m) => (
-                    <span key={m} className="text-[10px] bg-white/5 text-slate-400 px-2 py-0.5 rounded-md">{m}</span>
+                    <span key={m} className="text-[10px] bg-[rgba(0,0,0,0.03)] text-[var(--ui-text-muted)] px-2 py-0.5 rounded-md">{m}</span>
                   ))}
                 </div>
               </div>
@@ -656,18 +624,18 @@ function ActivityFromDetail({ detail }: { detail: TaskDetailType }) {
   return (
     <>
       {entries.map((e, i) => (
-        <div key={i} className="flex items-start gap-2.5 px-3 py-2 border-b border-white/[0.03]">
-          <span className="text-[10px] font-mono text-slate-600 tabular-nums w-14 flex-shrink-0 pt-0.5">
+        <div key={i} className="flex items-start gap-2.5 px-3 py-2 border-b border-[var(--ui-border)]">
+          <span className="text-[10px] font-mono text-[var(--ui-text-subtle)] tabular-nums w-14 flex-shrink-0 pt-0.5">
             {(() => { try { return new Date(e.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); } catch { return "--:--"; } })()}
           </span>
           <span className={`mt-1 h-1.5 w-1.5 rounded-full flex-shrink-0 ${
-            e.type === "complete" ? "bg-emerald-500" : e.type === "start" ? "bg-sky-500" : e.type === "fail" ? "bg-rose-500" : "bg-slate-600"
+            e.type === "complete" ? "bg-emerald-500" : e.type === "start" ? "bg-sky-500" : e.type === "fail" ? "bg-rose-500" : "bg-[var(--ui-text-subtle)]"
           }`} />
           <div className="flex-1 min-w-0">
             <span className={`text-[10px] font-semibold ${roleColor(e.agent)}`}>
               {e.agent.charAt(0).toUpperCase() + e.agent.slice(1)}
             </span>
-            <span className="text-[10px] text-slate-500 ml-1.5">{e.event}</span>
+            <span className="text-[10px] text-[var(--ui-text-muted)] ml-1.5">{e.event}</span>
           </div>
         </div>
       ))}
@@ -683,14 +651,14 @@ function AgentStatusStrip({ steps }: { steps: TaskStep[] }) {
     <div className="flex items-center gap-1.5 flex-wrap">
       {steps.map((step, i) => (
         <div key={i}
-          className={`flex items-center gap-1 rounded-lg border border-white/5 bg-surface/60 px-2 py-1 ${
+          className={`flex items-center gap-1 rounded-lg border border-[var(--ui-border)] bg-[rgba(0,0,0,0.02)] px-2 py-1 ${
             step.status === "running" ? "animate-border-pulse" : ""
           }`}
           title={`${step.agent}: ${step.status}`}>
           <span className={`h-1.5 w-1.5 rounded-full ${
             step.status === "complete" ? "bg-emerald-500" :
             step.status === "running" ? "bg-sky-500 animate-pulse" :
-            step.status === "failed" ? "bg-rose-500" : "bg-slate-600"
+            step.status === "failed" ? "bg-rose-500" : "bg-[var(--ui-text-subtle)]"
           }`} />
           <span className={`text-[10px] font-medium ${roleColor(step.agent)}`}>
             {step.agent.charAt(0).toUpperCase() + step.agent.slice(1)}
@@ -731,17 +699,17 @@ export default function TaskDetail({ task, detail, onAction, actionMsg }: TaskDe
   return (
     <div className="animate-fadeup h-full flex flex-col">
       {/* ── Header bar ── */}
-      <div className="mb-4 pb-3 border-b border-white/5 flex-shrink-0">
-        <h2 className="text-base font-bold text-slate-100 leading-tight">{task.title}</h2>
+      <div className="mb-4 pb-3 border-b border-[var(--ui-border)] flex-shrink-0">
+        <h2 className="text-base font-bold text-[var(--ui-text)] leading-tight">{task.title}</h2>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <span className={tierClass(task.tier)}>{task.tier}</span>
           <span className={statusClass(task.status)}>{task.status}</span>
           {detail?.task_type && (
-            <span className="text-[10px] rounded-md px-2 py-0.5 bg-brand/10 text-brand-light font-medium">
+            <span className="text-[10px] rounded-md px-2 py-0.5 bg-[rgba(0,0,0,0.04)] text-[var(--ui-text-secondary)] font-medium">
               {detail.task_type}
             </span>
           )}
-          <span className="text-[10px] text-slate-600">{"\u00B7"} {task.updatedAt}</span>
+          <span className="text-[10px] text-[var(--ui-text-subtle)]">{"\u00B7"} {task.updatedAt}</span>
 
           {/* Action buttons — inline with header */}
           <div className="ml-auto flex items-center gap-2">
@@ -767,7 +735,7 @@ export default function TaskDetail({ task, detail, onAction, actionMsg }: TaskDe
                 Resume
               </button>
             )}
-            {actionMsg && <span className="text-[10px] text-slate-500">{actionMsg}</span>}
+            {actionMsg && <span className="text-[10px] text-[var(--ui-text-muted)]">{actionMsg}</span>}
           </div>
         </div>
 

@@ -12,6 +12,11 @@ export default defineConfig({
   renderer: {
     root: resolve(__dirname, "src/renderer"),
     plugins: [react()],
+    server: {
+      host: "127.0.0.1",
+      port: Number(process.env.RIGOVO_DESKTOP_PORT || 5173),
+      strictPort: false
+    },
     build: {
       rollupOptions: {
         input: resolve(__dirname, "src/renderer/index.html")

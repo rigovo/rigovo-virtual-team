@@ -6,11 +6,11 @@ import type { TaskStep, TaskDetail } from "../types";
 
 /* ---- Role colors ---- */
 const ROLE_COLORS: Record<string, string> = {
-  planner: "text-violet-400", lead: "text-purple-400", coder: "text-sky-400",
-  reviewer: "text-emerald-400", qa: "text-amber-400", security: "text-rose-400",
-  devops: "text-indigo-400", sre: "text-cyan-400", docs: "text-stone-400",
+  planner: "text-violet-600", lead: "text-purple-600", coder: "text-sky-600",
+  reviewer: "text-emerald-600", qa: "text-amber-600", security: "text-rose-600",
+  devops: "text-indigo-600", sre: "text-cyan-600", docs: "text-stone-500",
 };
-const roleColor = (agent: string) => ROLE_COLORS[agent.toLowerCase()] ?? "text-slate-400";
+const roleColor = (agent: string) => ROLE_COLORS[agent.toLowerCase()] ?? "text-[var(--ui-text-muted)]";
 
 /* Build log entries from task detail */
 interface LogEntry {
@@ -23,7 +23,6 @@ interface LogEntry {
 function buildLog(detail: TaskDetail): LogEntry[] {
   const entries: LogEntry[] = [];
 
-  // Task created
   if (detail.created_at) {
     entries.push({ time: detail.created_at, agent: "system", event: `Task created — ${detail.task_type || "classifying"}`, type: "system" });
   }
@@ -31,7 +30,6 @@ function buildLog(detail: TaskDetail): LogEntry[] {
     entries.push({ time: detail.started_at, agent: "orchestrator", event: `Pipeline started with ${detail.steps.length} agents`, type: "system" });
   }
 
-  // Agent events
   for (const step of detail.steps) {
     if (step.started_at) {
       entries.push({ time: step.started_at, agent: step.agent, event: `Started working`, type: "start" });
@@ -53,7 +51,6 @@ function buildLog(detail: TaskDetail): LogEntry[] {
     }
   }
 
-  // Sort by time
   entries.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
   return entries;
 }
@@ -79,42 +76,37 @@ export default function ActivityLog({ detail }: ActivityLogProps) {
   if (entries.length === 0) return null;
 
   return (
-    <div className="rounded-2xl border border-white/5 bg-surface/50 overflow-hidden">
-      {/* Header */}
-      <div className="px-4 py-2.5 border-b border-white/5 flex items-center gap-2">
+    <div className="rounded-2xl border border-[var(--ui-border)] bg-white overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-[var(--ui-border)] flex items-center gap-2">
         <span className="text-xs">{"\uD83D\uDCCB"}</span>
-        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Activity Log</span>
-        <span className="ml-auto text-[10px] text-slate-600">{entries.length} events</span>
+        <span className="text-[11px] font-semibold text-[var(--ui-text-muted)] uppercase tracking-wider">Activity Log</span>
+        <span className="ml-auto text-[10px] text-[var(--ui-text-subtle)]">{entries.length} events</span>
       </div>
 
-      {/* Log entries */}
       <div className="max-h-64 overflow-y-auto">
         {entries.map((entry, i) => (
           <div
             key={i}
-            className="flex items-start gap-3 px-4 py-2 border-b border-white/[0.02] hover:bg-white/[0.02] transition-colors animate-fadeup"
+            className="flex items-start gap-3 px-4 py-2 border-b border-[var(--ui-border)] hover:bg-[rgba(0,0,0,0.02)] transition-colors animate-fadeup"
             style={{ animationDelay: `${i * 40}ms` }}
           >
-            {/* Time */}
-            <span className="text-[10px] font-mono text-slate-600 tabular-nums w-16 flex-shrink-0 pt-0.5">
+            <span className="text-[10px] font-mono text-[var(--ui-text-subtle)] tabular-nums w-16 flex-shrink-0 pt-0.5">
               {formatTime(entry.time)}
             </span>
 
-            {/* Status dot */}
             <span className={`mt-1.5 h-1.5 w-1.5 rounded-full flex-shrink-0 ${
               entry.type === "complete" ? "bg-emerald-500" :
               entry.type === "start" ? "bg-sky-500" :
               entry.type === "fail" ? "bg-rose-500" :
-              entry.type === "gate" ? "bg-brand-light" :
-              "bg-slate-600"
+              entry.type === "gate" ? "bg-emerald-400" :
+              "bg-[var(--ui-text-subtle)]"
             }`} />
 
-            {/* Agent + event */}
             <div className="flex-1 min-w-0">
               <span className={`text-[11px] font-semibold ${
-                entry.agent === "system" ? "text-slate-500" :
-                entry.agent === "orchestrator" ? "text-brand-light" :
-                entry.agent === "rigour" ? "text-emerald-400" :
+                entry.agent === "system" ? "text-[var(--ui-text-muted)]" :
+                entry.agent === "orchestrator" ? "text-indigo-600" :
+                entry.agent === "rigour" ? "text-emerald-600" :
                 roleColor(entry.agent)
               }`}>
                 {entry.agent === "system" ? "System" :
@@ -122,7 +114,7 @@ export default function ActivityLog({ detail }: ActivityLogProps) {
                  entry.agent === "rigour" ? "Rigour" :
                  entry.agent.charAt(0).toUpperCase() + entry.agent.slice(1)}
               </span>
-              <span className="text-[11px] text-slate-500 ml-1.5">{entry.event}</span>
+              <span className="text-[11px] text-[var(--ui-text-muted)] ml-1.5">{entry.event}</span>
             </div>
           </div>
         ))}
@@ -142,7 +134,7 @@ export function AgentStatusStrip({ steps }: { steps: TaskStep[] }) {
         return (
           <div
             key={i}
-            className={`flex items-center gap-1 rounded-lg border border-white/5 bg-surface/60 px-2 py-1 ${
+            className={`flex items-center gap-1 rounded-lg border border-[var(--ui-border)] bg-[rgba(0,0,0,0.02)] px-2 py-1 ${
               step.status === "running" ? "animate-border-pulse" : ""
             }`}
             title={`${step.agent}: ${step.status}`}
@@ -151,7 +143,7 @@ export function AgentStatusStrip({ steps }: { steps: TaskStep[] }) {
               step.status === "complete" ? "bg-emerald-500" :
               step.status === "running" ? "bg-sky-500 animate-pulse" :
               step.status === "failed" ? "bg-rose-500" :
-              "bg-slate-600"
+              "bg-[var(--ui-text-subtle)]"
             }`} />
             <span className={`text-[10px] font-medium ${color}`}>
               {step.agent.charAt(0).toUpperCase() + step.agent.slice(1)}

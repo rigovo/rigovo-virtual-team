@@ -2,7 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 
 import type {
   Route, AuthSession, InboxTask, ApprovalItem,
-  EngineStatus, Project, TaskDetail as TaskDetailType
+  EngineStatus, Project, TaskDetail as TaskDetailType, ControlStatePayload
 } from "./types";
 
 import { API_BASE, readJson, isApiHealthy, isUuid } from "./api";
@@ -15,9 +15,22 @@ import EmptyState from "./components/EmptyState";
 import TaskInput, { type TaskInputHandle } from "./components/TaskInput";
 import TaskDetail from "./components/TaskDetail";
 import Settings from "./components/Settings";
+import WorkspaceStrip from "./components/WorkspaceStrip";
+import { UI_LABELS, buildPermissionLabel, type WorkspaceControls } from "./ui/tokens";
+import AutomationsPage from "./components/pages/AutomationsPage";
+import SkillsPage from "./components/pages/SkillsPage";
+import DocumentsPage from "./components/pages/DocumentsPage";
+import LanguagePage from "./components/pages/LanguagePage";
 
 /* ---- Electron API ---- */
 const electronAPI = typeof window !== "undefined" ? window.electronAPI : undefined;
+type WorkspacePage = "threads" | "automations" | "skills" | "documents" | "language" | "settings";
+type SettingsSnapshot = {
+  agent_models?: Record<string, string>;
+  agent_tools?: Record<string, string[]>;
+  default_model?: string;
+  plugins_policy?: { min_trust_level?: string };
+};
 
 /* ================================================================== */
 /*  App — thin shell: state + effects + component composition          */
@@ -48,7 +61,18 @@ export default function App(): JSX.Element {
   const [onboardingMsg, setOnboardingMsg] = useState("");
   const [actionMsg, setActionMsg] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [workspacePage, setWorkspacePage] = useState<WorkspacePage>("threads");
   const [workspaceMeta, setWorkspaceMeta] = useState<{ org: string; users: number }>({ org: "", users: 0 });
+  const [controlState, setControlState] = useState<ControlStatePayload | null>(null);
+  const [settingsSnapshot, setSettingsSnapshot] = useState<SettingsSnapshot | null>(null);
+  const [uiLanguage, setUiLanguage] = useState("en-US");
+  const [newThreadMode, setNewThreadMode] = useState(true);
+  const [workspaceControls, setWorkspaceControls] = useState<WorkspaceControls>({
+    runtime: UI_LABELS.runtimeLocal,
+    permissions: UI_LABELS.defaultPermissions,
+    model: "Default model",
+    effort: UI_LABELS.defaultEffort,
+  });
 
   /* ---- Engine management ---- */
   const startEngine = useCallback(async (projectDir?: string): Promise<void> => {
@@ -63,6 +87,12 @@ export default function App(): JSX.Element {
 
   /* ---- Boot — auth check, fallback to demo mode if API down ---- */
   useEffect(() => {
+    const stored = window.localStorage.getItem("rigovo.ui.language");
+    const fallback = navigator.language || "en-US";
+    setUiLanguage(stored || fallback);
+  }, []);
+
+  useEffect(() => {
     let active = true;
     void (async () => {
       const healthy = await isApiHealthy(API_BASE);
@@ -73,21 +103,24 @@ export default function App(): JSX.Element {
         // Demo mode — skip auth, show UI with demo data immediately
         setAuthSession({ signed_in: true, email: "demo@rigovo.dev", full_name: "Demo User", first_name: "Demo", last_name: "User", role: "admin", organization_id: "demo", organization_name: "Rigovo Demo", workspace: { name: "Demo", slug: "demo", admin_email: "demo@rigovo.dev", region: "local" } });
         setInbox(fallbackInbox);
-        setSelected(fallbackInbox[0]?.id ?? "");
+        setSelected("");
+        setNewThreadMode(true);
         setMode("fallback");
         setRoute("control");
+        setWorkspacePage("threads");
         return;
       }
 
       const session = await readJson<AuthSession>(`${API_BASE}/v1/auth/session`);
       const projectList = await readJson<Project[]>(`${API_BASE}/v1/projects`);
-      const controlState = await readJson<{ personas?: Array<unknown>; workspace?: { workspaceName?: string; workspaceSlug?: string } }>(`${API_BASE}/v1/control/state`);
+      const controlStatePayload = await readJson<ControlStatePayload>(`${API_BASE}/v1/control/state`);
       const auth = session ?? { signed_in: false, email: "", full_name: "", first_name: "", last_name: "", role: "", organization_id: "", organization_name: "", workspace: { name: "", slug: "", admin_email: "", region: "" } };
       if (!active) return;
       setAuthSession(auth.signed_in ? auth : null);
+      setControlState(controlStatePayload || null);
       setWorkspaceMeta({
-        org: auth.organization_name || auth.workspace?.name || controlState?.workspace?.workspaceName || controlState?.workspace?.workspaceSlug || "",
-        users: Array.isArray(controlState?.personas) ? controlState.personas.length : 0,
+        org: auth.organization_name || auth.workspace?.name || controlStatePayload?.workspace?.workspaceName || controlStatePayload?.workspace?.workspaceSlug || "",
+        users: Array.isArray(controlStatePayload?.personas) ? controlStatePayload.personas.length : 0,
       });
       if (projectList?.length) { setProjects(projectList); setActiveProject(projectList[0]); }
       setRoute(auth.signed_in ? "control" : "auth");
@@ -116,6 +149,7 @@ export default function App(): JSX.Element {
           return [...optimistic, ...tasks];
         });
         setSelected((p) => {
+          if (newThreadMode || workspacePage !== "threads") return "";
           if (p) return p; // keep current selection stable
           // On first load, only auto-select if there's an active (non-terminal) task
           const activeTask = tasks.find((t) => {
@@ -130,6 +164,35 @@ export default function App(): JSX.Element {
     void load();
     const id = window.setInterval(() => { void load(); }, 4000);
     return () => { active = false; window.clearInterval(id); };
+  }, [route, newThreadMode, workspacePage]);
+
+  /* ---- Workspace controls (mode, permission profile, model) ---- */
+  useEffect(() => {
+    if (route !== "control") return;
+    let active = true;
+    void (async () => {
+      const settings = await readJson<SettingsSnapshot>(`${API_BASE}/v1/settings`);
+
+      let runtime: string = electronAPI ? UI_LABELS.runtimeLocal : UI_LABELS.runtimeCloud;
+      if (electronAPI?.engineRuntimeConfig) {
+        try {
+          const rt = await electronAPI.engineRuntimeConfig();
+          runtime = rt.worktreeMode ? UI_LABELS.runtimeLocal : UI_LABELS.runtimeCloud;
+        } catch {
+          runtime = electronAPI ? UI_LABELS.runtimeLocal : UI_LABELS.runtimeCloud;
+        }
+      }
+
+      if (!active) return;
+      setSettingsSnapshot(settings || null);
+      setWorkspaceControls({
+        runtime,
+        permissions: buildPermissionLabel(settings?.plugins_policy?.min_trust_level),
+        model: settings?.default_model || "Default model",
+        effort: UI_LABELS.defaultEffort,
+      });
+    })();
+    return () => { active = false; };
   }, [route]);
 
   /* ---- Poll task detail (or use demo data) ---- */
@@ -229,6 +292,8 @@ export default function App(): JSX.Element {
           updatedAt: "just now"
         };
         setInbox((prev) => [optimisticTask, ...prev.filter((t) => t.id !== taskId)]);
+        setNewThreadMode(false);
+        setWorkspacePage("threads");
         setSelected(taskId);
         setTaskInput("");
         setTaskMsg("Task created — agents starting...");
@@ -242,6 +307,8 @@ export default function App(): JSX.Element {
       const demoId = `demo-local-${Date.now()}`;
       const newTask: InboxTask = { id: demoId, title: desc, source: "manual", tier: "auto", status: "classifying", team: "default", updatedAt: "just now" };
       setInbox((prev) => [newTask, ...prev]);
+      setNewThreadMode(false);
+      setWorkspacePage("threads");
       setSelected(demoId);
       setTaskInput("");
       setTaskMsg("Task created (demo mode — engine not running)");
@@ -258,13 +325,75 @@ export default function App(): JSX.Element {
     window.setTimeout(() => setActionMsg(""), 2200);
   };
 
+  const executeCommand = useCallback((input: string): boolean => {
+    if (!input.startsWith("/")) return false;
+    const command = input.slice(1).split(/\s+/)[0].toLowerCase();
+    switch (command) {
+      case "new":
+      case "new-thread":
+        setShowSettings(false);
+        setNewThreadMode(true);
+        setWorkspacePage("threads");
+        setSelected("");
+        setTaskInput("");
+        taskInputRef.current?.focus();
+        setTaskMsg("New thread ready.");
+        window.setTimeout(() => setTaskMsg(""), 1800);
+        return true;
+      case "settings":
+        setShowSettings(true);
+        setWorkspacePage("settings");
+        return true;
+      case "skills":
+        setShowSettings(false);
+        setWorkspacePage("skills");
+        setSelected("");
+        return true;
+      case "automations":
+        setShowSettings(false);
+        setWorkspacePage("automations");
+        setSelected("");
+        return true;
+      case "documents":
+        setShowSettings(false);
+        setWorkspacePage("documents");
+        setSelected("");
+        return true;
+      case "language":
+        setShowSettings(false);
+        setWorkspacePage("language");
+        setSelected("");
+        return true;
+      case "open-folder":
+        void openProject();
+        return true;
+      case "help":
+        setTaskMsg("Commands: /new-thread /settings /skills /automations /documents /language /open-folder");
+        window.setTimeout(() => setTaskMsg(""), 3500);
+        return true;
+      default:
+        setTaskMsg(`Unknown command: /${command}`);
+        window.setTimeout(() => setTaskMsg(""), 2500);
+        return true;
+    }
+  }, [openProject]);
+
   /* ---- Derived ---- */
   const userName = authSession?.full_name || authSession?.first_name || authSession?.email?.split("@")[0] || "User";
+  const userEmail = authSession?.email || "";
   const userInitials = userName.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2);
   const selectedTask = useMemo(() => inbox.find((t) => t.id === selected) ?? null, [inbox, selected]);
+  const mentionFiles = useMemo(() => {
+    const fromSteps = taskDetail?.steps?.flatMap((step) => step.files_changed) ?? [];
+    return [...new Set(fromSteps)].sort();
+  }, [taskDetail]);
+  const availableLanguages = useMemo(() => {
+    const languages = Array.from(new Set([...(navigator.languages || []), navigator.language, "en-US"].filter(Boolean)));
+    return languages.length ? languages : ["en-US"];
+  }, []);
 
   // Suppress unused warnings for variables used indirectly
-  void engine; void approvals; void projects;
+  void engine; void projects;
 
   /* ================================================================ */
   /*  AUTH SCREEN                                                      */
@@ -289,38 +418,103 @@ export default function App(): JSX.Element {
     <div className="two-panel">
       <Sidebar
         userName={userName}
+        userEmail={userEmail}
         userInitials={userInitials}
         organizationName={workspaceMeta.org}
         totalUsers={workspaceMeta.users}
         inbox={inbox}
         selected={selected}
-        onSelect={(id) => { setShowSettings(false); setSelected(id); }}
-        onNewTask={() => { setShowSettings(false); setSelected(""); taskInputRef.current?.focus(); }}
+        activeView={workspacePage}
+        onSelect={(id) => {
+          setShowSettings(false);
+          setNewThreadMode(false);
+          setWorkspacePage("threads");
+          setSelected(id);
+        }}
+        onNewTask={() => {
+          setShowSettings(false);
+          setNewThreadMode(true);
+          setWorkspacePage("threads");
+          setSelected("");
+          setTaskInput("");
+          taskInputRef.current?.focus();
+        }}
         onOpenFolder={() => void openProject()}
         activeProject={activeProject}
         projectLoading={projectLoading}
         onSignOut={signOut}
         apiReachable={apiReachable}
-        onOpenSettings={() => setShowSettings(true)}
+        onOpenSettings={() => { setShowSettings(true); setWorkspacePage("settings"); }}
+        onOpenAutomations={() => { setShowSettings(false); setNewThreadMode(false); setWorkspacePage("automations"); setSelected(""); }}
+        onOpenSkills={() => { setShowSettings(false); setNewThreadMode(false); setWorkspacePage("skills"); setSelected(""); }}
+        onOpenDocuments={() => { setShowSettings(false); setNewThreadMode(false); setWorkspacePage("documents"); setSelected(""); }}
+        onOpenLanguage={() => { setShowSettings(false); setNewThreadMode(false); setWorkspacePage("language"); setSelected(""); }}
       />
 
       <main className="main-panel">
-        {showSettings ? (
+        <WorkspaceStrip
+          title={
+            workspacePage === "settings"
+              ? "Settings"
+              : workspacePage === "automations"
+                ? "Automations"
+                : workspacePage === "skills"
+                  ? "Skills"
+                  : workspacePage === "documents"
+                    ? "Documents"
+                    : workspacePage === "language"
+                      ? "Language"
+                      : selectedTask
+                        ? "Task thread"
+                        : "New thread"
+          }
+          subtitle={activeProject ? activeProject.path : "No project connected"}
+          onOpenFolder={() => void openProject()}
+          onOpenSettings={() => { setShowSettings(true); setWorkspacePage("settings"); }}
+        />
+        {showSettings || workspacePage === "settings" ? (
           <div className="content-scroll">
-            <Settings onBack={() => setShowSettings(false)} />
+            <Settings onBack={() => { setShowSettings(false); setWorkspacePage("threads"); }} />
+          </div>
+        ) : workspacePage === "automations" ? (
+          <div className="content-scroll px-6 py-5">
+            <AutomationsPage inbox={inbox} approvals={approvals} policy={controlState?.policy || null} />
+          </div>
+        ) : workspacePage === "skills" ? (
+          <div className="content-scroll px-6 py-5">
+            <SkillsPage
+              agentModels={settingsSnapshot?.agent_models || {}}
+              agentTools={settingsSnapshot?.agent_tools || {}}
+              personas={controlState?.personas || []}
+              connectors={controlState?.connectors || []}
+            />
+          </div>
+        ) : workspacePage === "documents" ? (
+          <div className="content-scroll px-6 py-5">
+            <DocumentsPage
+              projectName={activeProject?.name}
+              projectPath={activeProject?.path}
+              projectLoading={projectLoading}
+              onOpenFolder={() => void openProject()}
+            />
+          </div>
+        ) : workspacePage === "language" ? (
+          <div className="content-scroll px-6 py-5">
+            <LanguagePage
+              selectedLanguage={uiLanguage}
+              availableLanguages={availableLanguages}
+              onSelectLanguage={(language) => {
+                setUiLanguage(language);
+                window.localStorage.setItem("rigovo.ui.language", language);
+              }}
+            />
           </div>
         ) : (
           <>
             {/* Scrollable content zone */}
             <div className="content-scroll px-6 py-5">
-              {!selectedTask && inbox.length === 0 && (
+              {!selectedTask && (
                 <EmptyState onSelectExample={(text) => { setTaskInput(text); taskInputRef.current?.focus(); }} />
-              )}
-
-              {!selectedTask && inbox.length > 0 && (
-                <div className="flex items-center justify-center h-full">
-                  <p className="text-sm text-slate-600">Select a task from the sidebar</p>
-                </div>
               )}
 
               {selectedTask && (
@@ -334,10 +528,18 @@ export default function App(): JSX.Element {
               value={taskInput}
               onChange={setTaskInput}
               onSubmit={(e) => void createTask(e)}
+              onExecuteCommand={executeCommand}
               creating={taskCreating}
               message={taskMsg}
               onDismissMessage={() => setTaskMsg("")}
               apiReachable={apiReachable}
+              runtimeLabel={workspaceControls.runtime}
+              permissionsLabel={workspaceControls.permissions}
+              modelLabel={workspaceControls.model}
+              effortLabel={workspaceControls.effort}
+              onOpenSettings={() => { setShowSettings(true); setWorkspacePage("settings"); }}
+              onAddFiles={() => { void openProject(); }}
+              mentionFiles={mentionFiles}
             />
           </>
         )}

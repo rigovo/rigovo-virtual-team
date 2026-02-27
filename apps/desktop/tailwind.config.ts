@@ -6,70 +6,92 @@ const config: Config = {
     extend: {
       colors: {
         brand: {
-          DEFAULT: "#4f46e5",
-          light: "#6366f1",
-          dark: "#4338ca",
-          glow: "rgba(79,70,229,0.15)",
+          DEFAULT: "#1a1a1a",
+          light: "#3b3b3b",
+          dark: "#0a0a0a",
+          glow: "rgba(0,0,0,0.06)",
         },
-        base: "#0f172a",
-        surface: "#1e293b",
-        card: "#273549",
-        elevated: "#334155",
-        muted: "#94a3b8",
+        accent: {
+          DEFAULT: "#0d0d0d",
+          muted: "#6b6b6b",
+        },
+        base: "#0a0a0a",
+        surface: "#f5f5f4",
+        card: "#ffffff",
+        elevated: "#ffffff",
+        muted: "#8b8b8b",
+        border: {
+          DEFAULT: "rgba(0,0,0,0.08)",
+          strong: "rgba(0,0,0,0.14)",
+        },
       },
       fontFamily: {
         sans: [
-          "Inter", "SF Pro Display", "SF Pro Text",
-          "system-ui", "-apple-system", "Segoe UI", "Roboto", "sans-serif"
+          "Inter",
+          "-apple-system",
+          "BlinkMacSystemFont",
+          "SF Pro Display",
+          "SF Pro Text",
+          "system-ui",
+          "Segoe UI",
+          "Roboto",
+          "sans-serif",
         ],
         mono: [
-          "JetBrains Mono", "SF Mono", "Menlo", "ui-monospace", "monospace"
-        ]
+          "JetBrains Mono",
+          "SF Mono",
+          "Menlo",
+          "ui-monospace",
+          "monospace",
+        ],
+      },
+      fontSize: {
+        "2xs": ["0.6875rem", { lineHeight: "1rem" }],       // 11px
+        xs: ["0.75rem", { lineHeight: "1.125rem" }],         // 12px
+        sm: ["0.8125rem", { lineHeight: "1.25rem" }],        // 13px
+        base: ["0.875rem", { lineHeight: "1.375rem" }],      // 14px
+        lg: ["0.9375rem", { lineHeight: "1.5rem" }],         // 15px
+        xl: ["1.0625rem", { lineHeight: "1.625rem" }],       // 17px
+        "2xl": ["1.25rem", { lineHeight: "1.75rem" }],       // 20px
+        "3xl": ["1.5rem", { lineHeight: "2rem" }],           // 24px
+      },
+      borderRadius: {
+        "4xl": "2rem",
+      },
+      boxShadow: {
+        soft: "0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.02)",
+        card: "0 2px 8px rgba(0,0,0,0.04), 0 0 1px rgba(0,0,0,0.06)",
+        elevated: "0 8px 24px rgba(0,0,0,0.06), 0 0 1px rgba(0,0,0,0.08)",
+        input: "0 2px 6px rgba(0,0,0,0.03)",
+        "input-focus": "0 0 0 3px rgba(0,0,0,0.06)",
       },
       keyframes: {
         fadeup: {
-          "0%": { opacity: "0", transform: "translateY(12px)" },
-          "100%": { opacity: "1", transform: "translateY(0)" }
+          "0%": { opacity: "0", transform: "translateY(8px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
         },
         "slide-in": {
-          "0%": { opacity: "0", transform: "translateX(-8px)" },
-          "100%": { opacity: "1", transform: "translateX(0)" }
+          "0%": { opacity: "0", transform: "translateX(-6px)" },
+          "100%": { opacity: "1", transform: "translateX(0)" },
         },
-        "pulse-glow": {
-          "0%, 100%": { boxShadow: "0 0 0 0 rgba(79,70,229,0)" },
-          "50%": { boxShadow: "0 0 12px 4px rgba(79,70,229,0.25)" }
-        },
-        "typing-bounce": {
-          "0%, 80%, 100%": { transform: "translateY(0)" },
-          "40%": { transform: "translateY(-4px)" }
-        },
-        "border-pulse": {
-          "0%, 100%": { borderColor: "rgba(255,255,255,0.05)" },
-          "50%": { borderColor: "rgba(79,70,229,0.3)" }
-        },
-        "glow-enter": {
-          "0%": { boxShadow: "0 0 20px 8px rgba(79,70,229,0.3)" },
-          "100%": { boxShadow: "0 0 0 0 rgba(79,70,229,0)" }
+        "fade-in": {
+          "0%": { opacity: "0" },
+          "100%": { opacity: "1" },
         },
         spin: {
           "0%": { transform: "rotate(0deg)" },
-          "100%": { transform: "rotate(360deg)" }
-        }
+          "100%": { transform: "rotate(360deg)" },
+        },
       },
       animation: {
-        fadeup: "fadeup 340ms ease both",
-        "slide-in": "slide-in 280ms ease both",
-        "pulse-glow": "pulse-glow 2s ease-in-out infinite",
-        "typing-1": "typing-bounce 1.2s ease-in-out infinite",
-        "typing-2": "typing-bounce 1.2s ease-in-out 0.15s infinite",
-        "typing-3": "typing-bounce 1.2s ease-in-out 0.3s infinite",
-        "border-pulse": "border-pulse 2s ease-in-out infinite",
-        "glow-enter": "glow-enter 600ms ease-out both",
-        spin: "spin 1s linear infinite"
-      }
-    }
+        fadeup: "fadeup 280ms ease both",
+        "slide-in": "slide-in 220ms ease both",
+        "fade-in": "fade-in 200ms ease both",
+        spin: "spin 1s linear infinite",
+      },
+    },
   },
-  plugins: []
+  plugins: [],
 };
 
 export default config;

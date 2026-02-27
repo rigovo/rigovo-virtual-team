@@ -1,16 +1,17 @@
-/* ------------------------------------------------------------------ */
-/*  Sidebar — dark sidebar with task list + settings gear               */
-/* ------------------------------------------------------------------ */
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { InboxTask, Project } from "../types";
-import { statusClass } from "../defaults";
+
+type SidebarView = "threads" | "automations" | "skills" | "documents" | "language" | "settings";
 
 interface SidebarProps {
   userName: string;
+  userEmail?: string;
   userInitials: string;
   organizationName?: string;
   totalUsers?: number;
   inbox: InboxTask[];
   selected: string;
+  activeView: SidebarView;
   onSelect: (id: string) => void;
   onNewTask: () => void;
   onOpenFolder: () => void;
@@ -19,154 +20,249 @@ interface SidebarProps {
   onSignOut: () => void;
   apiReachable: boolean | null;
   onOpenSettings: () => void;
+  onOpenAutomations: () => void;
+  onOpenSkills: () => void;
+  onOpenDocuments: () => void;
+  onOpenLanguage: () => void;
 }
 
-/* Split inbox into active vs completed */
-function splitTasks(inbox: InboxTask[]) {
-  const active: InboxTask[] = [];
-  const done: InboxTask[] = [];
-  for (const t of inbox) {
-    const s = String(t.status || "").toLowerCase();
-    if (s.includes("complete") || s.includes("fail") || s.includes("reject")) {
-      done.push(t);
-    } else {
-      active.push(t);
-    }
-  }
-  return { active, done };
+function SvgIcon({ children, size = 16 }: { children: ReactNode; size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      width={size}
+      height={size}
+    >
+      {children}
+    </svg>
+  );
+}
+
+function NavItem({
+  active,
+  label,
+  icon,
+  onClick,
+  shortcut,
+}: {
+  active: boolean;
+  label: string;
+  icon: ReactNode;
+  onClick: () => void;
+  shortcut?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`sidebar-nav-btn${active ? " active" : ""}`}
+    >
+      <span className="sidebar-icon">{icon}</span>
+      <span className="flex-1">{label}</span>
+      {shortcut && (
+        <span className="text-[11px] font-normal" style={{ color: "var(--ui-text-subtle)" }}>
+          {shortcut}
+        </span>
+      )}
+    </button>
+  );
 }
 
 export default function Sidebar({
-  userName, userInitials, organizationName, totalUsers, inbox, selected, onSelect,
-  onNewTask, onOpenFolder, activeProject, projectLoading,
-  onSignOut, apiReachable, onOpenSettings
+  userName,
+  userEmail,
+  userInitials,
+  organizationName,
+  totalUsers,
+  inbox,
+  selected,
+  activeView,
+  onSelect,
+  onNewTask,
+  onOpenFolder: _onOpenFolder,
+  activeProject,
+  projectLoading: _projectLoading,
+  onSignOut,
+  apiReachable: _apiReachable,
+  onOpenSettings,
+  onOpenAutomations,
+  onOpenSkills,
+  onOpenDocuments,
+  onOpenLanguage,
 }: SidebarProps) {
-  const { active, done } = splitTasks(inbox);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      if (!menuRef.current) return;
+      if (menuRef.current.contains(event.target as Node)) return;
+      setMenuOpen(false);
+    };
+    if (menuOpen) window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [menuOpen]);
 
   return (
     <aside className="sidebar">
-      {/* Logo + status */}
-      <div className="flex items-center gap-2.5 px-4 py-4">
-        <div className="flex h-8 w-8 items-center justify-center rounded-xl text-sm font-bold text-white bg-brand shadow-lg shadow-brand/20">
-          R
+      <div className="sidebar-inner codex-sidebar">
+        {/* Drag region for native traffic lights */}
+        <div className="codex-top-row">
+          <div style={{ width: 70 }} aria-hidden="true" />
         </div>
-        <span className="text-sm font-semibold text-slate-200">Rigovo</span>
-        {organizationName && (
-          <span className="text-[10px] text-slate-500 truncate max-w-[90px]" title={organizationName}>
-            {organizationName}
+
+        {/* Primary nav */}
+        <nav className="sidebar-nav">
+          <NavItem
+            active={activeView === "threads" && !selected}
+            label="New thread"
+            onClick={onNewTask}
+            icon={
+              <SvgIcon>
+                <path d="M3.5 3.5h5M3.5 6.5h4M3.5 9.5h3" />
+                <path d="M10.5 8.5l2 2-3.5 3.5h-2v-2l3.5-3.5z" />
+              </SvgIcon>
+            }
+          />
+          <NavItem
+            active={activeView === "automations"}
+            label="Automations"
+            onClick={onOpenAutomations}
+            icon={
+              <SvgIcon>
+                <circle cx="8" cy="8" r="5" />
+                <path d="M8 5.5v2.5l1.8 1" />
+              </SvgIcon>
+            }
+          />
+          <NavItem
+            active={activeView === "skills"}
+            label="Skills"
+            onClick={onOpenSkills}
+            icon={
+              <SvgIcon>
+                <rect x="3" y="3" width="10" height="10" rx="1.5" />
+                <path d="M6 3v10M10 3v10" />
+              </SvgIcon>
+            }
+          />
+        </nav>
+
+        {/* Threads header */}
+        <div className="sidebar-threads-head">
+          <span>Threads</span>
+          <div className="sidebar-head-actions">
+            <button type="button" onClick={onNewTask} className="sidebar-head-btn" title="New thread">
+              <SvgIcon size={15}>
+                <path d="M8 3.5v9M3.5 8h9" />
+              </SvgIcon>
+            </button>
+          </div>
+        </div>
+
+        {/* Documents link */}
+        <button
+          type="button"
+          onClick={onOpenDocuments}
+          className={`sidebar-folder-link${activeView === "documents" ? " active" : ""}`}
+        >
+          <span className="sidebar-icon">
+            <SvgIcon size={15}>
+              <path d="M2.5 5.5h3.5l1-1.5h6.5v7a1 1 0 01-1 1h-9a1 1 0 01-1-1v-5.5z" />
+            </SvgIcon>
           </span>
-        )}
-        <span className={`ml-auto h-2 w-2 rounded-full ${
-          apiReachable === null ? "bg-slate-600" : apiReachable ? "bg-emerald-500" : "bg-rose-400"
-        }`} title={apiReachable === null ? "Checking..." : apiReachable ? "Connected" : "Disconnected"} />
-      </div>
-      {(organizationName || typeof totalUsers === "number") && (
-        <div className="px-4 pb-2">
-          <p className="text-[10px] text-slate-600">
-            {organizationName ? `${organizationName}` : "Workspace"}{typeof totalUsers === "number" ? ` · ${totalUsers} users` : ""}
-          </p>
-        </div>
-      )}
-
-      {/* New task + open folder */}
-      <div className="px-3 mb-1">
-        <button type="button"
-          className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-300 transition-all hover:bg-white/5 hover:text-white"
-          onClick={onNewTask}>
-          <span className="flex h-5 w-5 items-center justify-center rounded-md bg-brand/20 text-xs text-brand-light">+</span>
-          New task
+          Documents
         </button>
-      </div>
 
-      {activeProject && (
-        <div className="px-3 mb-2">
-          <button type="button"
-            className="flex w-full items-center gap-2 rounded-xl px-3 py-1.5 text-[11px] text-slate-600 transition-all hover:bg-white/5 hover:text-slate-400 truncate"
-            onClick={onOpenFolder} disabled={projectLoading}>
-            <span className="text-[10px]">{"\uD83D\uDCC2"}</span>
-            <span className="truncate">{activeProject.name || (projectLoading ? "Opening..." : activeProject.path)}</span>
-          </button>
+        {/* Scrollable thread list — ONLY this section scrolls */}
+        <div className="sidebar-scroll">
+          {inbox.length === 0 ? (
+            <div className="sidebar-no-threads">No threads yet</div>
+          ) : (
+            <div className="sidebar-project-group">
+              <div className="sidebar-project-row">
+                <span className="sidebar-icon">
+                  <SvgIcon size={13}>
+                    <path d="M2.5 5.5h3.5l1-1.5h6.5v7a1 1 0 01-1 1h-9a1 1 0 01-1-1v-5.5z" />
+                  </SvgIcon>
+                </span>
+                <span className="sidebar-project-label">
+                  {activeProject?.name || "rigour"}
+                </span>
+              </div>
+
+              <div className="sidebar-thread-groups">
+                {inbox.map((task) => (
+                  <button
+                    key={task.id}
+                    type="button"
+                    onClick={() => onSelect(task.id)}
+                    className={`sidebar-thread-row${selected === task.id ? " active" : ""}`}
+                  >
+                    <span className="sidebar-thread-title">{task.title}</span>
+                    <span className="sidebar-thread-time">{task.updatedAt}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
-      )}
 
-      {!activeProject && (
-        <div className="px-3 mb-2">
-          <button type="button"
-            className="flex w-full items-center gap-2 rounded-xl px-3 py-1.5 text-[11px] text-slate-600 transition-all hover:bg-white/5 hover:text-slate-400"
-            onClick={onOpenFolder} disabled={projectLoading}>
-            <span className="text-[10px]">{"\uD83D\uDCC2"}</span>
-            {projectLoading ? "Opening..." : "Open project folder"}
+        {/* Bottom — clean Settings link like Codex */}
+        <div className="sidebar-bottom" ref={menuRef}>
+          <button
+            type="button"
+            className="sidebar-nav-btn"
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            <span className="sidebar-icon">
+              <SvgIcon size={15}>
+                <circle cx="8" cy="8" r="5.5" />
+                <path d="M8 5.5v0M8 10.5v0" strokeWidth="0" />
+                <path d="M9.8 6.5a2 2 0 00-2.5-.7 2 2 0 00.7 3.7V11" />
+              </SvgIcon>
+            </span>
+            <span>Settings</span>
           </button>
-        </div>
-      )}
 
-      <div className="px-4 mb-2"><div className="h-px bg-white/5" /></div>
-
-      {/* Task list — scrollable */}
-      <div className="flex-1 overflow-y-auto px-2">
-        {inbox.length === 0 && (
-          <p className="px-3 py-8 text-center text-xs text-slate-600">No tasks yet</p>
-        )}
-
-        {/* Active tasks */}
-        {active.length > 0 && (
-          <div className="mb-2">
-            <p className="px-3 py-1.5 text-[10px] font-semibold text-slate-600 uppercase tracking-wider">
-              Active ({active.length})
-            </p>
-            {active.map((it) => (
-              <button key={it.id} type="button" onClick={() => onSelect(it.id)}
-                className={`task-item ${selected === it.id ? "active" : ""}`}>
-                <p className="text-sm font-medium leading-tight truncate">{it.title}</p>
-                <div className="mt-1.5 flex items-center gap-2">
-                  <span className={statusClass(it.status)}>{it.status}</span>
-                  <span className="text-[10px] text-slate-600">{it.updatedAt}</span>
+          {menuOpen && (
+            <div className="sidebar-popover animate-fade-in">
+              <div className="sidebar-pop-header">
+                <div className="flex items-center gap-2">
+                  <span
+                    className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-semibold"
+                    style={{ background: "rgba(0,0,0,0.08)", color: "var(--ui-text-secondary)" }}
+                  >
+                    {userInitials}
+                  </span>
+                  <span className="text-[var(--ui-text-secondary)] font-medium">
+                    {userEmail || userName}
+                  </span>
                 </div>
+                {organizationName && (
+                  <div className="mt-0.5 pl-7">
+                    {organizationName}
+                    {typeof totalUsers === "number" ? ` \u00B7 ${totalUsers} users` : ""}
+                  </div>
+                )}
+              </div>
+              <button type="button" className="sidebar-pop-btn" onClick={() => { setMenuOpen(false); onOpenSettings(); }}>
+                Settings
               </button>
-            ))}
-          </div>
-        )}
-
-        {/* Completed tasks */}
-        {done.length > 0 && (
-          <div className="mb-2">
-            <p className="px-3 py-1.5 text-[10px] font-semibold text-slate-600 uppercase tracking-wider">
-              Completed ({done.length})
-            </p>
-            {done.map((it) => (
-              <button key={it.id} type="button" onClick={() => onSelect(it.id)}
-                className={`task-item ${selected === it.id ? "active" : ""} opacity-60`}>
-                <p className="text-sm font-medium leading-tight truncate">{it.title}</p>
-                <div className="mt-1.5 flex items-center gap-2">
-                  <span className={statusClass(it.status)}>{it.status}</span>
-                  <span className="text-[10px] text-slate-600">{it.updatedAt}</span>
-                </div>
+              <button type="button" className="sidebar-pop-btn" onClick={() => { setMenuOpen(false); onOpenLanguage(); }}>
+                Language
               </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* User footer */}
-      <div className="border-t border-white/5 px-3 py-3">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-brand/20 text-xs font-semibold text-brand-light">
-            {userInitials}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-slate-300 truncate">{userName}</p>
-          </div>
-          <button type="button" onClick={onOpenSettings} title="Settings"
-            className="text-slate-600 hover:text-slate-400 transition p-1">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path d="M6.5 1.5L6.8 3.1C6.1 3.4 5.5 3.8 5 4.3L3.5 3.6L2 6.2L3.3 7.2C3.3 7.5 3.2 7.7 3.2 8C3.2 8.3 3.2 8.5 3.3 8.8L2 9.8L3.5 12.4L5 11.7C5.5 12.2 6.1 12.6 6.8 12.9L6.5 14.5H9.5L9.2 12.9C9.9 12.6 10.5 12.2 11 11.7L12.5 12.4L14 9.8L12.7 8.8C12.8 8.5 12.8 8.3 12.8 8C12.8 7.7 12.8 7.5 12.7 7.2L14 6.2L12.5 3.6L11 4.3C10.5 3.8 9.9 3.4 9.2 3.1L9.5 1.5H6.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
-              <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.2"/>
-            </svg>
-          </button>
-          <button type="button" onClick={onSignOut}
-            className="text-xs text-slate-600 hover:text-slate-400 transition">
-            Sign out
-          </button>
+              <div style={{ height: 1, background: "var(--ui-border)", margin: "4px 8px" }} />
+              <button type="button" className="sidebar-pop-btn" onClick={() => { setMenuOpen(false); onSignOut(); }}>
+                Log out
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </aside>

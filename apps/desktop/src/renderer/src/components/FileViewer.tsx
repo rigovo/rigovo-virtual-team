@@ -41,11 +41,11 @@ function detectLanguage(path: string): string {
 
 /* Role color helpers */
 const ROLE_COLORS: Record<string, string> = {
-  planner: "text-violet-400", lead: "text-purple-400", coder: "text-sky-400",
-  reviewer: "text-emerald-400", qa: "text-amber-400", security: "text-rose-400",
-  devops: "text-indigo-400", sre: "text-cyan-400", docs: "text-stone-400",
+  planner: "text-violet-600", lead: "text-purple-600", coder: "text-sky-600",
+  reviewer: "text-emerald-600", qa: "text-amber-600", security: "text-rose-600",
+  devops: "text-indigo-600", sre: "text-cyan-600", docs: "text-stone-500",
 };
-const roleColor = (r: string) => ROLE_COLORS[r.toLowerCase()] ?? "text-slate-400";
+const roleColor = (r: string) => ROLE_COLORS[r.toLowerCase()] ?? "text-[var(--ui-text-muted)]";
 
 /* File icon by extension */
 function fileIcon(path: string): string {
@@ -76,7 +76,6 @@ export default function FileViewer({ taskId, filesByAgent, allFiles }: FileViewe
     setFileContent(null);
     setFileError("");
 
-    // Try fetching from backend
     const res = await readJson<{ content: string; path: string; error?: string }>(
       `${API_BASE}/v1/tasks/${taskId}/files/${encodeURIComponent(path)}`
     );
@@ -112,25 +111,23 @@ export default function FileViewer({ taskId, filesByAgent, allFiles }: FileViewe
       {/* File tree section */}
       <div className={`${selectedFile ? "max-h-[180px]" : "flex-1"} overflow-y-auto`}>
         {!hasFiles && (
-          <p className="text-xs text-slate-500 py-6 text-center">No files changed yet</p>
+          <p className="text-xs text-[var(--ui-text-muted)] py-6 text-center">No files changed yet</p>
         )}
         {Object.entries(filesByAgent).map(([agent, agentFiles]) => (
           <div key={agent}>
-            {/* Agent group header */}
             <button
               type="button"
-              className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-white/[0.03] transition-colors"
+              className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-[rgba(0,0,0,0.02)] transition-colors"
               onClick={() => toggleAgent(agent)}
             >
-              <span className="text-[10px] text-slate-600">
+              <span className="text-[10px] text-[var(--ui-text-subtle)]">
                 {expandedAgents.has(agent) ? "\u25BC" : "\u25B6"}
               </span>
               <span className={`text-[10px] font-semibold uppercase tracking-wider ${roleColor(agent)}`}>
                 {agent}
               </span>
-              <span className="text-[10px] text-slate-600 ml-auto">{agentFiles.length}</span>
+              <span className="text-[10px] text-[var(--ui-text-subtle)] ml-auto">{agentFiles.length}</span>
             </button>
-            {/* File list */}
             {expandedAgents.has(agent) && agentFiles.map((f) => {
               const shortName = f.split("/").pop() || f;
               const dir = f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : "";
@@ -144,9 +141,9 @@ export default function FileViewer({ taskId, filesByAgent, allFiles }: FileViewe
                   <span className="text-[11px]">{fileIcon(f)}</span>
                   <div className="flex-1 min-w-0 text-left">
                     <span className="text-xs font-mono truncate block">{shortName}</span>
-                    {dir && <span className="text-[10px] text-slate-600 font-mono truncate block">{dir}/</span>}
+                    {dir && <span className="text-[10px] text-[var(--ui-text-subtle)] font-mono truncate block">{dir}/</span>}
                   </div>
-                  <span className="text-emerald-500/60 text-[10px] flex-shrink-0">+</span>
+                  <span className="text-emerald-500 text-[10px] flex-shrink-0">+</span>
                 </button>
               );
             })}
@@ -154,29 +151,27 @@ export default function FileViewer({ taskId, filesByAgent, allFiles }: FileViewe
         ))}
       </div>
 
-      {/* Monaco editor — shown when a file is selected */}
+      {/* Monaco editor */}
       {selectedFile && (
-        <div className="flex-1 min-h-0 flex flex-col border-t border-white/[0.06]">
-          {/* Editor header */}
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-white/[0.02]">
+        <div className="flex-1 min-h-0 flex flex-col border-t border-[var(--ui-border)]">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-[rgba(0,0,0,0.015)]">
             <span className="text-[11px]">{fileIcon(selectedFile)}</span>
-            <span className="text-[11px] font-mono text-slate-300 truncate flex-1">
+            <span className="text-[11px] font-mono text-[var(--ui-text-secondary)] truncate flex-1">
               {selectedFile.split("/").pop()}
             </span>
             <button
               type="button"
               onClick={() => { setSelectedFile(null); setFileContent(null); }}
-              className="text-[10px] text-slate-600 hover:text-slate-400 transition px-1.5 py-0.5 rounded hover:bg-white/5"
+              className="text-[10px] text-[var(--ui-text-subtle)] hover:text-[var(--ui-text-muted)] transition px-1.5 py-0.5 rounded hover:bg-[rgba(0,0,0,0.03)]"
             >
               Close
             </button>
           </div>
 
-          {/* Editor body */}
           <div className="flex-1 min-h-0">
             {loading ? (
               <div className="flex items-center justify-center h-full">
-                <div className="animate-spin h-4 w-4 border-2 border-brand border-t-transparent rounded-full" />
+                <div className="animate-spin h-4 w-4 border-2 border-[var(--ui-text)] border-t-transparent rounded-full" />
               </div>
             ) : fileContent ? (
               <Editor
@@ -207,9 +202,9 @@ export default function FileViewer({ taskId, filesByAgent, allFiles }: FileViewe
               />
             ) : fileError ? (
               <div className="flex h-full items-start justify-start p-3">
-                <div className="w-full rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-300">Evidence unavailable</p>
-                  <p className="mt-1 text-xs text-amber-100/90">{fileError}</p>
+                <div className="w-full rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-700">Evidence unavailable</p>
+                  <p className="mt-1 text-xs text-amber-600">{fileError}</p>
                 </div>
               </div>
             ) : null}
