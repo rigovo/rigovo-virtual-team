@@ -1,1259 +1,906 @@
 <p align="center">
-  <img src="https://img.shields.io/pypi/v/rigovo?style=for-the-badge&color=blue" alt="PyPI" />
-  <img src="https://img.shields.io/badge/python-3.10+-blue?style=for-the-badge" alt="Python" />
-  <img src="https://img.shields.io/badge/tests-353_passed-brightgreen?style=for-the-badge" alt="Tests" />
-  <img src="https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge" alt="License" />
+  <img src="apps/desktop/resources/icon.svg" width="80" alt="Rigovo" />
 </p>
 
 <h1 align="center">Rigovo — Virtual Engineering Team as a Service</h1>
 
 <p align="center">
-  <strong>8 AI agents. One CLI. Production-grade code with deterministic quality gates.</strong><br/>
-  Stop babysitting AI. Rigovo assembles a full engineering team — planner, coder, reviewer, security, QA, devops, SRE, tech lead — that ships code governed by <a href="https://github.com/rigour-labs/rigour">Rigour</a> quality gates.
+  <img src="https://img.shields.io/badge/version-0.1.0-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/tests-661_passed_|_7_failing-yellow?style=flat-square" />
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" />
+  <img src="https://img.shields.io/badge/desktop-Electron_0.1.0-blueviolet?style=flat-square" />
+</p>
+
+<p align="center">
+  <strong>8 AI agents. One pipeline. Production-grade code governed by deterministic quality gates.</strong>
 </p>
 
 ---
 
-## Get Started in 60 Seconds
+> **The Matrix Vision** — Neo is the Master Agent that orchestrates everything. Morpheus is the Planner who maps the territory before Neo fights. Trinity (Rigour) is the quality conscience that never lets a bad line through. Mr. Smith is DevOps/SecOps/Governance — the adversary that keeps Neo honest, always pinching, always pushing, so Neo constantly learns and improves. Without Mr. Smith's pressure, Neo gets complacent.
+
+---
+
+## Table of Contents
+
+- [What Is This](#what-is-this)
+- [The Brain — How It Works](#the-brain--how-it-works)
+- [The Agents — The Team](#the-agents--the-team)
+- [How Agents Talk and Decide](#how-agents-talk-and-decide)
+- [The Quality Loop — Mr. Smith Never Sleeps](#the-quality-loop--mr-smith-never-sleeps)
+- [Memory — Neo Remembers Every Fight](#memory--neo-remembers-every-fight)
+- [The Full Pipeline](#the-full-pipeline)
+- [Desktop App](#desktop-app)
+- [Current Status — Honest Assessment](#current-status--honest-assessment)
+- [Getting Started](#getting-started)
+- [Configuration](#configuration)
+- [Architecture Deep Dive](#architecture-deep-dive)
+
+---
+
+## What Is This
+
+Rigovo turns a single task description into production-ready code by assembling a **coordinated team of 8 AI agents** — each with a specific role, memory of past work, and governed by deterministic quality gates.
+
+You describe what needs to be done. Rigovo:
+
+1. Scans your codebase to understand the project context
+2. Classifies the task (complexity, type)
+3. Assembles the right team (planner → coder → parallel reviewer/security/QA → lead)
+4. Executes each agent in dependency order
+5. Runs quality gates after every code-producing agent
+6. Lets agents retry, self-correct, or request a full replan when stuck
+7. Optionally pauses for your approval before committing
+8. Extracts what was learned — memory persists across tasks and projects
+
+The result: files changed, summary, cost, token count, audit trail — all in one shot.
+
+---
+
+## The Brain — How It Works
+
+### The Orchestration Engine: LangGraph DAG
+
+The system is built on **LangGraph** — a checkpoint-based directed acyclic graph (DAG) execution engine. Every task is a graph traversal. Every node is a Python async function. Every edge is a routing decision.
+
+```
+scan_project → classify → route_team → assemble
+      ↓
+[Optional] plan_approval ──► REJECTED → done
+      ↓ approved
+execute_agent ──► quality_check
+      │                │
+      │          pass  ↓
+      │         next agent or parallel fan-out
+      │
+      │          fail → retry (max 5x)
+      │          fail → replan → retry once more
+      │          fail → task fails
+      ↓
+[reviewer ║ security ║ qa] ← parallel execution
+      ↓
+[Optional debate] ← if reviewer requests changes, coder re-runs
+      ↓
+[Optional] commit_approval
+      ↓
+enrich → store_memory → finalize
+```
+
+**Why LangGraph?** Because checkpointing means if the process dies mid-execution, the task resumes from the last completed node — not from scratch. Every node writes its output to SQLite before the next node runs.
+
+### The Master Agent: Neo
+
+Neo (the Master Agent) makes **three decisions** that shape every task:
+
+1. **Classification** (`classify_node`) — LLM call to determine `task_type` and `complexity`
+   - `task_type`: feature / bug_fix / refactor / test / docs / security / devops / analysis
+   - `complexity`: low / medium / high / critical
+   - Reasoning stored in state for audit
+
+2. **Routing** (`route_team_node`) — LLM call to select which team handles the task
+   - Currently: `engineering` domain (8-agent pipeline)
+   - Considers complexity, task type, available agents
+
+3. **Assembly** (`assemble_node`) — Deterministic. Reads team config. Builds the execution DAG.
+   - Each agent declares `depends_on: [role, ...]`
+   - Computes `ready_roles` (can run now) and `blocked_roles` (dependency failed)
+   - Identifies roles that can run in parallel: `{reviewer, qa, security, docs}`
+
+### The TaskState: The Bloodstream
+
+Every node reads from and writes to a single **TaskState dictionary**. This flows through the entire pipeline, checkpointed at every step.
+
+| Section | What It Holds |
+|---|---|
+| Identity | `task_id`, `description`, `project_root`, `workspace_id` |
+| Classification | `task_type`, `complexity`, `reasoning` |
+| Team Config | `team_id`, `agents`, `pipeline_order`, `execution_dag`, `gates_after` |
+| Execution | `current_agent_role`, `ready_roles`, `completed_roles`, `blocked_roles` |
+| Outputs | `agent_outputs[role]` → summary, files_changed, tokens, cost, duration_ms |
+| Inter-agent | `agent_messages` → consultation thread between agents |
+| Gates | `gate_results`, `gate_history`, `fix_packets`, `retry_count` |
+| Approval | `approval_status` (pending / approved / rejected), `user_feedback` |
+| Budget | `cost_accumulator[agent_id]`, `budget_max_cost_per_task` |
+| Memory | `memories_to_store`, `memory_context_by_role`, `memory_retrieval_log` |
+| Enrichment | `enrichment_updates` → pitfalls extracted from this run |
+| Debate | `debate_round`, `reviewer_feedback`, `debate_target_role` |
+| Context | `project_snapshot` → tech stack, files, entry points |
+| Audit | `events[]` → every significant moment, timestamped |
+
+---
+
+## The Agents — The Team
+
+Eight roles. Each is a Python `Agent` entity with: system prompt, tool list, LLM model, enrichment context, `depends_on`, and output contract.
+
+### 1. Planner — Morpheus
+> "I can only show you the door, Neo. You're the one that has to walk through it."
+
+Maps the territory before anyone writes a line of code. Reads the codebase (read-only tools), understands the task, produces a structured plan that every downstream agent receives as context.
+
+- **Tools**: `read_file`, `search_codebase`, `list_directory`, `read_dependencies`
+- **Depends on**: nothing (runs first)
+- **Output**: structured plan — which files to change, why, what approach
+- **Gates**: SKIPPED (no code produced)
+- **Model**: Claude Sonnet
+
+### 2. Coder — Neo
+> "There is no spoon."
+
+The central agent. Receives the planner's map, reads relevant code, implements the task. Most tokens, cost, and time go here.
+
+- **Tools**: `read_file`, `write_file`, `list_directory`, `search_codebase`, `run_command`, `consult_agent`, `spawn_subtask`
+- **Depends on**: planner
+- **Output**: modified/created files, implementation summary
+- **Gates**: ALWAYS RUN — file size, type hints, naming, error handling, imports, etc.
+- **Retry loop**: up to 5x with fix packets if gates fail
+- **Model**: Claude Opus (most capable)
+
+### 3. Reviewer — The Oracle
+> "You've already made the choice. Now you have to understand it."
+
+Reads what the coder wrote, identifies logic errors, suggests improvements. Does not write code — critiques.
+
+- **Tools**: `read_file`, `search_codebase`, `list_directory`
+- **Depends on**: coder
+- **Runs**: in parallel with security and QA
+- **Output**: APPROVED or CHANGES_REQUESTED + specific feedback
+- **Debate trigger**: if CHANGES_REQUESTED → coder re-runs with feedback (max 2 debate rounds)
+- **Model**: Claude Sonnet
+
+### 4. Security — Agent Smith (the constructive one)
+> "Me, me, me."
+
+Always finds problems. Scans for vulnerabilities, injection risks, auth issues, exposed secrets, insecure defaults.
+
+- **Tools**: `read_file`, `search_codebase`, `list_directory`, `run_command`
+- **Depends on**: coder
+- **Runs**: in parallel with reviewer and QA
+- **Output**: PASS or VULNERABILITIES_FOUND + CVE-style findings
+- **Model**: Claude Sonnet
+
+### 5. QA — Tank (the operator)
+> "I'm going to need guns. Lots of guns."
+
+Writes tests. Not reviews tests — writes them. Reads the implementation, understands contracts, produces test files.
+
+- **Tools**: `read_file`, `write_file`, `run_command`, `search_codebase`
+- **Depends on**: coder
+- **Runs**: in parallel with reviewer and security
+- **Output**: test files, test run results
+- **Gates**: RUN (QA produces code)
+- **Model**: Claude Sonnet
+
+### 6. DevOps — Mr. Smith (infrastructure)
+> "It's the sound of inevitability."
+
+Handles deployment configuration: CI/CD, Docker, Kubernetes, GitHub Actions, IaC. Runs when task requires it.
+
+- **Tools**: `read_file`, `write_file`, `run_command`, `list_directory`
+- **Depends on**: coder, qa
+- **Model**: Claude Sonnet
+
+### 7. SRE — The Twins
+> "We don't crash."
+
+Adds observability, alerting, SLOs, runbooks. Ensures code is operable in production, not just functional.
+
+- **Tools**: `read_file`, `write_file`, `search_codebase`
+- **Depends on**: devops
+- **Model**: Claude Sonnet
+
+### 8. Tech Lead — The Architect
+> "There is only one constant. Action. Reaction. Cause and effect."
+
+Reviews the entire output across all agents — code, process, security, tests. Signs off on the final result.
+
+- **Tools**: `read_file`, `search_codebase` (read-only)
+- **Depends on**: all other agents (runs last)
+- **Output**: SHIP or HOLD + reasoning
+- **Gates**: SKIPPED (assessment role)
+- **Model**: Claude Opus
+
+---
+
+## How Agents Talk and Decide
+
+### Inter-Agent Consultation
+
+Any agent can **consult another agent** mid-execution using the `consult_agent` tool:
+
+```python
+# Coder mid-implementation:
+consult_agent(target_role="security", question="Is this JWT validation approach safe?")
+
+# Security responds immediately:
+"Use PyJWT with algorithm whitelist. Never use 'none' algorithm.
+ Validate exp, iat, and iss claims. Consider refresh token rotation."
+
+# Response injected back into coder's tool results → coder continues with this knowledge
+```
+
+Consultation policy from `rigovo.yml`:
+```yaml
+consultation:
+  enabled: true
+  max_question_chars: 1200
+  max_response_chars: 1200
+  allowed_targets:
+    planner: [lead, security, devops]
+    coder: [reviewer, security, qa]
+    qa: [coder, security]
+```
+
+The full consultation thread is stored in `agent_messages` in TaskState, visible to every subsequent agent.
+
+### The Coder ↔ Reviewer Debate
+
+If reviewer outputs `CHANGES_REQUESTED`:
+
+1. Reviewer's feedback injected into coder's next run as `reviewer_feedback`
+2. Coder re-runs with full context of the critique
+3. Coder makes changes, output re-evaluated
+4. Max 2 debate rounds — then whatever coder produced is committed
+
+Implemented via `check_parallel_postprocess()` → `prepare_debate_round()` in `edges.py`. Parallel roles (`reviewer`, `qa`, `security`, `docs`) run via `asyncio.gather`.
+
+### The Agentic Tool Loop
+
+Each agent runs in a **tool loop** — not one LLM call, many:
+
+```
+1. LLM receives: system_prompt + task + context + (optional fix packet)
+2. LLM decides: call a tool OR produce final output
+3. If tool call → execute tool → feed result back to LLM
+4. Repeat until LLM stops calling tools OR safety limits hit
+```
+
+Safety limits:
+- Max 25 tool call rounds per agent execution
+- Idle timeout: 2 minutes
+- Batch timeout: 15 minutes
+
+Context injected into every agent (in order):
+1. Base system prompt (role identity)
+2. Enrichment context (learned pitfalls from past tasks)
+3. Memory context (semantically similar past task learnings)
+4. Project snapshot (tech stack, key files, structure)
+5. Previous agents' outputs (what planner decided, what coder did)
+6. Consultation thread (what agents said mid-task)
+7. Fix packet (if retrying: "Fix these violations...")
+
+---
+
+## The Quality Loop — Mr. Smith Never Sleeps
+
+### Rigour Gates
+
+After every **code-producing agent** (coder, qa, devops, sre), `quality_check_node` runs:
+
+```
+Agent outputs files
+       ↓
+quality_check_node → Rigour CLI gates (deterministic, < 1s, no LLM)
+       ↓
+PASS → advance to next agent
+FAIL → generate FixPacket → inject into agent's next run → retry
+```
+
+| Gate | What It Checks |
+|---|---|
+| `file_size` | Files must be < 400 lines |
+| `type_hints` | Python functions need type annotations |
+| `naming` | PEP 8 — snake_case functions, PascalCase classes |
+| `error_handling` | No bare `except:` — must specify exception type |
+| `magic_numbers` | Extract constants, no raw numbers in logic |
+| `async_safety` | `async def` functions must actually await something |
+| `import_validation` | Only import packages that exist in requirements |
+| `forbidden_content` | No TODOs, no placeholder text, no empty `pass` bodies |
+
+### The Fix Packet
+
+When gates fail, a `FixPacket` is injected as a prefix to the agent's next system prompt:
+
+```
+[FIX REQUIRED #1]
+The following violations were found in your output:
+
+1. file_size: src/auth/router.py has 412 lines (limit: 400)
+   Suggestion: Split into router.py (routes only) and service.py (logic)
+
+2. error_handling: bare `except:` on line 47
+   Suggestion: Use `except (ValueError, TypeError) as e:` and log the error
+
+Fix ALL violations before re-submitting. Do not introduce new violations.
+```
+
+Agent reads, understands, fixes specifically what was wrong. Max 5 attempts per role.
+
+### The Replan Node
+
+When retry loop is exhausted AND replan is enabled:
+
+```
+retry_count >= max_retries AND replan.enabled = true
+        ↓
+replan_node(state, master_llm)
+   Strategy "deterministic": rule-based (no model variance)
+   Strategy "llm":           Master Agent generates correction plan
+        ↓
+"[REPLAN #1] Coder consistently fails file_size. New directive:
+ immediately extract all logic to service.py. Keep router.py
+ to route definitions only. Max 150 lines each."
+        ↓
+Agent runs ONCE more with replan directive
+        ↓
+Still fails → task status = "gate_failed_{role}"
+```
+
+Max replans per task: 1 (configurable). Replans do not retry indefinitely.
+
+---
+
+## Memory — Neo Remembers Every Fight
+
+### What Gets Stored
+
+After every completed task, the Master Agent extracts 1–5 memories and stores them as vectors:
+
+```python
+# Stored memory examples:
+{"content": "JWT validation must whitelist algorithms. Never accept 'none'. Validate exp and iat.",
+ "memory_type": "domain_knowledge"}
+
+{"content": "FastAPI: use Depends() for services, not global state. Prevents test isolation issues.",
+ "memory_type": "pattern"}
+
+{"content": "Error: bare except in auth code caused gate failure. Fix: except (JWTError,) as e: log then raise 401.",
+ "memory_type": "error_fix"}
+```
+
+Each memory is embedded (vectorized) and stored in SQLite with the vector alongside it.
+
+### How Memory Is Retrieved
+
+Before each agent runs:
+
+1. Task description embedded (same model)
+2. Cosine similarity search against all workspace memories
+3. Top-K relevant memories filtered by role preference
+4. Injected into agent system prompt:
+
+```
+RELEVANT MEMORIES FROM PAST TASKS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[0.92] JWT validation must whitelist algorithms...
+[0.84] FastAPI: use Depends() for services...
+[0.79] bare except in auth code caused gate failure...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### Memory Reinforcement
+
+When a task **passes all quality gates**, memories that were retrieved get:
+- `usage_count += 1`
+- `cross_project_usage += 1` (if used in a different project)
+
+Useful memories rank higher in future retrievals. Memories that don't help don't get reinforced.
+
+### Agent Enrichment — The Permanent Upgrade
+
+Separate from memories, each Agent entity has an `EnrichmentContext` persisted in the database:
+
+```python
+@dataclass
+class EnrichmentContext:
+    common_mistakes: list[str]        # "Never use bare except"
+    domain_knowledge: list[str]       # "Always validate CSRF tokens in FastAPI"
+    pre_check_rules: list[str]        # "Verify type hints exist before submitting"
+    workspace_conventions: list[str]  # "Use @dataclass not NamedTuple in this repo"
+    last_enriched_at: datetime | None
+```
+
+After every task, `enrich_node` analyzes gate violations and retry patterns, maps them to pitfalls (via `GATE_TO_PITFALL_MAP`), and **updates the agent's enrichment context** so the next task starts with that knowledge pre-loaded.
+
+```
+Gate: file_size violated 3 times by coder
+          ↓
+enrich_node appends to coder.enrichment.common_mistakes:
+  "Keep files under 400 lines. Split large files into focused modules."
+          ↓
+Next task: coder's system prompt includes this from the start
+          ↓
+Coder avoids the violation on first attempt
+          ↓
+Mr. Smith finds nothing to complain about → Neo improves
+```
+
+---
+
+## The Full Pipeline
+
+```
+User: "Add OAuth2 social login with Google and GitHub"
+
+Step 1 — PERCEPTION (scan_project_node)
+  Scans codebase → 67 source files
+  Detects: python, fastapi, sqlalchemy, pytest
+  Builds: ProjectSnapshot (tech_stack, key_files, patterns)
+
+Step 2 — CLASSIFICATION (classify_node) [Master Agent / Neo]
+  LLM: Claude Sonnet
+  Output: task_type=feature, complexity=high
+
+Step 3 — ROUTING (route_team_node) [Master Agent / Neo]
+  Output: team=engineering
+  Pipeline: planner → coder → [reviewer ‖ security ‖ qa] → lead
+
+Step 4 — ASSEMBLY (assemble_node)
+  Builds execution DAG from team config + complexity.
+  ready_roles = [planner]  (no deps)
+
+Step 5 — APPROVAL #1 (plan_approval, tier="approve")
+  Shows plan to user via desktop UI
+  Graph pauses via LangGraph interrupt() + threading.Event
+  User: approve / reject
+
+Step 6 — PLANNER [Morpheus]
+  Model: Claude Sonnet | Tools: read_file, search_codebase
+  Output: structured plan (which files, why, what approach)
+  Gates: SKIPPED
+
+Step 7 — CODER [Neo]
+  Model: Claude Opus | Tools: read_file, write_file, run_command, consult_agent
+  Mid-execution → consult_agent("security", "Is it safe to trust Google's email field?")
+  Security: "Yes, verified. Add email_verified check for robustness."
+  Writes 4 files.
+  Gates RUN:
+    ✗ error_handling — bare except on line 89
+  FixPacket generated → Coder retries (attempt 2/5)
+  → Fixes bare except → All gates pass
+
+Step 8 — PARALLEL WAVE [Reviewer ‖ Security ‖ QA] via asyncio.gather
+  Reviewer: CHANGES_REQUESTED — "OAuth state param not validated (CSRF)"
+  Security: VULNERABILITIES_FOUND — "State param not validated, token not bound"
+  QA: writes tests/auth/test_oauth.py (34 tests), all pass
+
+Step 9 — DEBATE ROUND [Coder ↔ Reviewer]
+  Reviewer feedback injected → Coder adds state validation + rate limiting
+  Gates re-run: all pass. Reviewer does not trigger second debate.
+
+Step 10 — TECH LEAD [The Architect]
+  Model: Claude Opus | Reads all outputs + gate results + QA report
+  Verdict: SHIP — "CSRF mitigated. 34 passing tests. Security clean."
+
+Step 11 — APPROVAL #2 (commit_approval)
+  User reviews files changed, gate results, QA results → approves
+
+Step 12 — ENRICHMENT (enrich_node)
+  Coder required 1 retry (error_handling gate)
+  → coder.enrichment.common_mistakes.append("bare except in auth code")
+  Next task: coder sees this from the start
+
+Step 13 — MEMORY (store_memory_node)
+  Master Agent extracts 3 memories, embeds, stores in SQLite
+  Reinforces retrieved memories that helped
+
+Step 14 — FINALIZE
+  status: completed
+  files_changed: 5 files
+  total_tokens: 31,420 | total_cost_usd: $0.38 | total_duration_ms: 52,400
+  retries: 1 (coder, gate: error_handling)
+```
+
+---
+
+## Desktop App
+
+The **Rigovo Control Plane** is a cross-platform Electron desktop app (v0.1.0).
+
+### Architecture
+
+```
+Electron Main Process (Node.js / TypeScript)
+  ├── Engine lifecycle — spawns/kills rigovo serve subprocess
+  ├── IPC handlers — engine:start/stop/status, dialog:open-folder,
+  │                  fs:list-project-files, git:clone, shell:open-external
+  └── Port management — kills stale port 8787 on production startup
+
+Preload Script (contextBridge)
+  └── Exposes safe electronAPI to renderer:
+      engineStatus, startEngine, stopEngine, engineLastError,
+      openExternal, openFolder, listProjectFiles, gitClone, pickCloneDest
+
+React Renderer (Vite + TailwindCSS)
+  ├── AuthScreen     — WorkOS PKCE sign-in flow
+  ├── Sidebar        — task inbox, navigation
+  ├── TaskInput      — new task entry + workspace selector (WorkspaceStrip)
+  ├── TaskDetail     — live agent progress, event stream
+  ├── AgentTimeline  — per-agent status visualization
+  ├── ApprovalCard   — approve/reject gate UI
+  ├── ActivityLog    — event stream viewer
+  ├── FileViewer     — changed files with Monaco editor
+  └── Settings       — model, permissions, API keys config
+```
+
+### Running in Development
+
+```bash
+# Start API + Electron together
+./scripts/e2e_desktop.sh
+
+# This script:
+# 1. Checks if API healthy at http://127.0.0.1:8787 — reuses if yes
+# 2. If not: kills stale process on 8787, starts Python source API
+# 3. Waits for /health to pass
+# 4. Launches: VITE_RIGOVO_API=http://127.0.0.1:8787 pnpm -C apps/desktop run dev
+```
+
+**WorkOS redirect URI**: must be `http://127.0.0.1:8787/v1/auth/callback` — set this exactly in WorkOS dashboard. Port 8787 is non-negotiable.
+
+### Auth Flow (WorkOS PKCE)
+
+```
+1. User clicks "Sign in"
+2. Renderer → GET /v1/auth/url → WorkOS URL with PKCE code_challenge
+3. electronAPI.openExternal() opens browser → user authenticates at WorkOS
+4. WorkOS redirects → http://127.0.0.1:8787/v1/auth/callback?code=...
+5. API: exchanges code + code_verifier → session (2-minute timeout on polling)
+6. Renderer polls GET /v1/auth/session every 1.5s
+7. signed_in=true → renderer enters control plane
+```
+
+If sign-in fails or times out: renderer shows error with "Try again" button. No infinite spinner.
+
+### Building for Distribution
+
+```bash
+pnpm -C apps/desktop run build && pnpm -C apps/desktop run dist
+# Output: apps/desktop/release/
+#   macOS:   Rigovo Control Plane.dmg
+#   Windows: Rigovo Control Plane Setup.exe
+#   Linux:   Rigovo-Control-Plane.AppImage
+```
+
+GitHub Actions (`desktop-release.yml`) builds all three platforms on `v*` tag push.
+
+---
+
+## Current Status — Honest Assessment
+
+### Real Test Numbers (as of `a76680c`)
+
+```
+Total tests:  668
+Passed:       661
+Failed:         7
+Duration:    ~11 seconds
+```
+
+### What Works
+
+| Feature | Status |
+|---|---|
+| LangGraph pipeline (full DAG) | ✅ Working |
+| All 8 engineering agents | ✅ Working |
+| Quality gates + fix packets + retry loop | ✅ Working |
+| Agentic tool loop (multi-round LLM ↔ tools) | ✅ Working |
+| SQLite checkpointing (crash recovery) | ✅ Working |
+| Inter-agent consultation | ✅ Working |
+| Parallel agent execution (asyncio.gather) | ✅ Working |
+| Coder ↔ Reviewer debate loop | ✅ Working |
+| Replan node (deterministic + LLM strategies) | ✅ Working |
+| Memory system (extract, embed, retrieve, reinforce) | ✅ Working |
+| Agent enrichment context (persistent learning) | ✅ Working |
+| Human-in-the-loop approval (threading.Event pause) | ✅ Working |
+| WorkOS PKCE auth (correct redirect URI) | ✅ Working |
+| SQLite + PostgreSQL persistence | ✅ Working |
+| Multi-LLM support (Anthropic, OpenAI) | ✅ Working |
+| CLI (rigovo run / init / doctor / serve) | ✅ Working |
+| Electron desktop app (auth + tasks + approvals) | ✅ Working |
+| Rigovo brand icon in desktop (dev + production) | ✅ Working |
+| Open folder + Clone repo buttons | ✅ Working (fixed -webkit-app-region bug) |
+| Cross-platform desktop builds (mac/win/linux) | ✅ Working (GitHub Actions) |
+| CI pipeline (tests + lint + rigour gates) | ✅ Working |
+| Cost tracking per agent (tokens + USD) | ✅ Working |
+| Budget soft-limit warning | ✅ Working |
+
+### Known Issues
+
+| Issue | Severity | Detail |
+|---|---|---|
+| Budget hard-stop not enforced | Low | Logs warning and continues. `BudgetExceededError` not raised. 1 test failing. |
+| 6 dashboard UI tests failing | Low | `TestCostTracker`, `TestTaskHeader` rendering tests — cosmetic only |
+| Demo mode removed | By design | API unreachable → stays on auth screen with status dot. No silent demo login. |
+| Git worktree execution | Partial | Config exists in state, execution path not fully wired |
+
+### Not Yet Built
+
+| Feature | Notes |
+|---|---|
+| Cloud sync (rigovo.com) | Infrastructure stub exists, not connected |
+| Multi-workspace collaboration | Single-workspace only |
+| Data / Infra / Security domain plugins | Only engineering domain exists |
+| MCP (Model Context Protocol) tools | Connector infrastructure exists, not wired |
+| Real-time SSE in desktop UI | Currently polling every 1.5–4s |
+| Cost hard-stop enforcement | Soft warning only |
+| Plugin marketplace | Planned |
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.10+
+- Node.js 20+ and pnpm 9+ (desktop only)
+- Anthropic API key (or OpenAI)
+- WorkOS account (for auth — optional for headless/CLI)
+
+### Install (CLI)
 
 ```bash
 pip install rigovo
 ```
 
-```
-$ cd your-project
-$ rigovo init
-
-Rigovo — Project Initialization
-
-  Detected: python/fastapi
-  Source:   src/
-  Tests:    tests/
-  Package:  pip
-
-  Created: rigovo.yml
-  Created: rigour.yml
-  Created: .env (add your API key)
-  Created: .rigovo/
-
-  Next steps:
-    1. Add your API key to .env
-    2. Run: rigovo doctor
-    3. Run: rigovo run "your first task"
-```
-
-```
-$ rigovo doctor
-
-Rigovo — Doctor
-
-  ✓ Python 3.10.12
-  ✓ Platform: Linux aarch64
-  ✓ rigovo.yml found
-  ✓ rigovo.yml valid (version 1)
-  ✓ Project: python/fastapi
-  ✓ .env found
-  ✓ .rigovo/ directory exists
-  ✓ Local database exists (116.0 KB)
-  ✓ ANTHROPIC_API_KEY configured
-  ✓ typer installed (CLI framework)
-  ✓ rich installed (Terminal UI)
-  ✓ pydantic installed (Configuration)
-  ✓ anthropic installed (Anthropic SDK)
-  ✓ langgraph installed (LangGraph orchestration)
-  ✓ Rigour CLI available (npx @rigour-labs/cli)
-  ✓ git found: /usr/bin/git
-  ✓ Disk space: 2.3 GB free
-
-  0 issue(s) found, 18 passed
-```
-
-```
-$ rigovo run "Add user authentication with JWT and refresh tokens"
-
-RIGOVO │ Add user authentication with JWT and refresh tokens
-  Team: engineering
-
-  🔍 Scanned: 42 files (python, fastapi)
-  🧠 Classified: feature (high)
-     JWT auth with refresh tokens requires multiple new modules
-
-  🔧 Pipeline: 📋 planner → 💻 coder → 🔍 reviewer → 🔒 security → 🧪 qa
-     📋 planner → Claude Sonnet 4.6
-     💻 coder → Claude Opus 4.6
-     🔍 reviewer → Claude Sonnet 4.6
-     🔒 security → Claude Haiku 4.5
-     🧪 qa → Claude Haiku 4.5
-
-─────────────────── 📋 planner ───────────────────
-  ✓ 📋 planner 4,211 tok │ $0.0213 │ 3.2s
-
-─────────────────── 💻 coder ────────────────────
-  ✓ 💻 coder 12,847 tok │ $0.1024 │ 18.4s
-    └─ 4 file(s): src/auth/router.py, src/auth/service.py, ...
-
-  ✓ Gates passed for coder
-
-  ⚡ Parallel execution: 🔍 reviewer 🔒 security 🧪 qa
-  ✓ Parallel execution complete
-
-╭──────────────────── Task Complete ────────────────────╮
-│   Status      COMPLETED                               │
-│   Duration    47.2s                                   │
-│   Agents      📋 planner → 💻 coder → 🔍 reviewer    │
-│               → 🔒 security → 🧪 qa                  │
-│   Tokens      24,891                                  │
-│   Cost        $0.3241                                 │
-╰───────────────────────────────────────────────────────╯
-```
-
-That's it. One command. Full engineering team.
-
----
-
-## Desktop Control Plane (Tauri)
-
-Rigovo now includes a UI-first desktop shell under `apps/desktop` so users can operate the virtual team from a control plane instead of CLI commands.
+### Initialize a Project
 
 ```bash
-cd apps/desktop
-pnpm install
-pnpm tauri dev
+cd your-project
+rigovo init
+# Creates: rigovo.yml, rigour.yml, .env, .rigovo/
 ```
 
-One-command local E2E launcher (API + desktop):
+### Validate Setup
 
 ```bash
+rigovo doctor
+# Checks Python, config, API keys, database, Rigour CLI, git
+```
+
+### Run a Task
+
+```bash
+rigovo run "Add input validation to all API endpoints with proper error responses"
+```
+
+### Desktop App (Development)
+
+```bash
+# Set up .env with your WorkOS + Anthropic keys
+# Then:
 ./scripts/e2e_desktop.sh
 ```
 
-Fast path (skip dependency install if already installed):
+### Desktop App (Production Build)
 
 ```bash
-RIGOVO_E2E_INSTALL=never ./scripts/e2e_desktop.sh
+pnpm -C apps/desktop install
+pnpm -C apps/desktop run build
+pnpm -C apps/desktop run dist
 ```
 
-Prerequisite for desktop shell: Rust toolchain (`cargo`) installed via `rustup`.
+### Run Tests
 
-The desktop app is designed for enterprise operation:
-
-- Task ingestion inbox (plugins/channels)
-- Approval center (`auto|notify|approve`)
-- Cross-team workforce matrix (Team A/B/C role assignment)
-- Live event stream + execution spotlight
-
-Identity setup is backend-managed. End users running the desktop app are not expected to set `WORKOS_*` or `RIGOVO_*` identity env vars locally. Admins configure identity once from the Governance panel (or server env for cloud/self-hosted deploys). Secrets like `WORKOS_API_KEY` are persisted in project `.env` (gitignored), not in `.rigovo/control_plane_state.json`.
-
----
-
-## Meet Your Team
-
+```bash
+pytest tests/ -q
+# Expect: 661 passed, 7 failed (known, non-blocking)
 ```
-$ rigovo agents
-
-Rigovo — Agents
-
-                        Software Engineering Agents
-┏━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━┓
-┃ Role ID  ┃ Name                      ┃ Model              ┃ Code ┃ Rules ┃ Tools ┃
-┡━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━┩
-│ planner  │ Technical Planner         │ Claude Sonnet 4.6  │  —   │     — │     5 │
-│ coder    │ Software Engineer         │ Claude Opus 4.6    │  ✓   │     7 │     8 │
-│ reviewer │ Code Reviewer             │ Claude Sonnet 4.6  │  —   │     3 │     4 │
-│ security │ Security Expert           │ Claude Haiku 4.5   │  —   │     — │     4 │
-│ qa       │ QA Engineer               │ Claude Haiku 4.5   │  ✓   │     — │     6 │
-│ devops   │ DevOps Engineer           │ Claude Haiku 4.5   │  ✓   │     — │     5 │
-│ sre      │ Site Reliability Engineer │ Claude Haiku 4.5   │  ✓   │     — │     5 │
-│ lead     │ Tech Lead                 │ Claude Opus 4.6    │  —   │     — │     4 │
-└──────────┴───────────────────────────┴────────────────────┴──────┴───────┴───────┘
-```
-
-Each agent has a dedicated system prompt, specialized tools, and custom rules for your stack. Inspect any agent:
-
-```
-$ rigovo agents coder
-
-Rigovo — Agents
-
-  Software Engineer (coder)
-  Implements code changes following the plan. Writes production-quality code.
-
-  Model:          Claude Opus 4.6
-  Produces code:  Yes
-  Pipeline order: 1
-  Tools:          read_file, write_file, list_directory, search_codebase,
-                  run_command, read_dependencies, spawn_subtask, consult_agent
-
-  Custom rules (7):
-    • Use type hints on all function signatures
-    • Follow PEP 8 conventions
-    • Use dataclasses or Pydantic models for structured data
-    • Use pathlib.Path instead of os.path
-    • Use Pydantic models for all request/response schemas
-    • Add OpenAPI descriptions to all endpoints
-    • Use dependency injection for services
-```
-
-Rules are auto-generated based on your stack. Python/FastAPI gets different rules than TypeScript/Next.js.
-
----
-
-## Architecture Overview
-
-Rigovo follows hexagonal architecture (ports & adapters) with strict dependency inversion. The domain layer has zero infrastructure imports — it defines interfaces that the infrastructure layer implements.
-
-```mermaid
-graph TB
-    subgraph CLI["CLI Layer"]
-        TYPER[Typer CLI<br/>15 commands]
-        TUI[Rich Terminal UI<br/>Streaming output]
-    end
-
-    subgraph APP["Application Layer"]
-        CMD[RunTaskCommand<br/>Task lifecycle orchestrator]
-        GRAPH[LangGraph StateGraph<br/>Compiled orchestration graph]
-        MASTER[Master Agent<br/>Classifier · Router · Enricher · Evaluator]
-        CTX[Context Engineering<br/>Scanner · Memory · Enrichment]
-    end
-
-    subgraph DOMAIN["Domain Layer — Zero I/O"]
-        ENT[Entities<br/>Task · Agent · Team · Quality · Memory]
-        IFACE[Interfaces<br/>LLMProvider · QualityGate · DomainPlugin]
-        SVC[Services<br/>CostCalculator · TeamAssembler · MemoryRanker]
-    end
-
-    subgraph INFRA["Infrastructure Layer"]
-        LLM[LLM Providers<br/>Anthropic · OpenAI · Groq · Ollama]
-        QG[Quality Gates<br/>Rigour CLI wrapper]
-        FS[Filesystem<br/>ToolExecutor · ProjectScanner]
-        DB[Persistence<br/>SQLite repos × 4]
-    end
-
-    subgraph PLUGINS["Domain Plugins"]
-        ENG[Engineering Domain<br/>8 roles · 8 tools · AST gates]
-        FUTURE[Future Domains<br/>LLM Training · Data Science · ...]
-    end
-
-    CLI --> APP
-    APP --> DOMAIN
-    APP --> INFRA
-    INFRA -.->|implements| IFACE
-    PLUGINS -.->|implements| IFACE
-```
-
-### Project Structure
-
-```
-rigovo/
-├── cli/                  # Typer commands (15 total) + Rich terminal UI
-│   ├── main.py           # CLI entry point — rigovo run, init, doctor, ...
-│   ├── commands_*.py     # Command implementations grouped by concern
-│   └── terminal/         # Rich console: streaming, approval prompts, summary
-├── application/          # Use-case orchestration — the "brain"
-│   ├── commands/         # RunTaskCommand — full task lifecycle orchestrator
-│   ├── graph/            # LangGraph pipeline: builder, state, edges, 10 nodes
-│   ├── master/           # Master Agent: classifier, router, enricher, evaluator
-│   └── context/          # Context engineering: scanner, memory retriever, builder
-├── domain/               # Pure domain logic — zero infrastructure dependencies
-│   ├── entities/         # Task, Agent, Team, Workspace, Quality, Memory, Cost, Audit
-│   ├── interfaces/       # LLMProvider, QualityGate, DomainPlugin, EventEmitter
-│   └── services/         # CostCalculator, TeamAssembler, MemoryRanker
-├── infrastructure/       # Concrete implementations (adapters)
-│   ├── llm/              # Anthropic, OpenAI providers + model catalog + registry
-│   ├── quality/          # Rigour CLI quality gate wrapper
-│   ├── persistence/      # SQLite: tasks, costs, audit, memory (4 repos)
-│   ├── filesystem/       # Tool executor: read/write files, run commands
-│   ├── embeddings/       # Embedding models for memory similarity search
-│   └── terminal/         # Rich console output with streaming
-├── domains/              # Pluggable domain definitions
-│   └── engineering/      # 8 agent roles, 8 tools, engineering-specific gates
-├── config.py             # Layered config: built-in → YAML → .env → env vars → CLI
-└── container.py          # Dependency injection (Composition Root)
-```
-
----
-
-## Pipeline Architecture
-
-Every task flows through a compiled LangGraph `StateGraph` — a directed acyclic graph with conditional edges, parallel fan-out, and SQLite checkpointing for crash recovery.
-
-```mermaid
-flowchart TD
-    START((START)) --> SCAN
-
-    subgraph PERCEIVE["Phase 1: Perception"]
-        SCAN["scan_project"]
-    end
-
-    SCAN --> CLASSIFY
-
-    subgraph THINK["Phase 2: Classification & Assembly"]
-        CLASSIFY["classify"]
-        CLASSIFY --> ROUTE_TEAM["route_team"]
-        ROUTE_TEAM --> ASSEMBLE["assemble"]
-    end
-
-    ASSEMBLE --> PLAN_APPROVAL
-
-    subgraph APPROVE_PLAN["Phase 3: Plan Approval"]
-        PLAN_APPROVAL{"plan_approval"}
-    end
-
-    PLAN_APPROVAL -->|rejected| FINALIZE
-    PLAN_APPROVAL -->|approved| EXECUTE
-
-    subgraph EXECUTE_LOOP["Phase 4: Agent Execution Loop"]
-        EXECUTE["execute_agent"]
-        EXECUTE -.-> CONSULT["consult_agent"]
-        CONSULT -.-> EXECUTE
-        EXECUTE --> QUALITY["quality_check"]
-        QUALITY --> GATE_ROUTE{Gates passed?}
-        GATE_ROUTE -->|fail + retries left| EXECUTE
-        GATE_ROUTE -->|fail + max retries| FINALIZE
-        GATE_ROUTE -->|pass| ROUTE_NEXT["route_next"]
-        ROUTE_NEXT --> PIPELINE_CHECK{Pipeline complete?}
-        PIPELINE_CHECK -->|more agents| EXECUTE
-        PIPELINE_CHECK -->|parallelizable agents| PARALLEL
-        PIPELINE_CHECK -->|done| COMMIT
-    end
-
-    subgraph PARALLEL_PHASE["Phase 5: Parallel Fan-Out"]
-        PARALLEL["parallel_fan_out"]
-        PARALLEL --> DEBATE_CHECK{"Reviewer requested changes?"}
-        DEBATE_CHECK -->|debate needed| DEBATE["debate_check"]
-        DEBATE --> EXECUTE
-        DEBATE_CHECK -->|debate done| COMMIT
-    end
-
-    subgraph COMMIT_PHASE["Phase 6: Commit Approval"]
-        COMMIT{"commit_approval"}
-    end
-
-    COMMIT -->|rejected| FINALIZE
-    COMMIT -->|approved| ENRICH
-
-    subgraph LEARN["Phase 7: Learning Loop"]
-        ENRICH["enrich"]
-        ENRICH --> MEMORY["store_memory"]
-    end
-
-    MEMORY --> FINALIZE
-
-    subgraph DONE["Phase 8: Finalization"]
-        FINALIZE["finalize"]
-    end
-
-    FINALIZE --> END_NODE((END))
-```
-
-### Pipeline Nodes (11 total)
-
-| # | Node | Purpose | Input | Output |
-|---|------|---------|-------|--------|
-| 1 | `scan_project` | Read codebase structure, detect tech stack | `project_root` | `ProjectSnapshot` |
-| 2 | `classify` | Master Agent classifies task type & complexity | description + snapshot | `ClassificationData` |
-| 3 | `route_team` | Select target team (auto route or requested team) | classification + team set | `team_config` seed |
-| 4 | `assemble` | Build agent pipeline based on classification | classification + team agents | `TeamConfig` with pipeline_order |
-| 5 | `plan_approval` | User approves proposed pipeline | team config | approval_status |
-| 6 | `execute_agent` | Run agent with full context engineering | agent config + context | `AgentOutput` |
-| 7 | `quality_check` | Run Rigour AST gates on changed files | files_changed | `GateResult` |
-| 8 | `route_next` | Advance to next agent, reset retry state | pipeline index | next agent config |
-| 9 | `parallel_fan_out` | Execute independent agents simultaneously | remaining roles | merged `AgentOutput`s |
-| 10 | `commit_approval` | User approves final results before commit | all outputs | approval_status |
-| 11 | `enrich` + `store_memory` + `finalize` | Extract learnings, persist, aggregate | full state | final result |
-
----
-
-## State Machine
-
-All state flows through a single `TaskState` TypedDict — checkpointed after every node for crash recovery.
-
-```mermaid
-classDiagram
-    class TaskState {
-        +str task_id
-        +str workspace_id
-        +str description
-        +str project_root
-        +ClassificationData classification
-        +TeamConfig team_config
-        +int current_agent_index
-        +str current_agent_role
-        +dict agent_outputs
-        +list agent_messages
-        +dict gate_results
-        +list fix_packets
-        +int retry_count
-        +int max_retries
-        +str approval_status
-        +dict cost_accumulator
-        +float budget_max_cost_per_task
-        +int budget_max_tokens_per_task
-        +Any project_snapshot
-        +int debate_round
-        +int max_debate_rounds
-        +str reviewer_feedback
-        +list memories_to_store
-        +str status
-        +list events
-    }
-
-    class ClassificationData {
-        +str task_type
-        +str complexity
-        +str reasoning
-    }
-
-    class TeamConfig {
-        +str team_id
-        +str team_name
-        +dict agents
-        +list pipeline_order
-    }
-
-    class AgentOutput {
-        +str summary
-        +list files_changed
-        +int tokens
-        +float cost
-        +int duration_ms
-    }
-
-    class AgentMessage {
-        +str id
-        +str type
-        +str from_role
-        +str to_role
-        +str status
-        +str linked_to
-        +str content
-    }
-
-    TaskState --> ClassificationData
-    TaskState --> TeamConfig
-    TaskState --> AgentOutput
-    TaskState --> AgentMessage
-```
-
----
-
-## Agent Execution — Context Engineering
-
-Each agent executes within a 5-phase context engineering loop inspired by the Perceive → Remember → Reason → Act → Verify pattern.
-
-```mermaid
-flowchart LR
-    subgraph CONTEXT["Context Assembly (per agent)"]
-        direction TB
-        P[📂 Project Snapshot<br/>File tree, tech stack,<br/>key file contents]
-        M[🧠 Retrieved Memories<br/>Ranked by similarity,<br/>recency, utility]
-        E[📚 Enrichment Context<br/>Known pitfalls,<br/>domain knowledge]
-        PI[📋 Pipeline Context<br/>Previous agent outputs]
-        Q[🛡️ Quality Contract<br/>Role-specific expectations]
-    end
-
-    subgraph LOOP["Agentic Tool Loop"]
-        direction TB
-        LLM[LLM Invocation<br/>System prompt +<br/>assembled context]
-        LLM -->|tool_calls| TOOLS[Tool Executor<br/>read_file, write_file,<br/>search, run_command,<br/>spawn_subtask, consult_agent]
-        TOOLS -->|results| LLM
-        LLM -->|end_turn| DONE[Agent Output<br/>summary, files_changed,<br/>tokens, cost]
-    end
-
-    CONTEXT --> LOOP
-```
-
-## Inter-Agent Consultation (Advisory Channel)
-
-Agents can request targeted advice from other roles during execution via `consult_agent`. This is advisory-only and never replaces the target role's pipeline step.
-
-```mermaid
-flowchart LR
-    A["Requesting agent"] -->|"consult request"| P{"Policy gate"}
-    P -->|blocked| ERR["Policy violation"]
-    P -->|allowed| READY{"Target output available?"}
-    READY -->|yes| IMM["Immediate advisory response"]
-    READY -->|no| Q[Queue Pending Consult Request]
-    Q --> TGT["Target role executes later"]
-    TGT --> AUTO["Auto-fulfill advisory response"]
-    IMM --> THREAD[agent_messages thread]
-    AUTO --> THREAD
-```
-
-### Consultation Policy via `rigovo.yml`
-
-```yaml
-orchestration:
-  consultation:
-    enabled: true
-    max_question_chars: 1200
-    max_response_chars: 1200
-    allowed_targets:
-      planner: [lead, security, devops]
-      coder: [reviewer, security, qa]
-      reviewer: [planner, coder, security, qa, devops, sre, lead]
-      qa: [coder, reviewer]
-```
-
-- `consultation.allowed_targets` overrides the default matrix.
-- Consultation responses are tagged advisory-only and do not count as task completion for the consulted role.
-
-### Context Budget
-
-Context is assembled with hard character limits to prevent blowup:
-
-| Layer | Max Chars | Content |
-|-------|-----------|---------|
-| Project Snapshot | 15,000 | File tree, tech stack, entry points, key file contents |
-| Retrieved Memories | 5,000 | Top 8 memories ranked by relevance to role |
-| Enrichment Context | 5,000 | Known pitfalls, domain knowledge, conventions |
-| Pipeline Context | 8,000 | Previous agent outputs (planner's plan, coder's files) |
-| Quality Contract | 2,000 | Role-specific expectations ("Pass gates on first try") |
-| **Total Budget** | **40,000** | Hard cap across all layers |
-
-### Memory Retrieval & Ranking
-
-Memories are ranked per-agent using a weighted scoring formula:
-
-```
-score = (0.6 × similarity) + (0.2 × recency) + (0.2 × utility)
-```
-
-Each role gets role-specific memory preferences — the coder prefers `ERROR_FIX` and `PATTERN` memories, while the planner prefers `CONVENTION` and `DOMAIN_KNOWLEDGE`. Maximum 8 memories per agent to keep context focused.
-
----
-
-## Task Classification & Routing
-
-The Master Agent classifies every task at temperature 0.0 (deterministic) before any agent executes.
-
-```mermaid
-flowchart LR
-    DESC[Task Description] --> CLASSIFIER[Master Agent<br/>TaskClassifier<br/>T=0.0]
-    CLASSIFIER --> TYPE[Task Type]
-    CLASSIFIER --> CX[Complexity]
-    TYPE --> ASSEMBLER[TeamAssembler]
-    CX --> ASSEMBLER
-    ASSEMBLER --> PIPELINE[Pipeline Order +<br/>Gate Schedule]
-```
-
-### Task Types → Agent Pipelines
-
-| Type | Example | Pipeline | Gates After |
-|------|---------|----------|-------------|
-| `FEATURE` | "Add JWT auth" | planner → coder → reviewer → qa | coder |
-| `BUG` | "Fix login crash" | coder → reviewer | coder |
-| `REFACTOR` | "Split auth module" | planner → coder → reviewer | coder |
-| `SECURITY` | "Fix SQL injection" | security → coder → reviewer → qa | coder |
-| `TEST` | "Add unit tests" | qa | qa |
-| `INFRA` | "Add Docker support" | devops → sre → reviewer | devops, sre |
-| `PERFORMANCE` | "Optimize N+1 query" | coder → reviewer | coder |
-
-### Complexity Adjustments
-
-| Complexity | Modifications |
-|------------|---------------|
-| `LOW` | Minimal pipeline, lower budget |
-| `MEDIUM` | Standard pipeline |
-| `HIGH` | Prepend `lead` for architectural oversight |
-| `CRITICAL` | Prepend `lead` + append `security` if not present |
-
----
-
-## Quality Gates — Powered by Rigour
-
-Every line of agent-generated code passes through [Rigour](https://github.com/rigour-labs/rigour) — deterministic AST checks, not LLM opinions. Catches issues the instant they're written, not after CI fails.
-
-```mermaid
-flowchart LR
-    CODE[Agent writes code] --> RIGOUR[Rigour CLI<br/>rigour check --json<br/>+ auto --deep by policy]
-    RIGOUR --> PASS{Passed?}
-    PASS -->|yes| NEXT[Next agent]
-    PASS -->|no| FP[Fix Packet<br/>Machine-readable<br/>diagnostics]
-    FP --> RETRY[Agent retries<br/>with fix packet context]
-    RETRY --> RIGOUR
-```
-
-### Automatic Deep Analysis Policy (Default)
-
-Rigovo does not rely on manual user flags for deep analysis. By default:
-
-- `orchestration.deep_mode: final`
-- Deep analysis runs automatically on the **final gated role** in the pipeline.
-- Earlier gated roles use fast deterministic checks for speed.
-
-Available modes:
-
-- `never` — disable deep analysis
-- `final` — deep on final gated role (default)
-- `ci` — deep only when running `rigovo run --ci ...`
-- `always` — deep on every gated role
-- `critical_only` — deep only for `critical` complexity tasks
-
-Use `orchestration.deep_pro: true` to run deep in pro tier.
-
-Deep/pro output is parsed into the same violation model as standard gates, so agents receive fix packets and auto-correct without user intervention.
-
-### What Rigour Catches
-
-| Category | Gates | Examples |
-|----------|-------|---------|
-| **Security** | Hardcoded secrets, SQL injection, command injection, XSS, path traversal | `sk-ant-...` in source, `f"SELECT * FROM {user_input}"` |
-| **AI Drift** | Hallucinated imports, duplication drift, context window artifacts, phantom APIs | `from utils.magic import solve` (doesn't exist) |
-| **Structure** | Cyclomatic complexity, file size, function length, nesting depth | 500-line god function, 8 levels of nesting |
-| **Safety** | Floating promises, unhandled errors, deprecated APIs, bare excepts | `async fetch()` with no `await` |
-
-### Fix Packet Protocol
-
-When gates fail, Rigour generates structured **Fix Packets** — machine-readable diagnostics that agents consume directly. No human interpretation needed.
-
-```
-[FIX PACKET]
-Attempt 1 of 5:
-- [ERROR] no_hardcoded_secrets: Found API key in src/config.py:42
-  Suggestion: Move to environment variable, use os.getenv("API_KEY")
-- [WARNING] max_function_length: Function process_data() is 127 lines
-  Suggestion: Extract helper functions for each processing step
-```
-
-Agents retry automatically with the fix packet injected into their context, up to `max_retries` (default: 5).
-
----
-
-## Agent Debate Protocol
-
-When the reviewer requests changes, the system enters a structured debate loop between the coder and reviewer — like a real code review.
-
-```mermaid
-sequenceDiagram
-    participant C as Coder
-    participant G as Quality Gates
-    participant R as Reviewer
-    participant Q as QA
-    participant S as Security
-
-    C->>G: Write code
-    G->>G: AST check (PASS)
-
-    par Parallel Review
-        G->>R: Review code
-        G->>Q: Write tests
-        G->>S: Security audit
-    end
-
-    R-->>C: CHANGES_REQUESTED<br/>"Extract auth middleware,<br/>add input validation"
-
-    Note over C,R: Debate Round 1
-
-    C->>G: Revise code with feedback
-    G->>G: AST check (PASS)
-    G->>R: Re-review
-
-    R-->>C: APPROVED
-
-    Note over C,R: Max 2 debate rounds
-```
-
-The debate protocol detects markers in reviewer output (`CHANGES_REQUESTED`, `BLOCKED`, `needs revision`), injects the reviewer's feedback as a fix packet, and routes the coder back for another pass. Maximum 2 debate rounds by default.
-
----
-
-## Parallel Execution
-
-Independent agents execute simultaneously — cutting review-phase time from sum(individual) to max(individual).
-
-```mermaid
-flowchart TD
-    CODER[💻 Coder<br/>Sequential — must run first] --> GATES[🛡️ Gates PASS]
-    GATES --> FAN{All remaining<br/>agents parallelizable?}
-    FAN -->|yes| PAR
-
-    subgraph PAR["⚡ Parallel Fan-Out"]
-        direction LR
-        REV[🔍 Reviewer]
-        QA[🧪 QA]
-        SEC[🔒 Security]
-    end
-
-    FAN -->|no| SEQ[Sequential execution]
-
-    PAR --> MERGE[Fan-In & Merge]
-    SEQ --> MERGE
-    MERGE --> DEBATE{Debate needed?}
-```
-
-### Parallelizable Roles
-
-These roles have no inter-dependency — they all read the coder's output independently:
-
-- `reviewer` — Code review and feedback
-- `qa` — Test generation and validation
-- `security` — Security audit
-- `docs` — Documentation generation
-
-Non-parallelizable roles (planner, coder, lead) must run sequentially because later agents depend on their output.
-
-### Parallel Tool Execution
-
-Within a single agent's tool loop, multiple tool calls from one LLM response execute simultaneously via `asyncio.gather()`. When the coder asks to read 5 files at once, all 5 reads happen in parallel.
-
----
-
-## Sub-Agent Spawning
-
-Agents can decompose complex tasks by spawning independent sub-agents — each with full tool access.
-
-```mermaid
-flowchart TD
-    CODER[💻 Coder Agent] -->|spawn_subtask| SUB1[Sub-Agent 1<br/>Implement auth module]
-    CODER -->|spawn_subtask| SUB2[Sub-Agent 2<br/>Add API endpoint]
-    CODER -->|spawn_subtask| SUB3[Sub-Agent 3<br/>Write migration]
-
-    SUB1 -->|result| CODER
-    SUB2 -->|result| CODER
-    SUB3 -->|result| CODER
-```
-
-The `spawn_subtask` tool allows agents to create parallel sub-agents during their agentic loop. Each sub-agent receives full tool access (read_file, write_file, search_codebase, run_command) and returns its output to the parent agent.
-
----
-
-## Model Selection System
-
-Rigovo uses intelligent per-role model defaults — the right model for each job.
-
-```mermaid
-flowchart TD
-    ROLE[Agent Role] --> RESOLVE[resolve_model_for_role]
-
-    RESOLVE --> USER{User override<br/>in rigovo.yml?}
-    USER -->|yes| USE_USER[Use user's model]
-    USER -->|no| DEFAULT[Role default<br/>from ROLE_DEFAULT_MODELS]
-
-    DEFAULT --> PROVIDER{Provider<br/>available?}
-    PROVIDER -->|yes| USE_DEFAULT[Use default model]
-    PROVIDER -->|no| CATALOG[Model Catalog<br/>Find best alternative<br/>for available providers]
-    CATALOG --> USE_ALT[Use alternative model]
-```
-
-### Default Model Assignments
-
-| Role | Default Model | Tier | Why |
-|------|---------------|------|-----|
-| `lead` | Claude Opus 4.6 | Premium | Architectural decisions need strongest reasoning |
-| `planner` | Claude Sonnet 4.6 | Standard | Planning: fast + smart enough |
-| `coder` | Claude Opus 4.6 | Premium | Coding: best agent model for complex implementations |
-| `reviewer` | Claude Sonnet 4.6 | Standard | Code review needs analysis, Sonnet suffices |
-| `security` | Claude Haiku 4.5 | Budget | Checklist-based security audit |
-| `qa` | Claude Haiku 4.5 | Budget | Test generation is formulaic |
-| `devops` | Claude Haiku 4.5 | Budget | Template-based configurations |
-| `sre` | Claude Haiku 4.5 | Budget | Template-based configurations |
-| `docs` | Claude Haiku 4.5 | Budget | Text generation |
-
-### Multi-Provider Support
-
-Rigovo is provider-agnostic. If you only have an OpenAI key, the catalog resolves the best GPT model for each tier. Supported providers:
-
-| Provider | Models | SDK |
-|----------|--------|-----|
-| Anthropic | Claude Opus 4.6, Sonnet 4.6, Haiku 4.5 | `anthropic` |
-| OpenAI | GPT-5, GPT-5 Mini, GPT-4o, o1, o3-mini | `openai` |
-| Google | Gemini 2.5 Pro, Gemini 2.5 Flash | `openai` compatible |
-| DeepSeek | V3.2, R1 | `openai` compatible |
-| Mistral | Large 3, Medium 3, Codestral | `openai` compatible |
-| Groq | Llama 3.3 70B | `openai` compatible |
-| Ollama | Any local model | `openai` compatible |
-| Custom | Any OpenAI-compatible endpoint | `openai` compatible |
-
-### Preset System
-
-Three presets auto-assign models across all roles:
-
-| Preset | Description | Estimated Cost/Task |
-|--------|-------------|---------------------|
-| `budget` | Cheapest — still good for most tasks | ~$0.02 |
-| `recommended` | Best quality/cost ratio | ~$0.15 |
-| `premium` | Maximum quality — for critical tasks | ~$0.50 |
-
----
-
-## LLM Provider Architecture
-
-All LLM interactions go through a unified `LLMProvider` interface — the application layer never touches a concrete SDK.
-
-```mermaid
-classDiagram
-    class LLMProvider {
-        <<interface>>
-        +model_name: str
-        +invoke(messages, tools, temperature, max_tokens) LLMResponse
-        +stream(messages, tools, temperature, max_tokens) AsyncIterator
-    }
-
-    class LLMResponse {
-        +str content
-        +LLMUsage usage
-        +str model
-        +str stop_reason
-        +list tool_calls
-        +Any raw
-    }
-
-    class LLMUsage {
-        +int input_tokens
-        +int output_tokens
-        +total_tokens: int
-    }
-
-    class AnthropicProvider {
-        -api_key: str
-        -model: str
-        +invoke() LLMResponse
-        +stream() AsyncIterator
-        -_invoke_with_retry()
-    }
-
-    class OpenAIProvider {
-        -api_key: str
-        -model: str
-        -base_url: str
-        +invoke() LLMResponse
-        +stream() AsyncIterator
-        -_invoke_with_retry()
-    }
-
-    LLMProvider <|.. AnthropicProvider
-    LLMProvider <|.. OpenAIProvider
-    LLMProvider --> LLMResponse
-    LLMResponse --> LLMUsage
-```
-
-### Token Optimization
-
-- **Prompt Caching (Anthropic):** System prompts use `cache_control: {type: "ephemeral"}` — saving 90% of input tokens after the first call in an agentic loop (cached tokens cost 10% of fresh tokens).
-- **Prompt Caching (OpenAI):** Automatic prefix-based caching for repeated message prefixes (1024+ tokens). Optimized by keeping system messages at the start for prefix matching.
-- **Tool Result Truncation:** Tool results are capped at 30,000 characters to prevent context window blowup from large file reads.
-- **Retry with Exponential Backoff:** Both providers retry transient errors (429, 529, 500, 502, 503) with exponential backoff (1s, 2s, 4s, 8s, 16s) — up to 5 attempts.
-
----
-
-## Cost Tracking & Budget Guards
-
-Every LLM call is tracked. Budget guards prevent runaway costs by halting execution when limits are exceeded.
-
-```mermaid
-flowchart LR
-    CALL[LLM Call] --> TRACK[CostCalculator<br/>input_tokens × price/1M<br/>+ output_tokens × price/1M]
-    TRACK --> ACC[cost_accumulator<br/>Per-agent running total]
-    ACC --> GUARD{Budget exceeded?}
-    GUARD -->|cost ≥ max_cost| HALT[🛑 BudgetExceededError<br/>Task halts immediately]
-    GUARD -->|tokens ≥ max_tokens| HALT
-    GUARD -->|within budget| CONTINUE[Continue execution]
-```
-
-Default limits: `$2.00` per task, `200,000` tokens per task. Configurable in `rigovo.yml`.
-
----
-
-## Approval System
-
-Two human-in-the-loop checkpoints ensure you stay in control:
-
-```mermaid
-flowchart LR
-    subgraph CP1["Checkpoint 1: Plan Approval"]
-        PLAN[Pipeline assembled:<br/>task type, complexity,<br/>agent pipeline, budget]
-    end
-
-    subgraph CP2["Checkpoint 2: Commit Approval"]
-        COMMIT[All agents complete:<br/>files changed, costs,<br/>gate results, agent outputs]
-    end
-
-    PLAN -->|approved| EXECUTE[Execute Agents]
-    PLAN -->|rejected| FAIL1[Finalize: rejected]
-    EXECUTE --> COMMIT
-    COMMIT -->|approved| LEARN[Enrich + Memory]
-    COMMIT -->|rejected| FAIL2[Finalize: rejected]
-```
-
-- **Plan Approval** — Review the proposed pipeline before any agent executes
-- **Commit Approval** — Review all results before finalizing
-
-Both checkpoints can be auto-approved for CI/CD workflows or interactive for human-in-the-loop development.
-
----
-
-## Memory & Learning Loop
-
-Rigovo learns from every task — quality gate failures become training data, not just errors.
-
-```mermaid
-flowchart TD
-    TASK[Task Execution] --> GATE_FAIL[Gate Violations]
-    TASK --> RETRIES[Retry Loops]
-    TASK --> SUCCESS[Success Patterns]
-
-    GATE_FAIL --> ENRICHER[ContextEnricher<br/>Extract pitfalls,<br/>domain knowledge]
-    RETRIES --> ENRICHER
-    SUCCESS --> ENRICHER
-
-    ENRICHER --> INJECT[Inject into future<br/>agent contexts]
-
-    TASK --> MEMORY[Memory Extraction<br/>Master Agent extracts<br/>reusable lessons]
-    MEMORY --> STORE[SQLite Memory Store]
-    STORE --> RETRIEVE[MemoryRetriever<br/>Ranked by similarity,<br/>recency, utility]
-    RETRIEVE --> INJECT
-```
-
-### Memory Types
-
-| Type | Example | Used By |
-|------|---------|---------|
-| `PATTERN` | "Use factory pattern for service creation" | Coder, Planner |
-| `ERROR_FIX` | "SQLAlchemy async sessions need `expire_on_commit=False`" | Coder |
-| `CONVENTION` | "All endpoints use Pydantic v2 model_validator" | Coder, Reviewer |
-| `DOMAIN_KNOWLEDGE` | "Auth module uses JWT with 15-min access tokens" | All agents |
-| `TASK_OUTCOME` | "Adding endpoints requires updating OpenAPI docs" | Planner |
-
----
-
-## Persistence Layer
-
-Four SQLite repositories handle all persistence — zero external database dependencies.
-
-```mermaid
-erDiagram
-    TASKS {
-        uuid id PK
-        uuid workspace_id FK
-        string description
-        string status
-        int total_tokens
-        float total_cost_usd
-        int duration_ms
-        datetime created_at
-    }
-
-    COSTS {
-        uuid id PK
-        uuid task_id FK
-        string agent_role
-        int input_tokens
-        int output_tokens
-        float cost_usd
-        string model
-    }
-
-    AUDIT {
-        uuid id PK
-        uuid workspace_id FK
-        uuid task_id FK
-        string action
-        string agent_role
-        string summary
-        json metadata
-        datetime created_at
-    }
-
-    MEMORIES {
-        uuid id PK
-        uuid workspace_id FK
-        string memory_type
-        string content
-        float utility_score
-        datetime created_at
-    }
-
-    TASKS ||--o{ COSTS : "has"
-    TASKS ||--o{ AUDIT : "logged in"
-```
-
-Additionally, LangGraph uses a separate SQLite database (`.rigovo/checkpoints.db`) for state checkpointing — enabling crash recovery mid-task.
-
----
-
-## Domain Plugin System
-
-Rigovo is domain-extensible through a plugin interface. The `engineering` domain ships built-in; future domains (LLM training, data science) plug in the same way.
-
-```mermaid
-classDiagram
-    class DomainPlugin {
-        <<interface>>
-        +get_agent_roles() list~AgentRoleDefinition~
-        +get_task_types() list~TaskTypeDefinition~
-        +get_quality_gates() list~QualityGate~
-        +get_tools(role_id) list~ToolDefinition~
-        +build_system_prompt(role_id, context) str
-    }
-
-    class EngineeringDomain {
-        +get_agent_roles() 8 roles
-        +get_tools(role_id) 7 tools
-        +build_system_prompt() stack-aware prompts
-    }
-
-    DomainPlugin <|.. EngineeringDomain
-
-    class AgentRoleDefinition {
-        +str role_id
-        +str name
-        +str description
-        +int pipeline_order
-        +bool produces_code
-        +str preferred_tier
-        +str default_system_prompt
-        +list default_tools
-    }
-
-    EngineeringDomain --> AgentRoleDefinition
-```
-
-### Engineering Domain — 8 Roles
-
-| Role | Name | Produces Code | Pipeline Order | Tools |
-|------|------|:---:|:---:|---|
-| `planner` | Technical Planner | — | 0 | read_file, list_directory, search_codebase, read_dependencies |
-| `coder` | Software Engineer | ✓ | 1 | read_file, write_file, list_directory, search_codebase, run_command, read_dependencies, spawn_subtask |
-| `reviewer` | Code Reviewer | — | 2 | read_file, list_directory, search_codebase |
-| `security` | Security Expert | — | 3 | read_file, list_directory, search_codebase |
-| `qa` | QA Engineer | ✓ | 4 | read_file, write_file, list_directory, search_codebase, run_command |
-| `devops` | DevOps Engineer | ✓ | 5 | read_file, write_file, list_directory, run_command |
-| `sre` | Site Reliability Engineer | ✓ | 6 | read_file, write_file, list_directory, run_command |
-| `lead` | Tech Lead | — | 7 | read_file, list_directory, search_codebase |
-
-### Tool Definitions
-
-| Tool | Description |
-|------|-------------|
-| `read_file` | Read file contents with optional line range |
-| `write_file` | Create or modify files (creates parent directories) |
-| `list_directory` | Recursive directory listing |
-| `search_codebase` | Regex search across project files |
-| `run_command` | Execute shell commands (tests, builds, linting) with timeout |
-| `read_dependencies` | Parse package.json, pyproject.toml, requirements.txt, etc. |
-| `spawn_subtask` | Spawn independent sub-agent with full tool access |
-
----
-
-## All 15 Commands
-
-### Setup
-
-| Command | What it does |
-|---------|-------------|
-| `rigovo init` | Auto-detect your stack, generate `rigovo.yml` + `rigour.yml` + `.env` |
-| `rigovo doctor` | Validate everything — config, API keys, dependencies, Rigour gates |
-| `rigovo version` | Show CLI version |
-| `rigovo upgrade` | Check PyPI for updates |
-
-### Run
-
-| Command | What it does |
-|---------|-------------|
-| `rigovo run "Add JWT auth"` | Full pipeline — plan → code → review → gates → done |
-| `rigovo run "Fix bug" --ci` | CI mode — JSON output, non-interactive |
-| `rigovo run "Deploy" --team ops` | Target a specific team |
-| `rigovo replay <task_id>` | Re-run a failed task with same parameters |
-
-### Inspect
-
-| Command | What it does |
-|---------|-------------|
-| `rigovo teams` | List teams with agents, models, and rules |
-| `rigovo agents` | Agent summary table |
-| `rigovo agents coder` | Deep inspect a specific agent |
-| `rigovo config` | View full `rigovo.yml` |
-| `rigovo config orchestration.budget` | View a specific config section |
-| `rigovo status` | Project health — tasks, costs, Rigour score |
-
-### Track
-
-| Command | What it does |
-|---------|-------------|
-| `rigovo history` | Task history with outcomes, costs, durations |
-| `rigovo history <task_id>` | Detailed view of a specific run |
-| `rigovo costs` | Cost breakdown — per task, per agent, totals |
-| `rigovo export` | Export as JSON (default) or `--format csv` |
-| `rigovo login` | Authenticate with Rigovo Cloud |
-| `rigovo dashboard` | Open cloud dashboard in browser |
 
 ---
 
 ## Configuration
 
-Rigovo uses layered configuration — higher layers override lower:
+### `.env`
 
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+WORKOS_CLIENT_ID=client_01...
+WORKOS_API_KEY=sk_test_...         # optional — org/role admin features
+RIGOVO_IDENTITY_PROVIDER=workos
+RIGOVO_WORKTREE_MODE=project       # project | git_worktree
 ```
-Built-in defaults → rigovo.yml → rigour.yml → .env → env vars → CLI flags
-```
 
-### Quick Config Examples
+### `rigovo.yml`
 
-`rigovo init` writes a complete `rigovo.yml` with all schema fields and defaults. The examples below show common overrides.
-
-**Override agent model:**
 ```yaml
-# rigovo.yml
+version: "1"
+workspace_id: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
 teams:
-  engineering:
+  - id: engineering
+    name: "Engineering"
+    domain: engineering
     agents:
-      coder:
-        model: "gpt-5"             # Use GPT-5 for coding
-        temperature: 0.1
-      security:
-        model: "claude-opus-4-6"    # Use Opus for security
-```
+      - role: planner
+        llm_model: "claude-sonnet-4-6"
+        depends_on: []
+      - role: coder
+        llm_model: "claude-opus-4-6"
+        depends_on: [planner]
+      - role: reviewer
+        llm_model: "claude-sonnet-4-6"
+        depends_on: [coder]
+      - role: security
+        llm_model: "claude-sonnet-4-6"
+        depends_on: [coder]
+      - role: qa
+        llm_model: "claude-sonnet-4-6"
+        depends_on: [coder]
+      - role: lead
+        llm_model: "claude-opus-4-6"
+        depends_on: [reviewer, security, qa]
 
-**Set budget limits:**
-```yaml
 orchestration:
-  budget:
-    max_cost_per_task: 2.00       # USD per task
-    max_tokens_per_task: 200000
-    monthly_budget: 100.00        # USD per month
-    alert_at_percent: 0.80        # Alert at 80%
-```
+  max_retries: 5
+  max_agents_per_task: 8
 
-**Select database backend (company mode):**
-```yaml
-database:
-  backend: postgres               # sqlite|postgres
-  local_path: .rigovo/local.db    # used when backend=sqlite
-```
-
-Set `RIGOVO_DB_URL` in `.env` when using `postgres`.
-
-**Deep analysis policy (automatic by default):**
-```yaml
-orchestration:
-  deep_mode: final                # never|final|ci|always|critical_only
-  deep_pro: false                 # true = use pro deep tier
-```
-
-**Inter-agent consultation policy:**
-```yaml
-orchestration:
   consultation:
     enabled: true
     max_question_chars: 1200
-    max_response_chars: 1200
-    allowed_targets:
-      reviewer: [planner, coder, security, qa, devops, sre, lead]
-```
 
-**Enable ecosystem plugins (connectors/skills/MCP):**
-```yaml
-plugins:
-  enabled: true
-  paths: [".rigovo/plugins"]
-  enabled_plugins: []             # optional allow-list
-  allow_unsigned: false           # keep false in company mode
-```
+  replan:
+    enabled: true
+    max_replans_per_task: 1
+    strategy: deterministic          # deterministic | llm
 
-**Enterprise SSO + personas:**
-```yaml
-identity:
-  sso_enabled: true
-  auth_mode: hybrid               # email_only|hybrid|sso_required
-  provider: workos                # local|workos (desktop control-plane identity adapter)
-  workos_organization_id: org_123
-  issuer_url: https://sso.company.com
-  client_id: rigovo-desktop
-  allowed_domains: [company.com]
-  personas:
-    admin: [workspace.manage, teams.manage, plugins.manage, tasks.abort, tasks.approve, audit.read]
-    operator: [tasks.run, tasks.approve, tasks.resume, audit.read]
-    viewer: [tasks.read, audit.read]
-```
-
-**Add custom rules per agent:**
-```yaml
-teams:
-  engineering:
-    agents:
-      coder:
-        rules:
-          - "Use Pydantic v2 model_validator"
-          - "All endpoints must have OpenAPI docs"
-          - "Use dependency injection for services"
-```
-
-**Human-in-the-loop approvals:**
-```yaml
 approval:
-  after_planning: true     # Review the plan before coding
-  before_commit: true      # Approve before git commits
-  auto_approve:
-    - type: "test"         # Auto-approve test tasks
-      max_files: 3
-    - type: "docs"         # Auto-approve docs tasks
+  after_planning: true               # pause before first agent runs
+  before_commit: true                # pause before finalize
+
+quality:
+  deep_mode: "final"                 # never | final | ci | always
+
+database:
+  backend: sqlite                    # sqlite | postgres
+  local_path: ".rigovo/local.db"
+
+plugins:
+  allowed_shell_commands: [npm, python3, pytest, git, docker]
+  min_trust_level: 0
 ```
 
-**Custom OpenAI-compatible provider:**
-```yaml
-providers:
-  my_local:
-    base_url: "http://localhost:11434/v1"
-    api_key_env: "OLLAMA_API_KEY"
-    input_price: 0.0
-    output_price: 0.0
+---
+
+## Architecture Deep Dive
+
+### Directory Map
+
+```
+src/rigovo/
+├── api/control_plane.py             # FastAPI — all HTTP endpoints
+├── application/
+│   ├── graph/
+│   │   ├── builder.py               # GraphBuilder — compiles LangGraph StateGraph
+│   │   ├── edges.py                 # All conditional routing functions
+│   │   ├── state.py                 # TaskState — the pipeline's bloodstream
+│   │   └── nodes/
+│   │       ├── scan_project.py      # Project perception → ProjectSnapshot
+│   │       ├── classify.py          # Master Agent: task_type + complexity
+│   │       ├── route_team.py        # Master Agent: team selection
+│   │       ├── assemble.py          # DAG construction from team config
+│   │       ├── approval.py          # Human-in-the-loop (plan + commit)
+│   │       ├── execute_agent.py     # Agent execution engine (the core)
+│   │       ├── quality_check.py     # Rigour gate runner + fix packet generation
+│   │       ├── replan.py            # Mid-run correction when retries exhausted
+│   │       ├── enrich.py            # Extract learnings → update agent enrichment
+│   │       ├── store_memory.py      # Persist + reinforce semantic memories
+│   │       └── finalize.py          # Aggregate results, set final status
+│   ├── context/
+│   │   ├── project_scanner.py       # Codebase scan → ProjectSnapshot
+│   │   ├── memory_retriever.py      # Semantic search against memory repo
+│   │   └── context_builder.py       # Per-agent prompt context assembly
+│   ├── commands/run_task.py         # Task execution entry (CLI + API)
+│   └── master/
+│       ├── classifier.py            # Task classification logic
+│       ├── router.py                # Team routing logic
+│       ├── enricher.py              # Enrichment context analysis
+│       └── evaluator.py             # Post-execution quality scoring
+├── domain/
+│   ├── entities/                    # Task, Agent, Memory, Team, Quality, AuditEntry
+│   ├── interfaces/                  # LLMProvider, QualityGate, Repositories (abstract)
+│   └── services/                    # CostCalculator, TeamAssembler, MemoryRanker
+├── infrastructure/
+│   ├── llm/                         # LLMFactory, ModelCatalog, Anthropic/OpenAI
+│   ├── persistence/                 # SQLite + PostgreSQL backends
+│   ├── quality/                     # Rigour CLI gate builder
+│   ├── filesystem/                  # Safe tool executor (path sanitization)
+│   ├── embeddings/                  # Local vector embeddings
+│   └── plugins/                     # Connector/plugin system (MCP-ready)
+├── domains/engineering/             # Default domain: 8 agents, tools, rules
+├── config.py                        # Config loading (.env + rigovo.yml)
+└── container.py                     # Dependency injection root
 ```
 
-### Environment Variables
+### Conditional Routing Reference
+
+| Edge Function | Outputs | Leads To |
+|---|---|---|
+| `check_approval(state)` | `approved` \| `rejected` | next agent \| done |
+| `check_gates_and_route(state)` | `pass_next_agent` \| `fail_fix_loop` \| `trigger_replan` \| `fail_max_retries` | advance \| retry \| replan \| fail |
+| `check_replan_result(state)` | `replan_failed` \| `replan_continue` | fail \| retry once |
+| `check_pipeline_complete(state)` | `pipeline_done` \| `more_agents` \| `parallel_fan_out` | finalize \| next \| parallel |
+| `check_parallel_postprocess(state)` | pipeline route \| `debate_needed` | advance \| debate |
+| `advance_to_next_agent(state)` | next role name | execute_agent |
+
+### API Endpoints
+
+```
+POST   /v1/tasks                       # Create task (description, tier, project_id)
+GET    /v1/tasks/{task_id}             # Task status + agent outputs
+GET    /v1/tasks/{task_id}/detail      # Full task detail with events
+GET    /v1/ui/inbox                    # Task list for UI
+GET    /v1/ui/approvals                # Pending approvals
+POST   /v1/tasks/{task_id}/approve     # Approve (unblocks LangGraph)
+POST   /v1/tasks/{task_id}/deny        # Reject task
+GET    /v1/auth/url                    # Get WorkOS auth URL (PKCE)
+GET    /v1/auth/callback               # WorkOS redirect handler
+GET    /v1/auth/session                # Current session
+POST   /v1/auth/logout                 # Clear session
+GET    /v1/projects                    # List projects
+POST   /v1/projects                    # Register project
+GET    /v1/settings                    # Workspace settings
+PATCH  /v1/settings                    # Update settings
+GET    /v1/control/state               # Control plane state (personas, connectors)
+GET    /health                         # Health check → {"status": "ok"}
+```
+
+---
+
+## Contributing
 
 ```bash
-# .env (auto-generated by rigovo init — gitignored)
-ANTHROPIC_API_KEY=sk-ant-...      # Required for Claude models
-# OPENAI_API_KEY=sk-...           # Alternative: GPT models
-# GOOGLE_API_KEY=...              # Alternative: Gemini models
-# DEEPSEEK_API_KEY=...            # Alternative: DeepSeek models
-# GROQ_API_KEY=...                # Alternative: Groq models
-# MISTRAL_API_KEY=...             # Alternative: Mistral models
-# RIGOVO_API_KEY=...              # Optional: cloud sync
-```
-
----
-
-## Rigour CLI Auto-Install
-
-The Rigour quality gate CLI auto-installs on first use — no manual setup required.
-
-```mermaid
-flowchart LR
-    START[Quality gate needed] --> CHECK1{rigour in PATH?}
-    CHECK1 -->|yes| USE[Use system binary]
-    CHECK1 -->|no| CHECK2{~/.rigovo/bin/rigour<br/>cached?}
-    CHECK2 -->|yes| USE2[Use cached binary]
-    CHECK2 -->|no| INSTALL[Background install<br/>npm install -g @rigour-labs/cli]
-    INSTALL --> USE3[Use installed binary]
-    INSTALL -->|failed| NPX[Fallback: npx -y @rigour-labs/cli]
-    NPX -->|failed| BUILTIN[Fallback: built-in AST checks]
-```
-
-The install runs in background alongside the planner agent — by the time quality gates need the CLI, it's already ready. Eliminates the 30-60s first-run latency entirely.
-
----
-
-## CI/CD
-
-GitHub Actions with PyPI Trusted Publishing (OIDC). CI runs tests + lint + Rigour gates. Versioning via [python-semantic-release](https://python-semantic-release.readthedocs.io/) with [Conventional Commits](https://www.conventionalcommits.org/).
-
----
-
-## Development
-
-```bash
-git clone https://github.com/rigovo/rigovo-virtual-team.git && cd rigovo-virtual-team
+# Python setup
 pip install -e ".[dev]"
-pytest                                    # 353 tests
-npx @rigour-labs/cli check               # Rigour gates
+
+# Desktop setup
+pnpm -C apps/desktop install
+
+# Run tests
+pytest tests/ -q
+
+# Lint + format
+ruff format src/
+ruff check src/
+
+# Quality gates
+npx @rigour-labs/cli check
+
+# Start dev environment
+./scripts/e2e_desktop.sh
 ```
 
-Requires Python 3.10+, Node.js 18+ (for Rigour CLI), and an API key for at least one LLM provider.
+---
 
 ## License
 
-MIT — [Rigovo](https://rigovo.com)
+MIT — see [LICENSE](LICENSE)
 
-Built by [Ashutosh Singh](https://github.com/erashu212) — author of [Rigour](https://github.com/rigour-labs/rigour).
+---
+
+<p align="center">
+  Built on <a href="https://github.com/langchain-ai/langgraph">LangGraph</a> ·
+  Governed by <a href="https://github.com/rigour-labs/rigour">Rigour</a> ·
+  Authenticated by <a href="https://workos.com">WorkOS</a>
+</p>
