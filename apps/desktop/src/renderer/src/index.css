@@ -1458,11 +1458,13 @@
     padding: 6px 16px 6px 14px;
     border-top: 1px solid var(--border);
     background: var(--surface);
+    -webkit-app-region: no-drag; /* override any parent drag region — buttons must be clickable */
   }
 
   .ws-icon {
     flex-shrink: 0;
     color: var(--t4);
+    -webkit-app-region: no-drag;
   }
 
   .ws-path {
@@ -1474,6 +1476,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: var(--font-mono);
+    -webkit-app-region: no-drag;
   }
 
   .ws-path-empty {
@@ -1487,6 +1490,7 @@
     align-items: center;
     gap: 6px;
     flex-shrink: 0;
+    -webkit-app-region: no-drag;
   }
 
   .ws-btn {
@@ -1504,6 +1508,7 @@
     cursor: pointer;
     transition: background 120ms, color 120ms, border-color 120ms;
     white-space: nowrap;
+    -webkit-app-region: no-drag;
   }
   .ws-btn:hover { background: rgba(0,0,0,0.04); color: var(--t1); border-color: rgba(60,50,30,0.22); }
 
