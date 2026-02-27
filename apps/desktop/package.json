@@ -35,19 +35,19 @@
     "directories": {
       "output": "release"
     },
-    "icon": "build/icon.png",
+    "icon": "resources/icon.png",
     "mac": {
       "target": "dmg",
-      "icon": "build/icon.icns",
+      "icon": "resources/icon.icns",
       "category": "public.app-category.developer-tools"
     },
     "win": {
       "target": "nsis",
-      "icon": "build/icon.ico"
+      "icon": "resources/icon.ico"
     },
     "linux": {
       "target": "AppImage",
-      "icon": "build/icon.png",
+      "icon": "resources/icon.png",
       "category": "Development"
     }
   }
