@@ -76,6 +76,10 @@ class PipelineStep:
     gate_score: float | None = None
     retry_count: int = 0
 
+    # Structured gate violations (Phase 8: persisted for UI rendering)
+    # Each entry: {gate, passed, message, severity, violation_count, gates_run, deep, pro}
+    gate_violations: list[dict[str, Any]] = field(default_factory=list)
+
 
 @dataclass
 class Task:

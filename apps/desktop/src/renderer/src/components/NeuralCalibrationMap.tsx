@@ -92,6 +92,44 @@ const EDGE_DEFS: Array<{ id: string; from: string; to: string; kind: EdgeKind; d
   { id: "e-memory-coder",     from: "memory",   to: "coder",    kind: "memory",       dur: "3.4s" },
 ];
 
+/* ── Instance-agent → base-role resolution ──────────────────────────── */
+/* Steps may have agent names like "backend-engineer-1" or "security-auditor-2"
+   which need to be resolved to the base NODE_META keys for DAG rendering.     */
+const BASE_ROLE_KW: Record<string, string> = {
+  backend: "coder", frontend: "coder", engineer: "coder", developer: "coder",
+  planner: "planner", architect: "planner",
+  reviewer: "reviewer",
+  qa: "qa", tester: "qa",
+  security: "security", auditor: "security",
+  devops: "devops",
+  sre: "sre", reliability: "sre",
+  lead: "lead",
+  docs: "lead",      // docs agents route to lead node
+  master: "master",
+};
+
+/** Resolve a step's agent name to the NODE_META key it maps to. */
+function resolveBaseRole(agent: string): string {
+  const lower = agent.toLowerCase();
+  if (NODE_META[lower]) return lower;
+  const parts = lower.split("-").filter(p => !/^\d+$/.test(p));
+  for (const part of parts) {
+    const mapped = BASE_ROLE_KW[part];
+    if (mapped && NODE_META[mapped]) return mapped;
+  }
+  return lower; // fallback: keep as-is
+}
+
+/** Find the first step matching a given base role (NODE_META key). */
+function findStepForNode(steps: TaskStep[], nodeId: string): TaskStep | undefined {
+  return steps.find(s => resolveBaseRole(s.agent) === nodeId);
+}
+
+/** Check if any step matches a given base role. */
+function hasStepForNode(steps: TaskStep[], nodeId: string): boolean {
+  return steps.some(s => resolveBaseRole(s.agent) === nodeId);
+}
+
 const EDGE_COLOR: Record<EdgeKind, string> = {
   execution:    "#4ade80",
   adversarial:  "#f87171",
@@ -253,10 +291,13 @@ export default function NeuralCalibrationMap({
       } else if (id === "master") {
         map[id] = isComplete ? "complete" : isFailed ? "failed" : "running";
       } else if (id === "trinity") {
-        const triggered = steps.some(s => ["coder","reviewer"].includes(s.agent) && s.status !== "pending");
+        const triggered = steps.some(s => {
+          const base = resolveBaseRole(s.agent);
+          return ["coder","reviewer"].includes(base) && s.status !== "pending";
+        });
         map[id] = triggered ? (gatesFailed > 0 ? "failed" : isActive ? "running" : "complete") : "idle";
       } else {
-        const step = steps.find(s => s.agent === id);
+        const step = findStepForNode(steps, id);
         map[id] = (step?.status as NodeStatus) ?? "idle";
       }
     }
@@ -266,8 +307,14 @@ export default function NeuralCalibrationMap({
   /* ── Nodes in pipeline ────────────────────────────────────────────── */
   const inPipeline = useMemo(() => {
     const s = new Set(["master", "memory"]);
-    steps.forEach(step => { if (NODE_META[step.agent]) s.add(step.agent); });
-    if (steps.some(st => ["coder","reviewer","security","qa"].includes(st.agent))) s.add("trinity");
+    steps.forEach(step => {
+      const base = resolveBaseRole(step.agent);
+      if (NODE_META[base]) s.add(base);
+    });
+    if (steps.some(st => {
+      const base = resolveBaseRole(st.agent);
+      return ["coder","reviewer","security","qa"].includes(base);
+    })) s.add("trinity");
     return s;
   }, [steps]);
 
@@ -317,8 +364,12 @@ export default function NeuralCalibrationMap({
   /* ── Node click ───────────────────────────────────────────────────── */
   const onNodeClick: NodeMouseHandler = useCallback((_evt, node) => {
     const status = nodeStatuses[node.id];
-    if (status !== "idle") onSelectAgent(node.id);
-  }, [nodeStatuses, onSelectAgent]);
+    if (status === "idle") return;
+    // Pass the actual instance agent name (e.g. "backend-engineer-1") so
+    // AgentDetailPanel can match by step.agent, not base-role key.
+    const step = findStepForNode(steps, node.id);
+    onSelectAgent(step ? step.agent : node.id);
+  }, [nodeStatuses, steps, onSelectAgent]);
 
   return (
     <div className="ncm-root">

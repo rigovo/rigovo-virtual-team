@@ -150,11 +150,16 @@ export interface Project {
 
 export interface TaskStep {
   agent: string;
+  /** Human-readable agent name (e.g. "Backend Engineer 1") */
+  agent_name?: string;
   status: "pending" | "running" | "complete" | "failed" | "skipped";
   started_at: string | null;
   completed_at: string | null;
   output: string;
   files_changed: string[];
+  tokens?: number;
+  cost_usd?: number;
+  duration_ms?: number;
   gate_results: GateResult[];
 }
 
@@ -163,6 +168,14 @@ export interface GateResult {
   passed: boolean;
   message: string;
   severity: "error" | "warning" | "info";
+  /** Number of violations found (Phase 7/8) */
+  violation_count?: number;
+  /** Number of gates that ran */
+  gates_run?: number;
+  /** Whether Rigour deep analysis was used */
+  deep?: boolean;
+  /** Whether pro tier deep was used */
+  pro?: boolean;
 }
 
 export interface TaskDetail {
@@ -170,6 +183,8 @@ export interface TaskDetail {
   description: string;
   status: string;
   task_type: string;
+  /** Task complexity from Master Agent classification (Phase 1) */
+  complexity?: "low" | "medium" | "high" | "critical" | null;
   tier: Tier;
   team: string;
   created_at: string;

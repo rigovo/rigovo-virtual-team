@@ -45,27 +45,51 @@ BLOCKED_INLINE_EXEC_FLAGS: dict[str, set[str]] = {
 
 # Commands allowed to run from agents. Keep strict and explicit.
 ALLOWED_COMMANDS = {
+    # Python
     "python",
     "python3",
     "pytest",
     "uv",
     "pip",
     "pip3",
+    # JavaScript / TypeScript
     "npm",
+    "npx",
     "pnpm",
     "yarn",
     "node",
+    # Go
     "go",
+    # Rust
     "cargo",
     "rustc",
+    # Java
     "javac",
     "java",
     "mvn",
     "gradle",
+    # .NET
     "dotnet",
+    # C++ / CMake / Make
+    "cmake",
+    "ctest",
+    "make",
+    # Ruby
+    "bundle",
+    "rake",
+    "rspec",
+    # DevOps / Infrastructure
+    "terraform",
+    "hadolint",
+    "kubectl",
+    "helm",
+    "docker",
+    "aws",
+    # Shell
     "bash",
     "sh",
     "zsh",
+    # Utilities (read-only)
     "git",
     "ls",
     "cat",

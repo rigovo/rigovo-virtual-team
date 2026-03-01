@@ -292,6 +292,33 @@ class GraphBuilder:
                 memory_retriever=memory_retriever,
             )
 
+            # Phase 4: Run execution verification for each parallel agent
+            merged_state = {**state, **result}
+            all_verification_history = list(merged_state.get("verification_history", []))
+            for instance_id in remaining_instances:
+                per_instance_state = {
+                    **merged_state,
+                    "current_instance_id": instance_id,
+                    "current_agent_role": instance_id,
+                    "verification_history": all_verification_history,
+                }
+                verify_result = await verify_execution_node(per_instance_state)
+                # Merge verification events and history
+                result_events_so_far = list(result.get("events", []))
+                result_events_so_far.extend(
+                    e for e in verify_result.get("events", [])
+                    if e not in result_events_so_far
+                )
+                result["events"] = result_events_so_far
+                all_verification_history = list(
+                    verify_result.get("verification_history", all_verification_history)
+                )
+                # Keep the last instance's verification result (for quality_check)
+                result["execution_verification"] = verify_result.get(
+                    "execution_verification", {}
+                )
+            result["verification_history"] = all_verification_history
+
             # Add parallel_complete event and advance index to end of pipeline
             result_events = list(result.get("events", []))
             result_events.append({"type": "parallel_complete"})

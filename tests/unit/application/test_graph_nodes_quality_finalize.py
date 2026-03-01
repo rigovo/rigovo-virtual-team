@@ -385,5 +385,145 @@ class TestFinalizeNode(unittest.IsolatedAsyncioTestCase):
         assert "file.py" in files
 
 
+# ── Phase 7: Persona enforcement tests for quality_check_node ──────────
+
+class TestQualityCheckPersonaEnforcement(unittest.IsolatedAsyncioTestCase):
+    """Test persona boundary enforcement in quality_check_node."""
+
+    async def test_non_gated_role_writing_files_triggers_failure(self):
+        """Reviewer (non-gated) writing files should be a gate failure."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "current_agent_role": "reviewer",
+            "team_config": {
+                "agents": {"reviewer": {"role": "reviewer"}},
+                "gates_after": ["coder"],  # Reviewer not gated
+            },
+            "agent_outputs": {
+                "reviewer": {
+                    "summary": "## Verdict\nAPPROVED",
+                    "files_changed": ["src/fix.py"],  # Reviewer shouldn't write files!
+                },
+            },
+            "events": [],
+        }
+
+        result = await quality_check_node(state, [])
+
+        assert result["gate_results"]["passed"] is False
+        assert result["status"] == "gate_failed_reviewer"
+        assert "persona" in result["gate_results"].get("reason", "")
+
+    async def test_non_gated_role_no_files_passes(self):
+        """Reviewer (non-gated) not writing files should pass."""
+        state: TaskState = {
+            "task_id": "task-2",
+            "current_agent_role": "reviewer",
+            "team_config": {
+                "agents": {"reviewer": {"role": "reviewer"}},
+                "gates_after": ["coder"],
+            },
+            "agent_outputs": {
+                "reviewer": {
+                    "summary": "## Verdict\nAPPROVED\n## Summary\nAll good.",
+                    "files_changed": [],
+                },
+            },
+            "events": [],
+        }
+
+        result = await quality_check_node(state, [])
+
+        assert result["gate_results"]["passed"] is True
+        assert "gates_skipped_reviewer" in result["status"]
+
+    async def test_planner_writing_files_triggers_failure(self):
+        """Planner writing files should be caught by persona boundaries."""
+        state: TaskState = {
+            "task_id": "task-3",
+            "current_agent_role": "planner",
+            "team_config": {
+                "agents": {"planner": {"role": "planner"}},
+                "gates_after": ["coder"],
+            },
+            "agent_outputs": {
+                "planner": {
+                    "summary": "## Execution Plan\n...",
+                    "files_changed": ["plan.md"],
+                },
+            },
+            "events": [],
+        }
+
+        result = await quality_check_node(state, [])
+        assert result["gate_results"]["passed"] is False
+
+    async def test_instance_agent_resolves_base_role_for_persona(self):
+        """Instance agent 'backend-engineer-1' should use 'coder' boundaries."""
+        state: TaskState = {
+            "task_id": "task-4",
+            "current_agent_role": "backend-engineer-1",
+            "team_config": {
+                "agents": {
+                    "backend-engineer-1": {"role": "coder"},
+                },
+                "gates_after": ["backend-engineer-1"],
+            },
+            "agent_outputs": {
+                "backend-engineer-1": {
+                    "summary": "Implemented auth",
+                    "files_changed": ["src/auth.py"],
+                },
+            },
+            "project_root": "/project",
+            "events": [],
+        }
+
+        gate = AsyncMock()
+        gate.run.return_value = GateResult(
+            status=GateStatus.PASSED,
+            gates_run=1,
+            gates_passed=1,
+            violations=[],
+        )
+
+        result = await quality_check_node(state, [gate])
+        # Should pass — coder writing to src/ is allowed
+        assert result["gate_results"]["passed"] is True
+
+    async def test_gated_role_persona_violations_added_to_gate_results(self):
+        """Coder writing test files should add persona violation to gate results."""
+        state: TaskState = {
+            "task_id": "task-5",
+            "current_agent_role": "coder",
+            "team_config": {
+                "agents": {"coder": {"role": "coder"}},
+                "gates_after": ["coder"],
+            },
+            "agent_outputs": {
+                "coder": {
+                    "summary": "Fixed auth and added tests",
+                    "files_changed": ["src/auth.py", "tests/test_auth.py"],
+                },
+            },
+            "project_root": "/project",
+            "events": [],
+        }
+
+        gate = AsyncMock()
+        gate.run.return_value = GateResult(
+            status=GateStatus.PASSED,
+            gates_run=1,
+            gates_passed=1,
+            violations=[],
+        )
+
+        result = await quality_check_node(state, [gate])
+        # Gate itself passed, but persona violation should add violations
+        violations = result["gate_results"]["violations"]
+        persona_violations = [v for v in violations if "persona" in v.get("gate_id", "")]
+        assert len(persona_violations) >= 1
+
+
 if __name__ == "__main__":
     unittest.main()

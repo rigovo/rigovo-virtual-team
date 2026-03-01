@@ -500,6 +500,14 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
             {detail?.task_type && (
               <span className="td-type-badge">{detail.task_type}</span>
             )}
+            {detail?.complexity && (
+              <span className={`td-type-badge ${
+                detail.complexity === "critical" ? "td-complexity-critical" :
+                detail.complexity === "high" ? "td-complexity-high" :
+                detail.complexity === "medium" ? "td-complexity-medium" :
+                "td-complexity-low"
+              }`}>{detail.complexity}</span>
+            )}
             <span className="td-updated">{task.updatedAt}</span>
             {isApproval && (
               <span className="td-approval-chip">✋ Awaiting approval</span>

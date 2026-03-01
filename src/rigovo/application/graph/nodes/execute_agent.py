@@ -46,10 +46,12 @@ STREAM_CHUNK_MIN_SIZE = 4  # Minimum chars before emitting stream event
 MAX_TOOL_ROUNDS = 25  # Safety limit to prevent infinite tool loops
 
 # Per-role max_tokens — sized to what each role actually produces.
-# Coder/QA need room for full file contents. Planner/reviewer are lighter.
+# Per-role max_tokens — sized to what each role actually produces.
+# Coder needs room for full file contents. Planner (PM/EM/BDA) produces
+# comprehensive execution plans with acceptance criteria and dependency graphs.
 ROLE_MAX_TOKENS: dict[str, int] = {
     "lead": 4096,
-    "planner": 4096,
+    "planner": 8192,  # PM/EM/BDA: comprehensive execution plans
     "coder": 16384,  # Needs room for multi-file output
     "reviewer": 4096,
     "security": 4096,
@@ -71,31 +73,42 @@ SUBAGENT_MAX_ROUNDS = 10
 # until the Coder has written something. Planner may only consult Lead.
 #
 # All other roles may consult within their natural scope.
-# Max 1 consult per agent execution — prevents chatbot-style roundtrip loops.
 CONSULT_ALLOWED_TARGETS: dict[str, set[str]] = {
     "planner": {"lead"},                                   # NOT security/devops — no code yet
-    "coder": {"reviewer", "security", "qa"},              # After writing — check correctness
-    "reviewer": {"planner", "coder", "lead"},
-    "security": {"coder", "reviewer", "lead"},
-    "qa": {"coder", "reviewer"},
-    "devops": {"sre", "lead"},
-    "sre": {"devops", "lead"},
-    "lead": {"planner", "coder", "reviewer"},
+    "coder": {"reviewer", "security", "qa", "devops"},   # After writing — check correctness
+    "reviewer": {"planner", "coder", "lead", "security"},
+    "security": {"coder", "reviewer", "lead", "devops"},
+    "qa": {"coder", "reviewer", "security"},
+    "devops": {"sre", "lead", "security"},
+    "sre": {"devops", "lead", "security"},
+    "lead": {"planner", "coder", "reviewer", "security", "qa"},
 }
 
-# Max consultations per agent execution — prevents multi-roundtrip chatbot loops
-MAX_CONSULTS_PER_AGENT = 1
+# Max consultations per agent execution.
+# Phase 5: raised from 1 to 3. Agents can consult multiple different targets,
+# but per-target limit prevents chatbot loops (max 1 initial + 1 follow-up per target).
+MAX_CONSULTS_PER_AGENT = 3
+MAX_CONSULTS_PER_TARGET = 2  # 1 initial + 1 follow-up per target
 
 
-def _resolve_consult_policy(state: TaskState | None) -> tuple[bool, int, int, dict[str, set[str]]]:
-    """Resolve consultation policy from state with safe defaults."""
+def _resolve_consult_policy(
+    state: TaskState | None,
+) -> tuple[bool, int, int, dict[str, set[str]], int, int]:
+    """Resolve consultation policy from state with safe defaults.
+
+    Returns:
+        (enabled, max_question_chars, max_response_chars, allowed_targets,
+         max_consults_per_agent, max_consults_per_target)
+    """
     enabled = True
     max_question_chars = CONSULT_MAX_QUESTION_CHARS
     max_response_chars = CONSULT_MAX_RESPONSE_CHARS
     allowed_targets = {k: set(v) for k, v in CONSULT_ALLOWED_TARGETS.items()}
+    max_per_agent = MAX_CONSULTS_PER_AGENT
+    max_per_target = MAX_CONSULTS_PER_TARGET
 
     if not state:
-        return enabled, max_question_chars, max_response_chars, allowed_targets
+        return enabled, max_question_chars, max_response_chars, allowed_targets, max_per_agent, max_per_target
 
     raw_policy = state.get("consultation_policy", {}) or {}
     if isinstance(raw_policy, dict):
@@ -107,6 +120,14 @@ def _resolve_consult_policy(state: TaskState | None) -> tuple[bool, int, int, di
         if isinstance(r_chars, int) and r_chars > 100:
             max_response_chars = r_chars
 
+        # Configurable per-agent and per-target limits
+        raw_per_agent = raw_policy.get("max_consults_per_agent")
+        if isinstance(raw_per_agent, int) and 1 <= raw_per_agent <= 10:
+            max_per_agent = raw_per_agent
+        raw_per_target = raw_policy.get("max_consults_per_target")
+        if isinstance(raw_per_target, int) and 1 <= raw_per_target <= 5:
+            max_per_target = raw_per_target
+
         raw_targets = raw_policy.get("allowed_targets", {})
         if isinstance(raw_targets, dict):
             parsed: dict[str, set[str]] = {}
@@ -116,7 +137,7 @@ def _resolve_consult_policy(state: TaskState | None) -> tuple[bool, int, int, di
             if parsed:
                 allowed_targets = parsed
 
-    return enabled, max_question_chars, max_response_chars, allowed_targets
+    return enabled, max_question_chars, max_response_chars, allowed_targets, max_per_agent, max_per_target
 
 
 def _resolve_subagent_policy(state: TaskState | None) -> tuple[bool, int, int]:
@@ -505,29 +526,37 @@ def _handle_consult_agent(
     """
     Handle an inter-agent consultation request.
 
+    Phase 5: Multi-turn consultation support.
+    - Agents can consult up to MAX_CONSULTS_PER_AGENT different targets
+    - Per-target limit: MAX_CONSULTS_PER_TARGET (1 initial + 1 follow-up)
+    - Follow-ups reference a prior consultation via thread_id
+
     The consultation is asynchronous by design:
     - If the target role already has output, return it immediately.
     - Otherwise enqueue a pending request that the target role will see
       in its context and auto-fulfill when it completes.
     """
-    enabled, max_question_chars, max_response_chars, policy_targets = _resolve_consult_policy(state)
+    (
+        enabled, max_question_chars, max_response_chars,
+        policy_targets, max_per_agent, max_per_target,
+    ) = _resolve_consult_policy(state)
     if not enabled:
         return json.dumps({"status": "error", "error": "Consultation is disabled by policy"})
 
-    # Enforce per-agent consultation cap — prevents chatbot-style multi-roundtrip loops
+    # Count total consultations from this agent
     consults_so_far = sum(
         1
         for m in agent_messages
         if m.get("type") == "consult_request" and m.get("from_role") == from_role
     )
-    if consults_so_far >= MAX_CONSULTS_PER_AGENT:
+    if consults_so_far >= max_per_agent:
         return json.dumps(
             {
                 "status": "blocked",
                 "reason": "consultation_limit_reached",
                 "note": (
                     f"'{from_role}' has already consulted {consults_so_far} time(s). "
-                    f"Max is {MAX_CONSULTS_PER_AGENT}. Proceed with your work using "
+                    f"Max is {max_per_agent}. Proceed with your work using "
                     "the information you have."
                 ),
             }
@@ -542,8 +571,9 @@ def _handle_consult_agent(
     if not question:
         return json.dumps({"status": "error", "error": "Missing required field: question"})
 
-    # Resolve to_target: could be an instance_id or a base role name
-    # If it's a base role, find the first instance of that role
+    # Resolve to_target: could be an instance_id or a base role name.
+    # If it's a base role, find the first instance of that role.
+    # Only the first instance is consulted; other instances of the same role are ignored.
     to_role = to_target
     if to_target not in team_agents:
         # Try to find an instance by role name
@@ -554,9 +584,30 @@ def _handle_consult_agent(
         else:
             return json.dumps({"status": "error", "error": f"Unknown agent: {to_target}"})
 
+    # Gap #1: Prevent self-consultation — agents cannot consult themselves
+    if to_role == from_role:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "Agents cannot consult themselves. Seek guidance from a different role.",
+            }
+        )
+
     # Resolve the base role of from_role for policy checking
     from_base_role = team_agents.get(from_role, {}).get("role", from_role)
     to_base_role = team_agents.get(to_role, {}).get("role", to_role)
+
+    # Also block same-base-role consultation (e.g., coder-1 consulting coder-2)
+    if from_base_role == to_base_role:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": (
+                    f"Cannot consult another '{to_base_role}' instance. "
+                    "Consult a different role for independent perspective."
+                ),
+            }
+        )
 
     allowed_targets = policy_targets.get(from_base_role, set())
     if to_base_role not in allowed_targets and to_role not in allowed_targets:
@@ -564,16 +615,59 @@ def _handle_consult_agent(
             {
                 "status": "error",
                 "error": (
-                    f"Consultation from '{from_role}' to '{to_role}' is not allowed by policy. "
-                    "Proceed with your work independently."
+                    f"Consultation from role '{from_base_role}' to role '{to_base_role}' "
+                    f"is not allowed by policy. Proceed with your work independently."
                 ),
             }
         )
+
+    # Phase 5: Per-target limit — prevents chatbot loops with a single agent.
+    # Count using both instance_id match (exact) and base-role match (backward compat)
+    consults_to_target = sum(
+        1
+        for m in agent_messages
+        if m.get("type") == "consult_request"
+        and m.get("from_role") == from_role
+        and (m.get("to_role") == to_role or m.get("to_role") == to_base_role)
+    )
+    if consults_to_target >= max_per_target:
+        return json.dumps(
+            {
+                "status": "blocked",
+                "reason": "per_target_limit_reached",
+                "note": (
+                    f"'{from_role}' has already consulted '{to_role}' {consults_to_target} time(s). "
+                    f"Max per target is {max_per_target}. Use the information you already received."
+                ),
+            }
+        )
+
+    # Thread ID for follow-up tracking. Must reference a valid prior consult request
+    # to the same target, if provided.
+    thread_id = str(tool_input.get("thread_id", "")).strip()
+    if thread_id:
+        linked = next(
+            (m for m in agent_messages
+             if m.get("id") == thread_id and m.get("type") == "consult_request"),
+            None,
+        )
+        if not linked:
+            thread_id = ""  # Silently discard invalid thread_id
+        elif linked.get("to_role") != to_role:
+            # Thread_id references a different target — ignore it
+            thread_id = ""
+
     if len(question) > max_question_chars:
-        question = question[:max_question_chars] + "..."
+        # Truncate at last sentence boundary if possible
+        truncated = question[:max_question_chars]
+        last_period = truncated.rfind(".")
+        if last_period > int(max_question_chars * 0.8):
+            question = truncated[: last_period + 1]
+        else:
+            question = truncated + "..."
 
     request_id = _new_message_id(agent_messages)
-    request = {
+    request: dict[str, Any] = {
         "id": request_id,
         "type": "consult_request",
         "from_role": from_role,
@@ -582,6 +676,8 @@ def _handle_consult_agent(
         "status": "pending",
         "created_at": time.time(),
     }
+    if thread_id:
+        request["thread_id"] = thread_id  # Links to prior consultation for follow-ups
     agent_messages.append(request)
     events.append(
         {
@@ -650,19 +746,30 @@ def _fulfill_pending_consults(
     agent_messages: list[dict[str, Any]],
     events: list[dict[str, Any]],
 ) -> None:
-    """Auto-respond to pending consult requests addressed to the current role."""
-    enabled, _, max_response_chars, _ = _resolve_consult_policy(state)
+    """Auto-respond to pending consult requests addressed to the current role.
+
+    Consultation is advisory-only by design:
+    - Requests are asynchronous: agent asks, target responds when it finishes.
+    - If target never runs, requests remain pending forever.
+    - A pending request counts toward the per-target limit.
+    - Responses are truncated to max_response_chars and prefixed with [ADVISORY].
+    """
+    enabled, _, max_response_chars, _, _, _ = _resolve_consult_policy(state)
     if not enabled:
         return
     answer = (
         final_text[:max_response_chars] if final_text else "Completed work. No summary provided."
     )
+    # Resolve base role using team_config for robust matching
+    team_agents = state.get("team_config", {}).get("agents", {})
+    current_base_role = team_agents.get(current_role, {}).get("role", current_role)
     for msg in agent_messages:
-        # Match by instance_id or by base role (backward compat)
+        # Match by instance_id (exact) or by base role (backward compat)
         msg_target = msg.get("to_role", "")
+        msg_target_base = team_agents.get(msg_target, {}).get("role", msg_target)
         if (
             msg.get("type") == "consult_request"
-            and (msg_target == current_role or msg_target == current_role.split("-")[0])
+            and (msg_target == current_role or msg_target_base == current_base_role)
             and msg.get("status") == "pending"
         ):
             msg["status"] = "answered"

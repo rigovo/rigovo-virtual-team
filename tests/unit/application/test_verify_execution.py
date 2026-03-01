@@ -12,16 +12,37 @@ from rigovo.application.graph.nodes.verify_execution import (
     VERIFIABLE_ROLES,
     _detect_config_validators,
     _detect_project_type,
+    _resolve_base_role,
     _run_verification_command,
     verify_execution_node,
 )
 from rigovo.application.graph.state import TaskState
 
 
+class TestResolveBaseRole(unittest.TestCase):
+    """Test base-role resolution from instance IDs."""
+
+    def test_simple_role(self):
+        assert _resolve_base_role("coder") == "coder"
+
+    def test_instance_suffix(self):
+        assert _resolve_base_role("coder-1") == "coder"
+
+    def test_compound_role_with_suffix(self):
+        """backend-engineer-1 → backend-engineer (not verifiable, but correctly resolved)."""
+        assert _resolve_base_role("backend-engineer-1") == "backend-engineer"
+
+    def test_compound_role_no_suffix(self):
+        assert _resolve_base_role("backend-engineer") == "backend-engineer"
+
+    def test_qa_suffix(self):
+        assert _resolve_base_role("qa-2") == "qa"
+
+
 class TestDetectProjectType(unittest.TestCase):
     """Test project type detection from marker files."""
 
-    def test_python_pyproject(self, tmp_path=None):
+    def test_python_pyproject(self):
         """Detect Python project from pyproject.toml."""
         import tempfile
 
@@ -68,6 +89,40 @@ class TestDetectProjectType(unittest.TestCase):
             assert info["language"] == "rust"
             assert "cargo check" in (info["build_cmd"] or "")
 
+    def test_csharp_project(self):
+        """Detect C#/.NET project from .csproj."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "MyApp.csproj").write_text("<Project/>")
+            info = _detect_project_type(root)
+            assert info["language"] == "csharp"
+            assert "dotnet build" in (info["build_cmd"] or "")
+            assert "dotnet test" in (info["test_cmd"] or "")
+
+    def test_cpp_cmake_project(self):
+        """Detect C++ project from CMakeLists.txt."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "CMakeLists.txt").write_text("cmake_minimum_required(VERSION 3.0)")
+            info = _detect_project_type(root)
+            assert info["language"] == "cpp"
+            assert "cmake" in (info["build_cmd"] or "")
+
+    def test_ruby_project(self):
+        """Detect Ruby project from Gemfile."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "Gemfile").write_text("source 'https://rubygems.org'")
+            info = _detect_project_type(root)
+            assert info["language"] == "ruby"
+            assert "rspec" in (info["test_cmd"] or "")
+
     def test_unknown_project(self):
         """Unknown project type returns defaults."""
         import tempfile
@@ -88,6 +143,21 @@ class TestDetectConfigValidators(unittest.TestCase):
         assert any("terraform" in v for v in validators)
         # Only one terraform validate even for multiple .tf files
         assert sum(1 for v in validators if "terraform" in v) == 1
+
+    def test_dockerfile_uses_hadolint(self):
+        """Docker validation should use hadolint, not docker build --check."""
+        validators = _detect_config_validators(["Dockerfile"])
+        assert any("hadolint" in v for v in validators)
+        # Must NOT contain invalid 'docker build --check'
+        assert not any("docker build --check" in v for v in validators)
+
+    def test_docker_compose(self):
+        validators = _detect_config_validators(["docker-compose.yml"])
+        assert any("docker compose" in v and "config" in v for v in validators)
+
+    def test_helm_chart(self):
+        validators = _detect_config_validators(["charts/myapp/Chart.yaml"])
+        assert any("helm lint" in v for v in validators)
 
     def test_no_config_files(self):
         validators = _detect_config_validators(["src/main.py", "src/utils.py"])
@@ -204,9 +274,10 @@ class TestVerifyExecutionNode(unittest.IsolatedAsyncioTestCase):
         assert result["execution_verification"]["status"] == "skipped"
         assert result["execution_verification"]["reason"] == "No files produced to verify"
 
+    @patch("rigovo.application.graph.nodes.verify_execution.Path.is_dir", return_value=True)
     @patch("rigovo.application.graph.nodes.verify_execution.CommandRunner")
     @patch("rigovo.application.graph.nodes.verify_execution._detect_project_type")
-    async def test_coder_build_passes(self, mock_detect, mock_runner_cls):
+    async def test_coder_build_passes(self, mock_detect, mock_runner_cls, _mock_isdir):
         """Coder verification with passing build and tests."""
         mock_detect.return_value = {
             "language": "python",
@@ -251,9 +322,10 @@ class TestVerifyExecutionNode(unittest.IsolatedAsyncioTestCase):
         assert result["execution_verification"]["total_checks"] == 1
         assert result["execution_verification"]["passed_checks"] == 1
 
+    @patch("rigovo.application.graph.nodes.verify_execution.Path.is_dir", return_value=True)
     @patch("rigovo.application.graph.nodes.verify_execution.CommandRunner")
     @patch("rigovo.application.graph.nodes.verify_execution._detect_project_type")
-    async def test_coder_build_fails(self, mock_detect, mock_runner_cls):
+    async def test_coder_build_fails(self, mock_detect, mock_runner_cls, _mock_isdir):
         """Coder verification with failing tests produces failure details."""
         mock_detect.return_value = {
             "language": "python",
@@ -297,9 +369,10 @@ class TestVerifyExecutionNode(unittest.IsolatedAsyncioTestCase):
         assert result["execution_verification"]["passed"] is False
         assert len(result["execution_verification"]["failure_details"]) > 0
 
+    @patch("rigovo.application.graph.nodes.verify_execution.Path.is_dir", return_value=True)
     @patch("rigovo.application.graph.nodes.verify_execution.CommandRunner")
     @patch("rigovo.application.graph.nodes.verify_execution._detect_project_type")
-    async def test_qa_with_test_files(self, mock_detect, mock_runner_cls):
+    async def test_qa_with_test_files(self, mock_detect, mock_runner_cls, _mock_isdir):
         """QA verification runs the test files they wrote."""
         mock_detect.return_value = {
             "language": "python",
@@ -343,9 +416,10 @@ class TestVerifyExecutionNode(unittest.IsolatedAsyncioTestCase):
         assert result["execution_verification"]["passed_checks"] >= 1
         # conftest.py is not a test file so shouldn't add a separate check
 
+    @patch("rigovo.application.graph.nodes.verify_execution.Path.is_dir", return_value=True)
     @patch("rigovo.application.graph.nodes.verify_execution.CommandRunner")
     @patch("rigovo.application.graph.nodes.verify_execution._detect_project_type")
-    async def test_qa_no_test_files_written(self, mock_detect, mock_runner_cls):
+    async def test_qa_no_test_files_written(self, mock_detect, mock_runner_cls, _mock_isdir):
         """QA wrote files but none are test files → verification failure."""
         mock_detect.return_value = {
             "language": "python",
@@ -424,9 +498,100 @@ class TestVerifyExecutionNode(unittest.IsolatedAsyncioTestCase):
         assert result["execution_verification"]["status"] == "skipped"
         assert result["execution_verification"]["reason"] == "No files produced to verify"
 
+    async def test_compound_role_not_falsely_verifiable(self):
+        """backend-engineer-1 should NOT be treated as coder/qa/devops/sre."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Code",
+            "current_agent_role": "backend-engineer-1",
+            "current_instance_id": "backend-engineer-1",
+            "team_config": {
+                "agents": {
+                    "backend-engineer-1": {"role": "backend-engineer", "name": "BE"},
+                },
+            },
+            "agent_outputs": {},
+            "events": [],
+        }
+
+        result = await verify_execution_node(state)
+        # backend-engineer is NOT in VERIFIABLE_ROLES → skipped
+        assert result["execution_verification"]["status"] == "skipped"
+
+    async def test_missing_project_root_skips_gracefully(self):
+        """Non-existent project root should not crash — skip with reason."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Code",
+            "project_root": "/nonexistent/path/that/does/not/exist",
+            "current_agent_role": "coder",
+            "current_instance_id": "coder-1",
+            "team_config": {
+                "agents": {"coder-1": {"role": "coder"}},
+            },
+            "agent_outputs": {
+                "coder-1": {"summary": "done", "files_changed": ["src/x.py"]},
+            },
+            "events": [],
+        }
+
+        result = await verify_execution_node(state)
+        assert result["execution_verification"]["status"] == "skipped"
+        assert "not found" in result["execution_verification"]["reason"]
+
+    async def test_missing_state_fields_defaults_safely(self):
+        """Minimal state (backward compat) — no team_config, no agent_outputs."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Code",
+            "current_agent_role": "planner",
+            "events": [],
+        }
+
+        result = await verify_execution_node(state)
+        assert result["execution_verification"]["status"] == "skipped"
+        assert "verification_history" in result
+
+    @patch("rigovo.application.graph.nodes.verify_execution.Path.is_dir", return_value=True)
     @patch("rigovo.application.graph.nodes.verify_execution.CommandRunner")
     @patch("rigovo.application.graph.nodes.verify_execution._detect_project_type")
-    async def test_unknown_project_no_checks(self, mock_detect, mock_runner_cls):
+    async def test_qa_data_files_not_treated_as_tests(self, mock_detect, mock_runner_cls, _mock_isdir):
+        """Files like test_data.json should not be treated as runnable tests."""
+        mock_detect.return_value = {
+            "language": "python",
+            "build_cmd": None,
+            "test_cmd": "python -m pytest --tb=short -q",
+            "validate_cmds": [],
+        }
+        mock_runner_cls.return_value = MagicMock()
+
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Test auth",
+            "project_root": "/tmp/test-project",
+            "current_agent_role": "qa",
+            "current_instance_id": "qa-1",
+            "team_config": {
+                "agents": {"qa-1": {"role": "qa", "name": "QA"}},
+            },
+            "agent_outputs": {
+                "qa-1": {
+                    "summary": "Wrote test data",
+                    "files_changed": ["tests/test_data.json", "tests/test_fixtures.yaml"],
+                },
+            },
+            "events": [],
+        }
+
+        result = await verify_execution_node(state)
+        # JSON/YAML files should not be treated as runnable test files
+        # No code test files, no infra files → failure (QA must write actual tests)
+        assert result["execution_verification"]["passed"] is False
+
+    @patch("rigovo.application.graph.nodes.verify_execution.Path.is_dir", return_value=True)
+    @patch("rigovo.application.graph.nodes.verify_execution.CommandRunner")
+    @patch("rigovo.application.graph.nodes.verify_execution._detect_project_type")
+    async def test_unknown_project_no_checks(self, mock_detect, mock_runner_cls, _mock_isdir):
         """Unknown project type with no build/test commands → no_checks (soft pass)."""
         mock_detect.return_value = {
             "language": "unknown",

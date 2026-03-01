@@ -173,7 +173,7 @@ class TestLangGraphCompilation(unittest.TestCase):
         expected = {
             "__start__", "__end__",
             "scan_project", "classify", "assemble", "plan_approval",
-            "execute_agent", "quality_check", "route_next",
+            "execute_agent", "verify_execution", "quality_check", "route_next",
             "commit_approval", "enrich", "store_memory", "finalize",
         }
         assert expected.issubset(node_ids), (

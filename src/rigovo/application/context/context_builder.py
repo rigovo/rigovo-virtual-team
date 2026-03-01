@@ -35,9 +35,14 @@ MAX_TOTAL_CONTEXT_CHARS = 40_000
 # Role-specific quality expectations injected alongside context
 ROLE_QUALITY_CONTRACT: dict[str, str] = {
     "planner": (
-        "Your plan will be reviewed by the Tech Lead and executed by the Coder. "
-        "Be specific about file paths, function signatures, and edge cases. "
-        "Vague plans waste tokens and cause rework."
+        "Your execution plan will be reviewed by the Tech Lead and executed by "
+        "multiple engineers (Coder, QA, DevOps). A vague plan causes rework "
+        "across the entire team — specificity saves tokens and time. "
+        "Every step must have: (1) exact file paths, (2) specific function/class "
+        "changes, (3) effort estimate (S/M/L), (4) dependencies on other steps, "
+        "and (5) verification criteria. The acceptance criteria you write inform "
+        "the QA Engineer's test strategy. The dependency graph you describe is "
+        "reviewed by the Tech Lead for architectural correctness."
     ),
     "coder": (
         "Your code will be checked by deterministic quality gates (AST analysis). "

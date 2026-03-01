@@ -24,9 +24,35 @@ const ROLE_META: Record<string, { label: string; subtitle: string; color: string
   memory:   { label: "Memory",       subtitle: "Context Store",       color: "#c084fc", icon: "🧬" },
 };
 
+/** Map of instance agent keyword → base role key (for "backend-engineer-1" etc.) */
+const BASE_ROLE_KW: Record<string, string> = {
+  backend: "coder", frontend: "coder", engineer: "coder", developer: "coder",
+  dev: "coder", programmer: "coder", implementer: "coder",
+  planner: "planner", architect: "planner",
+  reviewer: "reviewer", review: "reviewer",
+  qa: "qa", tester: "qa", test: "qa",
+  security: "security", sec: "security",
+  devops: "devops", infra: "devops", deploy: "devops",
+  sre: "sre", reliability: "sre", ops: "sre",
+  docs: "docs", documentation: "docs", writer: "docs",
+  lead: "lead", coordinator: "lead",
+};
+
 function roleMeta(role: string) {
   const r = role.toLowerCase();
-  return ROLE_META[r] ?? { label: r.charAt(0).toUpperCase() + r.slice(1), subtitle: "Agent", color: "#a3a3a3", icon: "🤖" };
+  if (ROLE_META[r]) return ROLE_META[r];
+
+  // Instance agent resolution: "backend-engineer-1" → coder
+  const parts = r.split("-").filter(p => !/^\d+$/.test(p));
+  for (const part of parts) {
+    const baseKey = BASE_ROLE_KW[part];
+    if (baseKey && ROLE_META[baseKey]) {
+      const humanLabel = role.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+      return { ...ROLE_META[baseKey], label: humanLabel };
+    }
+  }
+
+  return { label: r.charAt(0).toUpperCase() + r.slice(1), subtitle: "Agent", color: "#a3a3a3", icon: "🤖" };
 }
 
 /* ═══════════════════════════════════════════════════════════════════ */
@@ -51,6 +77,10 @@ export interface AgentDetailPanelProps {
 /* ═══════════════════════════════════════════════════════════════════ */
 
 function GatePill({ gate }: { gate: GateResult }) {
+  const label = gate.gate === "persona" ? "persona boundary"
+    : gate.gate === "contract" ? "output contract"
+    : gate.gate === "no-files" ? "no files"
+    : gate.gate;
   return (
     <span
       className="adp-gate-pill"
@@ -59,7 +89,13 @@ function GatePill({ gate }: { gate: GateResult }) {
                background: gate.passed ? "#4ade8010" : "#f8717110" }}
       title={gate.message}
     >
-      {gate.passed ? "✓" : "✗"} {gate.gate}
+      {gate.passed ? "✓" : "✗"} {label}
+      {gate.violation_count != null && gate.violation_count > 0 && !gate.passed && (
+        <span style={{ opacity: 0.7, marginLeft: 3 }}>({gate.violation_count})</span>
+      )}
+      {gate.deep && (
+        <span style={{ opacity: 0.6, marginLeft: 3, fontSize: "0.75em" }}>DEEP</span>
+      )}
     </span>
   );
 }
@@ -315,14 +351,26 @@ function AgentOutput({ step }: { step: TaskStep }) {
 function GateSection({ step }: { step: TaskStep }) {
   const passed = step.gate_results.filter(g =>  g.passed).length;
   const failed = step.gate_results.filter(g => !g.passed).length;
+  const totalViolations = step.gate_results.reduce((sum, g) => sum + (g.violation_count ?? 0), 0);
+  const hasPersona = step.gate_results.some(g => g.gate === "persona");
+  const hasDeep = step.gate_results.some(g => g.deep);
   if (step.gate_results.length === 0) return null;
   return (
     <div className="adp-section">
       <div className="adp-section-hdr">
         <span className="adp-section-icon">⚡</span>
-        <span className="adp-section-title">Rigour gates</span>
+        <span className="adp-section-title">
+          Rigour gates
+          {hasDeep && <span style={{ fontSize: "0.75em", opacity: 0.6, marginLeft: 4 }}>(deep)</span>}
+        </span>
         <span className="adp-gate-summary" style={{ color: failed > 0 ? "#f87171" : "#4ade80" }}>
-          {failed > 0 ? `${failed} failed` : `${passed} passed`}
+          {failed > 0
+            ? hasPersona
+              ? "persona violation"
+              : totalViolations > 0
+                ? `${totalViolations} violation${totalViolations === 1 ? "" : "s"}`
+                : `${failed} failed`
+            : `${passed} passed`}
         </span>
       </div>
       <div className="adp-gate-pills">

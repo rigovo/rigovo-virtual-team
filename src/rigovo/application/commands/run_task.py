@@ -361,21 +361,73 @@ class RunTaskCommand:
 
         # --- Persist agent outputs as PipelineStep records ---
         agent_outputs_raw = final_state.get("agent_outputs", {})
+        # Build a role→gate_entry lookup from gate_history for structured violations
+        gate_history = final_state.get("gate_history", [])
+        gate_by_role: dict[str, list[dict]] = {}
+        if isinstance(gate_history, list):
+            for gh in gate_history:
+                if not isinstance(gh, dict):
+                    continue
+                gh_role = gh.get("role", "")
+                if gh_role:
+                    gate_by_role.setdefault(gh_role, []).append(gh)
+
         if isinstance(agent_outputs_raw, dict):
             pipeline_steps: list[PipelineStep] = []
             for role, output in agent_outputs_raw.items():
+                # Build structured gate_violations from gate_history
+                gate_violations: list[dict] = []
+                for gh in gate_by_role.get(role, []):
+                    passed = gh.get("passed", True)
+                    violation_count = gh.get("violation_count", 0)
+                    gates_run = gh.get("gates_run", 0)
+                    reason = gh.get("reason", "")
+                    gate_name = "rigour"
+                    if reason == "persona_violation":
+                        gate_name = "persona"
+                    elif reason == "contract_failed":
+                        gate_name = "contract"
+                    elif reason == "no_files_produced":
+                        gate_name = "no-files"
+
+                    gate_violations.append({
+                        "gate": gate_name,
+                        "passed": passed,
+                        "message": reason if reason else (
+                            f"{gates_run} gate{'s' if gates_run != 1 else ''} passed"
+                            if passed
+                            else f"{violation_count} violation{'s' if violation_count != 1 else ''}"
+                        ),
+                        "severity": "info" if passed else "error",
+                        "violation_count": violation_count,
+                        "gates_run": gates_run,
+                        "deep": gh.get("deep", False),
+                        "pro": gh.get("pro", False),
+                    })
+
+                # Derive gate_passed from structured data
+                gate_passed = output.get("gate_passed")
+                if gate_passed is None and gate_violations:
+                    gate_passed = all(gv.get("passed", True) for gv in gate_violations)
+
+                # Humanize instance agent names: "backend-engineer-1" → "Backend Engineer 1"
+                _agent_name = (
+                    role.replace("-", " ").replace("_", " ")
+                    .title()
+                )
                 step = PipelineStep(
                     agent_id=uuid5(NAMESPACE_DNS, f"{task_id}:{role}"),
                     agent_role=role,
-                    agent_name=role.replace("_", " ").title(),
+                    agent_name=_agent_name,
                     status="completed",
                     duration_ms=output.get("duration_ms", 0),
                     total_tokens=output.get("tokens", 0),
                     cost_usd=output.get("cost", 0.0),
                     summary=output.get("summary", ""),
                     files_changed=output.get("files_changed", []),
-                    gate_passed=output.get("gate_passed"),
+                    gate_passed=gate_passed,
                     gate_score=output.get("gate_score"),
+                    gate_violations=gate_violations,
                 )
                 pipeline_steps.append(step)
             task.pipeline_steps = pipeline_steps

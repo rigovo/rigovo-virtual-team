@@ -184,21 +184,26 @@ class OrchestrationSchema(BaseModel):
 
 
 class ConsultationSchema(BaseModel):
-    """Inter-agent consultation policy (advisory-only messaging)."""
+    """Inter-agent consultation policy (advisory-only messaging).
+
+    Phase 5: Multi-turn consultation support with per-agent and per-target limits.
+    """
 
     enabled: bool = True
     max_question_chars: int = 1200
     max_response_chars: int = 1200
+    max_consults_per_agent: int = 3   # Total consultations an agent can make per execution
+    max_consults_per_target: int = 2  # Max consultations to the same target (1 initial + 1 follow-up)
     allowed_targets: dict[str, list[str]] = Field(
         default_factory=lambda: {
-            "planner": ["lead", "security", "devops"],
-            "coder": ["reviewer", "security", "qa"],
-            "reviewer": ["planner", "coder", "security", "qa", "devops", "sre", "lead"],
-            "security": ["coder", "reviewer", "devops", "sre", "lead"],
-            "qa": ["coder", "reviewer"],
+            "planner": ["lead"],
+            "coder": ["reviewer", "security", "qa", "devops"],
+            "reviewer": ["planner", "coder", "lead", "security"],
+            "security": ["coder", "reviewer", "lead", "devops"],
+            "qa": ["coder", "reviewer", "security"],
             "devops": ["security", "sre", "reviewer", "lead"],
             "sre": ["devops", "security", "reviewer", "lead"],
-            "lead": ["planner", "coder", "reviewer", "security", "qa", "devops", "sre"],
+            "lead": ["planner", "coder", "reviewer", "security", "qa"],
         }
     )
 

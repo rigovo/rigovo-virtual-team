@@ -146,7 +146,14 @@ def _make_notify_handler(
 
 
 def _on_agent_event(event: dict) -> None:
-    """Handle agent_started / agent_complete events from the graph."""
+    """Handle agent lifecycle + gate result events from the graph.
+
+    Supported event types:
+    - agent_started: Agent begins execution
+    - agent_complete: Agent finished producing output
+    - gate_results: Quality gates ran for the agent (from quality_check_node)
+    - task_finalized / task_failed: Cleanup live state
+    """
     etype = event.get("type", "")
     task_id = event.get("task_id", "")
     role = event.get("role", "")
@@ -180,8 +187,45 @@ def _on_agent_event(event: dict) -> None:
             "tokens": event.get("tokens", 0),
             "cost_usd": event.get("cost", 0.0),
             "duration_ms": event.get("duration_ms", 0),
-            "gate_results": [],
+            "gate_results": existing.get("gate_results", []),
         }
+    elif etype == "gate_results":
+        # Wire quality_check_node gate results into the agent's live step.
+        # This fires after quality_check_node runs for this role.
+        existing = _live_agent_progress[task_id].get(role, {})
+        if existing:
+            passed = event.get("passed", True)
+            violation_count = event.get("violations", 0)
+            gates_run = event.get("gates_run", 0)
+            reason = event.get("reason", "")
+            deep = event.get("deep", False)
+            pro = event.get("pro", False)
+
+            gate_entry: dict[str, Any] = {
+                "gate": "rigour",
+                "passed": passed,
+                "message": reason if reason else (
+                    f"Score: {gates_run} gate{'s' if gates_run != 1 else ''} run"
+                    if passed
+                    else f"{violation_count} violation{'s' if violation_count != 1 else ''}"
+                ),
+                "severity": "info" if passed else "error",
+                "violation_count": violation_count,
+                "gates_run": gates_run,
+                "deep": deep,
+                "pro": pro,
+            }
+            # Persona violations are tagged in the event
+            if reason == "persona_violation":
+                gate_entry["gate"] = "persona"
+                gate_entry["message"] = f"Persona boundary violation: {violation_count} issue{'s' if violation_count != 1 else ''}"
+            elif reason == "contract_failed":
+                gate_entry["gate"] = "contract"
+                gate_entry["message"] = f"Output contract failed: {violation_count} violation{'s' if violation_count != 1 else ''}"
+
+            existing_gates = existing.get("gate_results", [])
+            existing_gates.append(gate_entry)
+            existing["gate_results"] = existing_gates
     elif etype in ("task_finalized", "task_failed"):
         # Clean up live state once task is done
         _live_agent_progress.pop(task_id, None)
@@ -564,6 +608,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         emitter = container.get_event_emitter()
         emitter.on("agent_started", _on_agent_event)
         emitter.on("agent_complete", _on_agent_event)
+        emitter.on("gate_results", _on_agent_event)
         emitter.on("task_finalized", _on_agent_event)
         emitter.on("task_failed", _on_agent_event)
         for evt_name in [
@@ -1782,8 +1827,11 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         # --- Priority 2: Persisted pipeline_steps (for completed tasks) ---
         if not steps and task.pipeline_steps:
             for ps in task.pipeline_steps:
+                # Prefer structured gate_violations (Phase 8) over legacy gate_passed scalar
                 gate_results = []
-                if ps.gate_passed is not None:
+                if ps.gate_violations:
+                    gate_results = list(ps.gate_violations)
+                elif ps.gate_passed is not None:
                     gate_results.append(
                         {
                             "gate": "rigour",
@@ -1827,6 +1875,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "description": task.description,
             "status": task.status.value,
             "task_type": task.task_type or "unclassified",
+            "complexity": task.complexity.value if task.complexity else None,
             "tier": _tier_from_task(task),
             "team": str(task.team_id)[:8] if task.team_id else "unassigned",
             "created_at": task.created_at.isoformat() if task.created_at else None,

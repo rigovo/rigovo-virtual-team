@@ -26,10 +26,53 @@ const ROLES: Record<string, RoleMeta> = {
 
 const REVIEW_ROLES = new Set(["reviewer", "qa", "security"]);
 
+/**
+ * Map of instance agent base-role keywords to base role keys.
+ * Handles names like "backend-engineer-1", "frontend-dev-2", "qa-lead-1".
+ */
+const BASE_ROLE_KEYWORDS: Record<string, string> = {
+  backend: "coder", frontend: "coder", engineer: "coder", developer: "coder",
+  dev: "coder", programmer: "coder", implementer: "coder",
+  planner: "planner", architect: "planner",
+  reviewer: "reviewer", review: "reviewer",
+  qa: "qa", tester: "qa", test: "qa",
+  security: "security", sec: "security",
+  devops: "devops", infra: "devops", deploy: "devops",
+  sre: "sre", reliability: "sre", ops: "sre",
+  docs: "docs", documentation: "docs", writer: "docs",
+  lead: "lead", coordinator: "lead",
+};
+
+/**
+ * Resolve a role string to its visual metadata.
+ * Supports both base roles ("coder") and instance agents ("backend-engineer-1").
+ */
 function roleMeta(role: string): RoleMeta {
-  return ROLES[role.toLowerCase()] ?? {
+  const lower = role.toLowerCase();
+
+  // Direct match on known roles
+  if (ROLES[lower]) return ROLES[lower];
+
+  // Instance agent resolution: split by hyphens, find base role from keywords
+  const parts = lower.split("-").filter(p => !/^\d+$/.test(p)); // strip numeric suffixes
+  for (const part of parts) {
+    const baseKey = BASE_ROLE_KEYWORDS[part];
+    if (baseKey && ROLES[baseKey]) {
+      // Build a label from the original role name (humanized)
+      const label = role
+        .split("-")
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(" ");
+      return { ...ROLES[baseKey], label };
+    }
+  }
+
+  return {
     icon: "\uD83E\uDD16",
-    label: role || "Agent",
+    label: role
+      .split("-")
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ") || "Agent",
     color: "text-[var(--ui-text-secondary)]",
     surface: "bg-[rgba(0,0,0,0.02)]",
     border: "border-[var(--ui-border)]",
@@ -275,10 +318,11 @@ function EventCard({ step, index, costUsd, onOpenFiles }: {
   const running = step.status === "running";
   const failed  = step.status === "failed";
 
+  const gates       = step.gate_results ?? [];
   const hasFiles    = step.files_changed.length > 0;
-  const gatesPassed = step.gate_results.length > 0 && step.gate_results.every((g) => g.passed);
-  const gatesFailed = step.gate_results.some((g) => !g.passed);
-  const showPills   = hasFiles || step.gate_results.length > 0 || (costUsd !== undefined && costUsd > 0);
+  const gatesPassed = gates.length > 0 && gates.every((g) => g.passed);
+  const gatesFailed = gates.some((g) => !g.passed);
+  const showPills   = hasFiles || gates.length > 0 || (costUsd !== undefined && costUsd > 0);
 
   return (
     <article
@@ -334,7 +378,7 @@ function EventCard({ step, index, costUsd, onOpenFiles }: {
               📁 {step.files_changed.length} file{step.files_changed.length !== 1 ? "s" : ""}
             </button>
           )}
-          {step.gate_results.length > 0 && (
+          {gates.length > 0 && (
             <span className={`feed-pill ${gatesFailed ? "fail" : gatesPassed ? "pass" : ""}`}>
               {gatesFailed ? "⚠️ gate failed" : "✓ gates passed"}
             </span>
@@ -349,26 +393,55 @@ function EventCard({ step, index, costUsd, onOpenFiles }: {
 }
 
 function ResolutionCard({ step, index }: { step: TaskStep; index: number }) {
-  if (step.gate_results.length === 0) return null;
-  const failures = step.gate_results.filter((g) => !g.passed);
+  const gates = step.gate_results ?? [];
+  if (gates.length === 0) return null;
+  const failures = gates.filter((g) => !g.passed);
   const passed = failures.length === 0;
+  const totalViolations = gates.reduce((sum, g) => sum + (g.violation_count ?? 0), 0);
+  const hasDeep = gates.some((g) => g.deep);
+  const hasPersona = gates.some((g) => g.gate === "persona");
+  const hasContract = gates.some((g) => g.gate === "contract");
   return (
     <div
       className={`narrative-resolution animate-fadeup ${passed ? "pass" : "fail"}`}
       style={{ animationDelay: `${index * 80 + 30}ms` }}
     >
-      <span className="narrative-meta-label">Resolution</span>
+      <div className="flex items-center gap-2">
+        <span className="narrative-meta-label">Resolution</span>
+        {hasDeep && (
+          <span className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold bg-indigo-50 text-indigo-600 border border-indigo-200">
+            DEEP
+          </span>
+        )}
+      </div>
       <p className="mt-1 text-[12px] text-[var(--ui-text-secondary)]">
         {passed
           ? "Rigour gates passed. Master Brain can continue safely."
-          : `Rigour raised ${failures.length} issue${failures.length === 1 ? "" : "s"}. Next step should address these findings.`}
+          : hasPersona
+            ? `Persona boundary violation — agent acted outside its defined scope.`
+            : hasContract
+              ? `Output contract failed — agent output structure is invalid.`
+              : totalViolations > 0
+                ? `Rigour found ${totalViolations} violation${totalViolations === 1 ? "" : "s"}. Next step should address these findings.`
+                : `Rigour raised ${failures.length} issue${failures.length === 1 ? "" : "s"}. Next step should address these findings.`}
       </p>
       <div className="mt-2 flex flex-wrap gap-1.5">
-        {step.gate_results.map((g, idx) => (
-          <span key={`${g.gate}-${idx}`} className={`rounded-md px-2 py-0.5 text-[10px] ${g.passed ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>
-            {g.gate}
-          </span>
-        ))}
+        {gates.map((g, idx) => {
+          const label = g.gate === "persona" ? "persona boundary"
+            : g.gate === "contract" ? "output contract"
+            : g.gate === "no-files" ? "no files produced"
+            : g.gate;
+          return (
+            <span key={`${g.gate}-${idx}`} className={`rounded-md px-2 py-0.5 text-[10px] ${
+              g.passed ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"
+            }`}>
+              {label}
+              {g.violation_count != null && g.violation_count > 0 && !g.passed && (
+                <span className="ml-1 opacity-75">({g.violation_count})</span>
+              )}
+            </span>
+          );
+        })}
       </div>
     </div>
   );
