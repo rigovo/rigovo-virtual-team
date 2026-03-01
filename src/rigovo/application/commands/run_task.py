@@ -30,7 +30,7 @@ from rigovo.application.master.evaluator import AgentEvaluator
 from rigovo.application.master.router import TeamRouter
 from rigovo.domain.entities.agent import Agent
 from rigovo.domain.entities.audit_entry import AuditAction, AuditEntry
-from rigovo.domain.entities.task import PipelineStep, Task
+from rigovo.domain.entities.task import PipelineStep, Task, TaskComplexity, TaskType
 from rigovo.domain.interfaces.domain_plugin import DomainPlugin
 from rigovo.domain.interfaces.embedding_provider import EmbeddingProvider
 from rigovo.domain.interfaces.event_emitter import EventEmitter
@@ -80,7 +80,7 @@ class RunTaskCommand:
         team_configs: dict[str, Any] | None = None,
         consultation_policy: dict[str, Any] | None = None,
         subagent_policy: dict[str, Any] | None = None,
-        deep_mode: str = "final",
+        deep_mode: str = "smart",
         deep_pro: bool = False,
         replan_policy: dict[str, Any] | None = None,
         memory_repo: MemoryRepository | None = None,
@@ -142,6 +142,8 @@ class RunTaskCommand:
         task_id: str | UUID | None = None,
         project_id: str | UUID | None = None,
         tier: str = "auto",
+        workspace_path: str = "",
+        workspace_label: str = "",
     ) -> dict[str, Any]:
         """
         Execute a task end-to-end.
@@ -154,6 +156,8 @@ class RunTaskCommand:
                      If None, a new UUID is generated.
             project_id: Optional project UUID to associate this task with.
             tier: Approval tier — "auto" | "notify" | "approve".
+            workspace_path: Optional absolute path of the target repo/folder for this task.
+            workspace_label: Optional human-readable label for the workspace.
 
         Returns:
             Final state dict with status, costs, files changed, etc.
@@ -177,6 +181,8 @@ class RunTaskCommand:
                 workspace_id=self._workspace_id,
                 description=description,
                 id=task_id,
+                workspace_path=workspace_path.strip() if workspace_path else "",
+                workspace_label=workspace_label.strip() if workspace_label else "",
             )
             # Store project context and approval tier for resume durability
             if project_id:
@@ -346,6 +352,22 @@ class RunTaskCommand:
         else:
             task.fail()
 
+        # Persist classification from Master Agent (prevents "unclassified" in UI)
+        classification = final_state.get("classification", {})
+        if isinstance(classification, dict):
+            raw_type = classification.get("task_type")
+            if raw_type:
+                try:
+                    task.task_type = TaskType(raw_type)
+                except ValueError:
+                    task.task_type = TaskType.FEATURE
+            raw_complexity = classification.get("complexity")
+            if raw_complexity:
+                try:
+                    task.complexity = TaskComplexity(raw_complexity)
+                except ValueError:
+                    task.complexity = TaskComplexity.MEDIUM
+
         # Extract totals from finalize_node state or fall back to cost_accumulator
         task.total_tokens = final_state.get("total_tokens", 0)
         task.total_cost_usd = final_state.get("total_cost_usd", 0.0)
@@ -428,6 +450,8 @@ class RunTaskCommand:
                     gate_passed=gate_passed,
                     gate_score=output.get("gate_score"),
                     gate_violations=gate_violations,
+                    execution_log=output.get("execution_log", []),
+                    execution_verified=output.get("execution_verified", False),
                 )
                 pipeline_steps.append(step)
             task.pipeline_steps = pipeline_steps

@@ -76,7 +76,7 @@ export default function ActivityLog({ detail }: ActivityLogProps) {
   if (entries.length === 0) return null;
 
   return (
-    <div className="rounded-2xl border border-[var(--ui-border)] bg-white overflow-hidden">
+    <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--canvas)] overflow-hidden">
       <div className="px-4 py-2.5 border-b border-[var(--ui-border)] flex items-center gap-2">
         <span className="text-xs">{"\uD83D\uDCCB"}</span>
         <span className="text-[11px] font-semibold text-[var(--ui-text-muted)] uppercase tracking-wider">Activity Log</span>

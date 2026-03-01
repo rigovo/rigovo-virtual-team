@@ -1,6 +1,6 @@
 /* ------------------------------------------------------------------ */
-/*  NeuralCalibrationMap — React Flow live agent signal visualization  */
-/*  Animated signal pulses · Matrix codenames · Click-to-inspect       */
+/*  NeuralCalibrationMap — React Flow live agent pipeline visualization */
+/*  Animated signal pulses · Professional titles · Click-to-inspect    */
 /* ------------------------------------------------------------------ */
 import { useMemo, useCallback } from "react";
 import {
@@ -61,20 +61,20 @@ const NODE_POS: Record<string, { x: number; y: number }> = {
 };
 
 const NODE_META: Record<string, { codename: string; label: string; color: string }> = {
-  master:   { codename: "NEO",       label: "Master Agent",   color: "#4ade80" },
-  planner:  { codename: "MORPHEUS",  label: "Planner",        color: "#4ade80" },
-  coder:    { codename: "NEO",       label: "Coder",          color: "#4ade80" },
-  trinity:  { codename: "TRINITY",   label: "Rigour Gates",   color: "#22d3ee" },
-  reviewer: { codename: "ORACLE",    label: "Reviewer",       color: "#60a5fa" },
-  security: { codename: "SMITH",     label: "Security",       color: "#f87171" },
-  qa:       { codename: "TANK",      label: "QA",             color: "#fb923c" },
-  devops:   { codename: "SMITH",     label: "DevOps",         color: "#f87171" },
-  sre:      { codename: "TWINS",     label: "SRE",            color: "#2dd4bf" },
-  lead:     { codename: "ARCHITECT", label: "Tech Lead",      color: "#a3a3a3" },
-  memory:   { codename: "MEMORY",    label: "Semantic Store", color: "#c084fc" },
+  master:   { codename: "◎",  label: "Chief Architect",     color: "#4ade80" },
+  planner:  { codename: "PM", label: "Project Manager",     color: "#a78bfa" },
+  coder:    { codename: "SE", label: "Software Engineer",   color: "#4ade80" },
+  trinity:  { codename: "QG", label: "Quality Gates",       color: "#22d3ee" },
+  reviewer: { codename: "CR", label: "Code Reviewer",       color: "#60a5fa" },
+  security: { codename: "SC", label: "Security Engineer",   color: "#f87171" },
+  qa:       { codename: "QA", label: "QA Engineer",         color: "#fb923c" },
+  devops:   { codename: "DO", label: "DevOps Engineer",     color: "#818cf8" },
+  sre:      { codename: "SR", label: "SRE Engineer",        color: "#2dd4bf" },
+  lead:     { codename: "TL", label: "Tech Lead",           color: "#a3a3a3" },
+  memory:   { codename: "KB", label: "Knowledge Base",      color: "#c084fc" },
 };
 
-const EDGE_DEFS: Array<{ id: string; from: string; to: string; kind: EdgeKind; dur: string }> = [
+const STATIC_EDGE_DEFS: Array<{ id: string; from: string; to: string; kind: EdgeKind; dur: string }> = [
   { id: "e-master-planner",   from: "master",   to: "planner",  kind: "execution",    dur: "2.0s" },
   { id: "e-planner-coder",    from: "planner",  to: "coder",    kind: "execution",    dur: "2.0s" },
   { id: "e-coder-reviewer",   from: "coder",    to: "reviewer", kind: "execution",    dur: "2.2s" },
@@ -90,6 +90,20 @@ const EDGE_DEFS: Array<{ id: string; from: string; to: string; kind: EdgeKind; d
   { id: "e-reviewer-coder",   from: "reviewer", to: "coder",    kind: "debate",       dur: "2.0s" },
   { id: "e-memory-master",    from: "memory",   to: "master",   kind: "memory",       dur: "3.2s" },
   { id: "e-memory-coder",     from: "memory",   to: "coder",    kind: "memory",       dur: "3.4s" },
+];
+
+/* Fallback edges — injected when certain nodes are absent so Lead/other terminal
+   nodes don't become disconnected in small pipelines. Each fallback has a
+   `requireAbsent` list: it's only added if ALL those nodes are outside the pipeline. */
+const FALLBACK_EDGES: Array<{ id: string; from: string; to: string; kind: EdgeKind; dur: string; requireAbsent: string[] }> = [
+  // Lead: connect directly from coder when devops+sre are absent
+  { id: "e-coder-lead-fb",    from: "coder",    to: "lead",    kind: "execution", dur: "2.4s", requireAbsent: ["devops", "sre"] },
+  // Lead: connect directly from reviewer when devops is absent
+  { id: "e-reviewer-lead-fb", from: "reviewer", to: "lead",    kind: "execution", dur: "2.4s", requireAbsent: ["devops"] },
+  // Lead: connect directly from security when devops is absent
+  { id: "e-security-lead-fb", from: "security", to: "lead",    kind: "execution", dur: "2.4s", requireAbsent: ["devops"] },
+  // QA: connect directly to lead when sre is absent
+  { id: "e-qa-lead-fb",       from: "qa",       to: "lead",    kind: "execution", dur: "2.4s", requireAbsent: ["sre"] },
 ];
 
 /* ── Instance-agent → base-role resolution ──────────────────────────── */
@@ -287,7 +301,7 @@ export default function NeuralCalibrationMap({
     const map: Record<string, NodeStatus> = {};
     for (const id of Object.keys(NODE_META)) {
       if (id === "memory") {
-        map[id] = isActive ? "running" : isComplete ? "complete" : "idle";
+        map[id] = isActive ? "running" : isComplete ? "complete" : isFailed ? "failed" : "idle";
       } else if (id === "master") {
         map[id] = isComplete ? "complete" : isFailed ? "failed" : "running";
       } else if (id === "trinity") {
@@ -341,11 +355,27 @@ export default function NeuralCalibrationMap({
 
   /* ── Build React Flow edges — only between pipeline agents ───────── */
   const rfEdges: Edge[] = useMemo(() => {
-    return EDGE_DEFS
-      .filter(e => inPipeline.has(e.from) && inPipeline.has(e.to))
-      .map(e => {
+    // Start with static edges that connect nodes present in the pipeline
+    const staticFiltered = STATIC_EDGE_DEFS
+      .filter(e => inPipeline.has(e.from) && inPipeline.has(e.to));
+
+    // Add fallback edges for small pipelines where some nodes are absent.
+    // A fallback edge activates only when ALL its requireAbsent nodes are
+    // missing from the pipeline, ensuring the graph stays connected.
+    const fallbackFiltered = FALLBACK_EDGES
+      .filter(e =>
+        inPipeline.has(e.from) &&
+        inPipeline.has(e.to) &&
+        e.requireAbsent.every(n => !inPipeline.has(n))
+      );
+
+    const allEdges = [...staticFiltered, ...fallbackFiltered];
+
+    return allEdges.map(e => {
         const fromStatus = nodeStatuses[e.from];
-        const active     = fromStatus === "running" || fromStatus === "complete";
+        // Only animate edges while pipeline is actively running.
+        // Once complete or failed, all edges go static (no more pulses).
+        const active = isActive && (fromStatus === "running" || fromStatus === "complete");
         return {
           id:     e.id,
           source: e.from,
@@ -359,7 +389,7 @@ export default function NeuralCalibrationMap({
           } satisfies SignalEdgeData,
         };
       });
-  }, [nodeStatuses, inPipeline]);
+  }, [nodeStatuses, inPipeline, isActive]);
 
   /* ── Node click ───────────────────────────────────────────────────── */
   const onNodeClick: NodeMouseHandler = useCallback((_evt, node) => {
@@ -376,7 +406,7 @@ export default function NeuralCalibrationMap({
 
       {/* ── Title bar ── */}
       <div className="ncm-title-bar">
-        <span className="ncm-title-label">NEURAL CALIBRATION MAP</span>
+        <span className="ncm-title-label">AGENT PIPELINE</span>
         <span className="ncm-title-sub">
           {inPipeline.size} agent{inPipeline.size !== 1 ? "s" : ""} · {taskType} · click node to inspect
         </span>
@@ -402,6 +432,13 @@ export default function NeuralCalibrationMap({
         </ReactFlow>
       </div>
 
+      {/* ── Pipeline status overlay when finished ── */}
+      {(isComplete || isFailed) && (
+        <div className={`ncm-pipeline-status ${isFailed ? "failed" : "complete"}`}>
+          <span>{isFailed ? "✕ Pipeline Failed" : "✓ Pipeline Complete"}</span>
+        </div>
+      )}
+
       {/* ── Stats bar ── */}
       <div className="ncm-stats-bar">
         <div className="ncm-stat-item">
@@ -416,7 +453,7 @@ export default function NeuralCalibrationMap({
         <div className="ncm-stat-divider" />
         <div className="ncm-stat-item">
           <span className="ncm-stat-num" style={{ color: gatesFailed > 0 ? "#f87171" : "#4ade80" }}>
-            {gatesTotal > 0 ? `${gatesTotal - gatesFailed}/${gatesTotal}` : "24"}
+            {gatesTotal > 0 ? `${gatesTotal - gatesFailed}/${gatesTotal}` : "—"}
           </span>
           <span className="ncm-stat-lbl">GATES PASS</span>
         </div>

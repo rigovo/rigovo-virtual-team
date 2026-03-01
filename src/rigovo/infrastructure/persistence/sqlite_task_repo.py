@@ -131,6 +131,8 @@ class SqliteTaskRepository(TaskRepository):
             "gate_score": step.gate_score,
             "retry_count": step.retry_count,
             "gate_violations": step.gate_violations,
+            "execution_log": step.execution_log,
+            "execution_verified": step.execution_verified,
         }
 
     @staticmethod
@@ -181,6 +183,8 @@ class SqliteTaskRepository(TaskRepository):
                     gate_score=s.get("gate_score"),
                     retry_count=s.get("retry_count", 0),
                     gate_violations=s.get("gate_violations", []),
+                    execution_log=s.get("execution_log", []),
+                    execution_verified=s.get("execution_verified", False),
                 )
                 for s in raw_steps
             ]

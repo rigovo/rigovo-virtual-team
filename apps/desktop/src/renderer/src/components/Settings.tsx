@@ -151,7 +151,7 @@ const TAB_LABELS: Record<TabId, string> = {
 
 /* Shared input class */
 const INPUT_CLS =
-  "w-full rounded-lg border bg-white px-3 py-2 text-sm font-mono outline-none transition-colors " +
+  "w-full rounded-lg border bg-[var(--canvas)] px-3 py-2 text-sm font-mono outline-none transition-colors " +
   "placeholder:text-[var(--ui-text-subtle)] focus:border-[var(--ui-border-strong)] focus:ring-1 focus:ring-[rgba(0,0,0,0.06)]";
 const inputBorder = { borderColor: "var(--ui-border)" };
 
@@ -493,7 +493,7 @@ export default function Settings({ onBack }: SettingsProps) {
           <button key={t} type="button" onClick={() => setTab(t)}
             className={`flex-1 py-2 px-3 text-xs font-medium rounded-lg transition-all ${
               tab === t
-                ? "bg-white text-[var(--ui-text)] shadow-sm"
+                ? "bg-[var(--canvas)] text-[var(--ui-text)] shadow-sm"
                 : "text-[var(--ui-text-muted)] hover:text-[var(--ui-text-secondary)]"
             }`}>
             {TAB_LABELS[t]}
@@ -525,7 +525,7 @@ export default function Settings({ onBack }: SettingsProps) {
           {providerEntries.filter(([provider]) => provider !== "ollama").map(([provider, info]) => {
             const isEditing = keyEditing === provider;
             return (
-              <div key={provider} className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--ui-border)" }}>
+              <div key={provider} className="rounded-xl border bg-[var(--canvas)] p-4" style={{ borderColor: "var(--ui-border)" }}>
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2.5">
                     <div className={`h-2 w-2 rounded-full ${info.configured ? "bg-emerald-500" : "bg-[rgba(0,0,0,0.15)]"}`} />
@@ -571,7 +571,7 @@ export default function Settings({ onBack }: SettingsProps) {
           })}
 
           {/* Custom endpoint */}
-          <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--ui-border)" }}>
+          <div className="rounded-xl border bg-[var(--canvas)] p-4" style={{ borderColor: "var(--ui-border)" }}>
             <div className="flex items-center gap-2.5 mb-3">
               <div className={`h-2 w-2 rounded-full ${customBaseUrl ? "bg-emerald-500" : "bg-[rgba(0,0,0,0.15)]"}`} />
               <span className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Custom Endpoint</span>
@@ -588,7 +588,7 @@ export default function Settings({ onBack }: SettingsProps) {
           </div>
 
           {/* Fix 5: Ollama as a first-class provider card with URL field */}
-          <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--ui-border)" }}>
+          <div className="rounded-xl border bg-[var(--canvas)] p-4" style={{ borderColor: "var(--ui-border)" }}>
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2.5">
                 <div className={`h-2 w-2 rounded-full ${ollamaUrl && ollamaUrl !== "http://localhost:11434" ? "bg-emerald-500" : "bg-[rgba(0,0,0,0.15)]"}`} />
@@ -622,7 +622,7 @@ export default function Settings({ onBack }: SettingsProps) {
           </p>
 
           {/* Default model — Fix 1: was fetched but never shown */}
-          <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--ui-border)" }}>
+          <div className="rounded-xl border bg-[var(--canvas)] p-4" style={{ borderColor: "var(--ui-border)" }}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Default model</p>
@@ -633,7 +633,7 @@ export default function Settings({ onBack }: SettingsProps) {
               <select
                 value={defaultModel}
                 onChange={(e) => setDefaultModel(e.target.value)}
-                className="rounded-lg border bg-white px-3 py-2 text-sm outline-none transition-colors min-w-[200px] cursor-pointer"
+                className="rounded-lg border bg-[var(--canvas)] px-3 py-2 text-sm outline-none transition-colors min-w-[200px] cursor-pointer"
                 style={{ borderColor: "var(--ui-border)", color: "var(--ui-text-secondary)" }}
               >
                 {data.available_models.map((m) => (
@@ -649,7 +649,7 @@ export default function Settings({ onBack }: SettingsProps) {
             const current = agentModels[role] || data.default_agent_models[role] || defaultModel || "claude-sonnet-4-6";
             const isDefault = !agentModels[role] || agentModels[role] === data.default_agent_models[role];
             return (
-              <div key={role} className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--ui-border)" }}>
+              <div key={role} className="rounded-xl border bg-[var(--canvas)] p-4" style={{ borderColor: "var(--ui-border)" }}>
                 <div className="flex items-center gap-3">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -663,7 +663,7 @@ export default function Settings({ onBack }: SettingsProps) {
                   </div>
                   <select value={current}
                     onChange={(e) => setAgentModels((prev) => ({ ...prev, [role]: e.target.value }))}
-                    className="rounded-lg border bg-white px-3 py-2 text-sm outline-none transition-colors min-w-[180px] cursor-pointer"
+                    className="rounded-lg border bg-[var(--canvas)] px-3 py-2 text-sm outline-none transition-colors min-w-[180px] cursor-pointer"
                     style={{ borderColor: "var(--ui-border)", color: "var(--ui-text-secondary)" }}>
                     {data.available_models.map((m) => (
                       <option key={m.id} value={m.id}>
@@ -691,7 +691,7 @@ export default function Settings({ onBack }: SettingsProps) {
           </p>
 
           {pluginPolicy && (
-            <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
+            <div className="rounded-xl border bg-[var(--canvas)] p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
               <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Global plugin policy</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
                 {([
@@ -716,7 +716,7 @@ export default function Settings({ onBack }: SettingsProps) {
                   Trust floor
                   <select value={pluginPolicy.min_trust_level}
                     onChange={(e) => setPluginPolicy((prev) => prev ? { ...prev, min_trust_level: e.target.value } : prev)}
-                    className="mt-1 w-full rounded border bg-white px-2 py-1 text-xs" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }}>
+                    className="mt-1 w-full rounded border bg-[var(--canvas)] px-2 py-1 text-xs" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }}>
                     <option value="community">community</option>
                     <option value="verified">verified</option>
                     <option value="internal">internal</option>
@@ -726,32 +726,32 @@ export default function Settings({ onBack }: SettingsProps) {
                   Allowed plugin ids
                   <input type="text" value={pluginPolicy.allowed_plugin_ids.join(", ")}
                     onChange={(e) => setPluginPolicy((prev) => prev ? { ...prev, allowed_plugin_ids: parseCsvList(e.target.value) } : prev)}
-                    className="mt-1 w-full rounded border bg-white px-2 py-1 text-xs font-mono" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }} />
+                    className="mt-1 w-full rounded border bg-[var(--canvas)] px-2 py-1 text-xs font-mono" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }} />
                 </label>
                 <label className="rounded-lg px-3 py-2 text-xs" style={{ background: "rgba(0,0,0,0.02)", color: "var(--ui-text-secondary)" }}>
                   Connector ops
                   <input type="text" value={pluginPolicy.allowed_connector_operations.join(", ")}
                     onChange={(e) => setPluginPolicy((prev) => prev ? { ...prev, allowed_connector_operations: parseCsvList(e.target.value) } : prev)}
-                    className="mt-1 w-full rounded border bg-white px-2 py-1 text-xs font-mono" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }} />
+                    className="mt-1 w-full rounded border bg-[var(--canvas)] px-2 py-1 text-xs font-mono" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }} />
                 </label>
                 <label className="rounded-lg px-3 py-2 text-xs" style={{ background: "rgba(0,0,0,0.02)", color: "var(--ui-text-secondary)" }}>
                   MCP ops
                   <input type="text" value={pluginPolicy.allowed_mcp_operations.join(", ")}
                     onChange={(e) => setPluginPolicy((prev) => prev ? { ...prev, allowed_mcp_operations: parseCsvList(e.target.value) } : prev)}
-                    className="mt-1 w-full rounded border bg-white px-2 py-1 text-xs font-mono" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }} />
+                    className="mt-1 w-full rounded border bg-[var(--canvas)] px-2 py-1 text-xs font-mono" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }} />
                 </label>
                 <label className="rounded-lg px-3 py-2 text-xs md:col-span-2" style={{ background: "rgba(0,0,0,0.02)", color: "var(--ui-text-secondary)" }}>
                   Action ops
                   <input type="text" value={pluginPolicy.allowed_action_operations.join(", ")}
                     onChange={(e) => setPluginPolicy((prev) => prev ? { ...prev, allowed_action_operations: parseCsvList(e.target.value) } : prev)}
-                    className="mt-1 w-full rounded border bg-white px-2 py-1 text-xs font-mono" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }} />
+                    className="mt-1 w-full rounded border bg-[var(--canvas)] px-2 py-1 text-xs font-mono" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }} />
                 </label>
               </div>
             </div>
           )}
 
           {/* Agent tool matrix */}
-          <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
+          <div className="rounded-xl border bg-[var(--canvas)] p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
             <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Agent tool matrix</p>
             <div className="space-y-2">
               {Object.entries(ROLE_META).map(([role, meta]) => (
@@ -760,14 +760,14 @@ export default function Settings({ onBack }: SettingsProps) {
                   <input type="text" value={(agentTools[role] || []).join(", ")}
                     onChange={(e) => setAgentTools((prev) => ({ ...prev, [role]: parseCsvList(e.target.value) }))}
                     placeholder="read_file, write_file, invoke_integration"
-                    className="mt-1 w-full rounded border bg-white px-2 py-1 text-xs font-mono" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }} />
+                    className="mt-1 w-full rounded border bg-[var(--canvas)] px-2 py-1 text-xs font-mono" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }} />
                 </label>
               ))}
             </div>
           </div>
 
           {/* Loaded integrations */}
-          <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--ui-border)" }}>
+          <div className="rounded-xl border bg-[var(--canvas)] p-4" style={{ borderColor: "var(--ui-border)" }}>
             <p className="text-xs font-medium uppercase tracking-wider mb-2" style={{ color: "var(--ui-text-subtle)" }}>Loaded integrations</p>
             {!integrationsView?.plugins?.length ? (
               <p className="text-xs" style={{ color: "var(--ui-text-subtle)" }}>No plugins loaded.</p>
@@ -804,7 +804,7 @@ export default function Settings({ onBack }: SettingsProps) {
           </p>
 
           {/* Backend selector */}
-          <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
+          <div className="rounded-xl border bg-[var(--canvas)] p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Database backend</p>
@@ -814,7 +814,7 @@ export default function Settings({ onBack }: SettingsProps) {
                 </p>
               </div>
               <select value={dbBackend} onChange={(e) => setDbBackend(e.target.value === "postgres" ? "postgres" : "sqlite")}
-                className="rounded-lg border bg-white px-3 py-2 text-sm outline-none cursor-pointer min-w-[180px]"
+                className="rounded-lg border bg-[var(--canvas)] px-3 py-2 text-sm outline-none cursor-pointer min-w-[180px]"
                 style={{ borderColor: "var(--ui-border)", color: "var(--ui-text-secondary)" }}>
                 <option value="sqlite">SQLite (local file)</option>
                 <option value="postgres">PostgreSQL (DSN)</option>
@@ -831,7 +831,7 @@ export default function Settings({ onBack }: SettingsProps) {
 
           {/* SQLite path */}
           {dbBackend === "sqlite" ? (
-            <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
+            <div className="rounded-xl border bg-[var(--canvas)] p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
               <div>
                 <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>SQLite file path</p>
                 <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
@@ -842,7 +842,7 @@ export default function Settings({ onBack }: SettingsProps) {
                 placeholder=".rigovo/local.db" className={INPUT_CLS} style={inputBorder} />
             </div>
           ) : (
-            <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
+            <div className="rounded-xl border bg-[var(--canvas)] p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>PostgreSQL connection string</p>
@@ -886,7 +886,7 @@ export default function Settings({ onBack }: SettingsProps) {
         <div className="space-y-4">
 
           {/* ── Governance policy ────────────────────────────────────── */}
-          <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
+          <div className="rounded-xl border bg-[var(--canvas)] p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Governance</p>
               <span className="text-[10px] font-medium px-1.5 py-0.5 rounded"
@@ -912,7 +912,7 @@ export default function Settings({ onBack }: SettingsProps) {
                 </div>
                 <select value={govPolicy.defaultTier}
                   onChange={(e) => setGovPolicy((p) => ({ ...p, defaultTier: e.target.value }))}
-                  className="rounded-lg border bg-white px-3 py-1.5 text-xs outline-none cursor-pointer min-w-[110px]"
+                  className="rounded-lg border bg-[var(--canvas)] px-3 py-1.5 text-xs outline-none cursor-pointer min-w-[110px]"
                   style={{ borderColor: "var(--ui-border)", color: "var(--ui-text-secondary)" }}>
                   <option value="auto">auto</option>
                   <option value="notify">notify</option>
@@ -976,7 +976,7 @@ export default function Settings({ onBack }: SettingsProps) {
           </div>
 
           {/* ── Orchestration — editable (YAML-backed keys) ──────────── */}
-          <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
+          <div className="rounded-xl border bg-[var(--canvas)] p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Orchestration</p>
               <span className="text-[10px] font-medium px-1.5 py-0.5 rounded"
@@ -1105,7 +1105,7 @@ export default function Settings({ onBack }: SettingsProps) {
           </div>
 
           {/* ── Runtime environment — read-only system info ───────────── */}
-          <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--ui-border)" }}>
+          <div className="rounded-xl border bg-[var(--canvas)] p-4" style={{ borderColor: "var(--ui-border)" }}>
             <p className="text-xs font-medium uppercase tracking-wider mb-2" style={{ color: "var(--ui-text-subtle)" }}>Runtime environment</p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
               {[
@@ -1130,7 +1130,7 @@ export default function Settings({ onBack }: SettingsProps) {
               {(["friendly", "raw"] as const).map((v) => (
                 <button key={v} type="button" onClick={() => setYmlView(v)}
                   className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${
-                    ymlView === v ? "bg-white shadow-sm text-[var(--ui-text)]" : "text-[var(--ui-text-muted)]"
+                    ymlView === v ? "bg-[var(--canvas)] shadow-sm text-[var(--ui-text)]" : "text-[var(--ui-text-muted)]"
                   }`}>
                   {v === "friendly" ? "Friendly" : "Raw YAML"}
                 </button>
@@ -1150,7 +1150,7 @@ export default function Settings({ onBack }: SettingsProps) {
                 </button>
               </div>
               {parseYmlSections(ymlRaw).filter(({ key }) => !key.startsWith("#")).map(({ key, value }) => (
-                <details key={key} className="rounded-xl border bg-white group" style={{ borderColor: "var(--ui-border)" }}>
+                <details key={key} className="rounded-xl border bg-[var(--canvas)] group" style={{ borderColor: "var(--ui-border)" }}>
                   <summary className="cursor-pointer px-4 py-3 flex items-center gap-2 text-sm font-medium transition-colors" style={{ color: "var(--ui-text)" }}>
                     <span className="text-[10px] transition group-open:rotate-90" style={{ color: "var(--ui-text-subtle)" }}>&#9654;</span>
                     <span className="capitalize">{key.replace(/_/g, " ")}</span>
@@ -1165,7 +1165,7 @@ export default function Settings({ onBack }: SettingsProps) {
           ) : (
             <div className="space-y-3">
               <textarea ref={ymlRef} value={ymlRaw} onChange={(e) => setYmlRaw(e.target.value)} spellCheck={false}
-                className="w-full h-80 rounded-xl border bg-white px-4 py-3 text-sm font-mono outline-none resize-y"
+                className="w-full h-80 rounded-xl border bg-[var(--canvas)] px-4 py-3 text-sm font-mono outline-none resize-y"
                 style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }}
                 placeholder="# rigovo.yml" />
               <div className="flex justify-end">

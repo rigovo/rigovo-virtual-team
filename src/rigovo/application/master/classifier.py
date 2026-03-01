@@ -131,10 +131,16 @@ decisions, not like a task router.
 You are given:
 - A task description from a human
 - A project snapshot (file structure, language, framework, size)
+- HISTORICAL INTELLIGENCE: Learnings from past tasks across this workspace
 
 Your job is to produce a **staffing plan** — exactly which engineers are \
 needed, what each one does, and in what order. You are NOT coding. You \
 are the brain that decides HOW the work gets done.
+
+You are not just intelligent — you LEARN. Every task execution teaches you \
+something: which role combinations work best, what gate violations to avoid, \
+what architectural patterns succeed. Use this knowledge to make better staffing \
+decisions for THIS task.
 
 ## ROLE CATALOG (available agent roles)
 - **lead**: Tech Lead / Architect — reviews plans, ensures architectural fit
@@ -152,6 +158,22 @@ MULTIPLE QA engineers:
 - **devops**: DevOps Engineer — CI/CD, Docker, infra-as-code, deployment
 - **sre**: Site Reliability Engineer — observability, resilience, runbooks
 
+## HISTORICAL INTELLIGENCE (from past executions)
+If you see historical memories below, use them to inform your staffing decisions:
+- GATE_LEARNING: Common violations discovered and how teams avoided them
+  Example: "Always include security review before devops when handling credentials"
+- TEAM_PERFORMANCE: Which role combinations worked best for similar tasks
+  Example: "Backend + QA + Reviewer team reduced bugs by 40% on API tasks"
+- ARCHITECTURE: Patterns that succeeded in this codebase
+  Example: "This project uses hexagonal architecture — pair backend coders with domain experts"
+- TASK_OUTCOME: Previous similar tasks and what worked/failed
+  Example: "Payment features require security review BEFORE implementation, not after"
+- DOMAIN_KNOWLEDGE: Specific rules and constraints discovered
+  Example: "PCI-DSS compliance required for payment handling"
+
+These memories are OPTIONAL context. Always prioritize the current task requirements,
+but use historical insights to refine your team composition.
+
 ## STAFFING RULES
 1. Every task needs at least a planner and one coder
 2. For "new_project" tasks: always include lead, planner, coder, devops
@@ -163,6 +185,16 @@ MULTIPLE QA engineers:
 8. Each agent MUST have a verification step (how do we know their work is correct?)
 9. Dependencies MUST be explicit (who waits for whom)
 10. Agents with NO dependencies between them SHOULD run in parallel
+11. When historical intelligence suggests a team composition, consider adopting it
+    if it fits the current task domain
+12. CONVENTIONAL FLOW ORDER — follow this pipeline unless there is an explicit reason to deviate:
+    planner → coder(s) → reviewer → security → qa → devops → sre → lead
+    - Planner ALWAYS runs first (creates the implementation plan)
+    - Coders depend on planner
+    - Reviewer/security/qa depend on coders (they review/test the code)
+    - DevOps/SRE depend on qa or reviewer (infra comes after quality checks)
+    - Lead (Tech Lead) runs LAST — they do final architectural review of ALL work
+    - NEVER place lead before planner or coders — lead reviews completed work
 
 ## VERIFICATION RULES (CRITICAL)
 - Every coder must run tests or build to verify their work compiles/works
@@ -218,10 +250,19 @@ class TaskClassifier:
     Two entry points:
     - ``classify()`` — legacy, returns ClassificationResult
     - ``analyze()`` — full SME analysis, returns StaffingPlan
+
+    The Master Agent learns from every execution via:
+    - MemoryRetriever: fetches historical intelligence (gate learnings, team performance, etc.)
+    - This shapes the staffing plan to avoid past pitfalls and repeat successes
     """
 
-    def __init__(self, llm: LLMProvider) -> None:
+    def __init__(
+        self,
+        llm: LLMProvider,
+        memory_retriever: Any = None,  # Optional MemoryRetriever for historical intelligence
+    ) -> None:
         self._llm = llm
+        self._memory_retriever = memory_retriever
 
     async def classify(self, description: str, project_snapshot: Any = None) -> ClassificationResult:
         """Legacy classification — extracts type/complexity from full analysis.
@@ -245,23 +286,56 @@ class TaskClassifier:
         self,
         description: str,
         project_snapshot: Any = None,
+        memories: list[Any] | None = None,
+        memory_scores: list[float] | None = None,
     ) -> StaffingPlan:
         """Full SME analysis — the Master Agent's primary function.
 
         Produces a complete staffing plan with agent assignments,
         dependency graph, risks, and acceptance criteria.
+
+        The Master Agent uses historical intelligence from past executions
+        to inform its staffing decisions.
+
+        Args:
+            description: The task to analyze.
+            project_snapshot: Project file structure, language, framework info.
+            memories: Optional list of Memory objects from workspace history.
+            memory_scores: Optional similarity scores for each memory (0.0-1.0).
         """
         # Build context from project snapshot
         project_context = self._build_project_context(project_snapshot)
 
-        user_message = f"""\
-TASK DESCRIPTION:
-{description}
+        # Build historical intelligence section (if memories available)
+        historical_intelligence = ""
+        if memories and self._memory_retriever:
+            try:
+                scores = memory_scores or [0.5] * len(memories)
+                retrieved = await self._memory_retriever.retrieve_for_master(
+                    description,
+                    memories,
+                    scores,
+                )
+                if retrieved.memories:
+                    historical_intelligence = retrieved.to_context_section()
+            except Exception as e:
+                logger.warning("Failed to retrieve historical intelligence: %s", e)
 
-PROJECT CONTEXT:
-{project_context}
+        # Build user message with all context
+        message_parts = [
+            "TASK DESCRIPTION:",
+            description,
+            "",
+            "PROJECT CONTEXT:",
+            project_context,
+        ]
 
-Analyze this task as a Distinguished Engineer. Produce the staffing plan."""
+        if historical_intelligence:
+            message_parts.extend(["", historical_intelligence])
+
+        message_parts.append("\nAnalyze this task as a Distinguished Engineer. Produce the staffing plan.")
+
+        user_message = "\n".join(message_parts)
 
         response = await self._llm.invoke(
             messages=[

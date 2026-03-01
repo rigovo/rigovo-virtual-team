@@ -126,20 +126,25 @@ function CloneModal({ onClose, onCloned }: CloneModalProps): JSX.Element {
   const handleClone = async () => {
     const trimUrl = url.trim();
     if (!trimUrl) { setError("Enter a git URL."); return; }
+    if (!trimUrl.toLowerCase().startsWith("http")) { setError("URL should start with http:// or https://"); return; }
     if (!destParent) { setError("Choose a destination folder."); return; }
     setCloning(true);
     setError("");
     const dest = `${destParent}/${repoName}`;
     try {
       if (electronAPI?.gitClone) {
-        await electronAPI.gitClone(trimUrl, dest);
+        const result = await electronAPI.gitClone(trimUrl, dest);
+        onCloned(result, repoName);
       } else {
         // Web preview fallback — simulate success
         await new Promise((res) => window.setTimeout(res, 800));
+        onCloned(dest, repoName);
       }
-      onCloned(dest, repoName);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Clone failed");
+      const errMsg = err instanceof Error ? err.message : "Clone failed";
+      setError(errMsg);
+      // Auto-clear error after 4s
+      window.setTimeout(() => setError(""), 4000);
     }
     setCloning(false);
   };
@@ -479,7 +484,14 @@ export default function App(): JSX.Element {
   /* ---- Open folder (optional) ---- */
   const openProject = async () => {
     setProjectLoading(true);
-    const folderPath = electronAPI?.openFolder ? await electronAPI.openFolder() : window.prompt("Enter project folder path:");
+    let folderPath: string | null = null;
+    try {
+      folderPath = electronAPI?.openFolder ? await electronAPI.openFolder() : window.prompt("Enter project folder path:");
+    } catch (err) {
+      setOnboardingMsg(`Failed to open folder: ${err instanceof Error ? err.message : String(err)}`);
+      setProjectLoading(false);
+      return;
+    }
     if (!folderPath) { setProjectLoading(false); return; }
     try {
       const res = await fetch(`${API_BASE}/v1/projects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: folderPath }) });
@@ -488,17 +500,32 @@ export default function App(): JSX.Element {
         setProjects((prev) => [...prev.filter((x) => x.id !== p.id), p]);
         setActiveProject(p);
         await startEngine(folderPath);
+      } else {
+        const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+        setOnboardingMsg(`Failed to open project: ${err.detail || res.statusText}`);
       }
-    } catch { /* swallow */ }
+    } catch (err) {
+      setOnboardingMsg(`Failed to register project: ${err instanceof Error ? err.message : String(err)}`);
+    }
     setProjectLoading(false);
   };
 
   /* ---- Handle workspace folder selection for new tasks ---- */
   const handleChangeWorkspace = async () => {
-    const folderPath = electronAPI?.openFolder ? await electronAPI.openFolder() : window.prompt("Enter workspace folder path:");
-    if (!folderPath) return;
-    setTaskWorkspacePath(folderPath);
-    setTaskWorkspaceLabel(pathLabel(folderPath));
+    try {
+      const folderPath = electronAPI?.openFolder ? await electronAPI.openFolder() : window.prompt("Enter workspace folder path:");
+      if (!folderPath) {
+        setTaskMsg("");
+        return;
+      }
+      setTaskWorkspacePath(folderPath);
+      setTaskWorkspaceLabel(pathLabel(folderPath));
+      setTaskMsg(`Workspace set to ${pathLabel(folderPath)}`);
+      window.setTimeout(() => setTaskMsg(""), 2000);
+    } catch (err) {
+      setTaskMsg(`Failed to open folder: ${err instanceof Error ? err.message : String(err)}`);
+      window.setTimeout(() => setTaskMsg(""), 3000);
+    }
   };
 
   /* ---- Rename a thread ---- */

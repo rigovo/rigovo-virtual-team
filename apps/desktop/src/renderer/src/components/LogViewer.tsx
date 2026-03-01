@@ -115,7 +115,7 @@ export default function LogViewer({ onBack }: LogViewerProps) {
             <select
               value={tail}
               onChange={(e) => setTail(Number(e.target.value))}
-              className="rounded-lg bg-white border border-[var(--ui-border-strong)] px-2 py-1 text-xs text-[var(--ui-text-secondary)] focus:outline-none focus:border-[var(--ui-text)]"
+              className="rounded-lg bg-[var(--canvas)] border border-[var(--ui-border-strong)] px-2 py-1 text-xs text-[var(--ui-text-secondary)] focus:outline-none focus:border-[var(--ui-text)]"
             >
               <option value={50}>Last 50 lines</option>
               <option value={200}>Last 200 lines</option>

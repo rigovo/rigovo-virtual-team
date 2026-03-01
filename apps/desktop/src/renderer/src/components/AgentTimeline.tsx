@@ -13,15 +13,16 @@ type RoleMeta = {
 };
 
 const ROLES: Record<string, RoleMeta> = {
-  planner:  { icon: "\uD83E\uDDE0", label: "Planner",  color: "text-violet-600", surface: "bg-violet-50",  border: "border-violet-200"  },
-  lead:     { icon: "\uD83C\uDFAF", label: "Lead",     color: "text-purple-600", surface: "bg-purple-50",  border: "border-purple-200"  },
-  coder:    { icon: "\uD83D\uDCBB", label: "Coder",    color: "text-sky-600",    surface: "bg-sky-50",     border: "border-sky-200"     },
-  reviewer: { icon: "\uD83D\uDD0E", label: "Reviewer", color: "text-emerald-600",surface: "bg-emerald-50", border: "border-emerald-200"  },
-  qa:       { icon: "\uD83E\uDDEA", label: "QA",       color: "text-amber-600",  surface: "bg-amber-50",   border: "border-amber-200"   },
-  security: { icon: "\uD83D\uDD10", label: "Security", color: "text-rose-600",   surface: "bg-rose-50",    border: "border-rose-200"    },
-  devops:   { icon: "\u2699\uFE0F", label: "DevOps",   color: "text-indigo-600", surface: "bg-indigo-50",  border: "border-indigo-200"  },
-  sre:      { icon: "\uD83D\uDCC8", label: "SRE",      color: "text-cyan-600",   surface: "bg-cyan-50",    border: "border-cyan-200"    },
-  docs:     { icon: "\uD83D\uDCDD", label: "Docs",     color: "text-stone-600",  surface: "bg-stone-50",   border: "border-stone-200"   },
+  master:   { icon: "◎",  label: "Chief Architect",     color: "role-text-emerald",  surface: "role-surface-emerald",  border: "role-border-emerald"  },
+  planner:  { icon: "\uD83E\uDDE0", label: "Project Manager",     color: "role-text-violet",   surface: "role-surface-violet",   border: "role-border-violet"   },
+  lead:     { icon: "\uD83C\uDFAF", label: "Tech Lead",           color: "role-text-purple",   surface: "role-surface-purple",   border: "role-border-purple"   },
+  coder:    { icon: "\uD83D\uDCBB", label: "Software Engineer",   color: "role-text-sky",      surface: "role-surface-sky",      border: "role-border-sky"      },
+  reviewer: { icon: "\uD83D\uDD0E", label: "Code Reviewer",       color: "role-text-emerald",  surface: "role-surface-emerald",  border: "role-border-emerald"  },
+  qa:       { icon: "\uD83E\uDDEA", label: "QA Engineer",         color: "role-text-amber",    surface: "role-surface-amber",    border: "role-border-amber"    },
+  security: { icon: "\uD83D\uDD10", label: "Security Engineer",   color: "role-text-rose",     surface: "role-surface-rose",     border: "role-border-rose"     },
+  devops:   { icon: "\u2699\uFE0F", label: "DevOps Engineer",     color: "role-text-indigo",   surface: "role-surface-indigo",   border: "role-border-indigo"   },
+  sre:      { icon: "\uD83D\uDCC8", label: "SRE Engineer",        color: "role-text-cyan",     surface: "role-surface-cyan",     border: "role-border-cyan"     },
+  docs:     { icon: "\uD83D\uDCDD", label: "Technical Writer",    color: "role-text-stone",    surface: "role-surface-stone",    border: "role-border-stone"    },
 };
 
 const REVIEW_ROLES = new Set(["reviewer", "qa", "security"]);
@@ -73,16 +74,16 @@ function roleMeta(role: string): RoleMeta {
       .split("-")
       .map(w => w.charAt(0).toUpperCase() + w.slice(1))
       .join(" ") || "Agent",
-    color: "text-[var(--ui-text-secondary)]",
-    surface: "bg-[rgba(0,0,0,0.02)]",
-    border: "border-[var(--ui-border)]",
+    color: "role-text-stone",
+    surface: "role-surface-stone",
+    border: "role-border-stone",
   };
 }
 
 function statusTone(status: TaskStep["status"]): string {
-  if (status === "complete") return "text-emerald-600";
-  if (status === "running")  return "text-sky-600";
-  if (status === "failed")   return "text-rose-600";
+  if (status === "complete") return "role-text-emerald";
+  if (status === "running")  return "role-text-sky";
+  if (status === "failed")   return "role-text-rose";
   return "text-[var(--ui-text-muted)]";
 }
 
@@ -121,6 +122,8 @@ export interface CollabEvent {
   operation?: string;
   blocked_reason?: string;
   created_at?: number | string;
+  memories?: Array<{ name: string; relevance_score?: number; content_snippet?: string }>;
+  memory_count?: number;
 }
 
 export interface CollabMessage {
@@ -173,8 +176,8 @@ function KindBadge({ kind }: { kind: NarrativeKind }) {
   return (
     <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
       kind === "challenge"
-        ? "bg-amber-50 text-amber-700 border border-amber-200"
-        : "bg-sky-50 text-sky-700 border border-sky-200"
+        ? "role-badge-amber role-border-amber"
+        : "role-badge-sky role-border-sky"
     }`}>
       {kind}
     </span>
@@ -230,16 +233,20 @@ function CollabRow({ event, messages, index }: {
   let icon = "💬";
   let routeText = "";
   let bodyText = "";
+  let isQuestion = false;
+  let isReply = false;
 
   switch (event.type) {
     case "agent_consult_requested":
       icon = "💬";
-      routeText = `${event.from_role || "agent"} → ${event.to_role || "agent"}`;
+      isQuestion = true;
+      routeText = `${event.from_role || "agent"} asks ${event.to_role || "agent"}`;
       bodyText = msgContent ? String(msgContent).slice(0, 240) : "";
       break;
     case "agent_consult_completed":
       icon = "↩️";
-      routeText = `${event.to_role || "agent"} replied → ${event.from_role || "agent"}`;
+      isReply = true;
+      routeText = `${event.to_role || "agent"} responds`;
       bodyText = msgContent ? String(msgContent).slice(0, 240) : "";
       break;
     case "debate_round":
@@ -262,8 +269,10 @@ function CollabRow({ event, messages, index }: {
       routeText = event.type.replace(/_/g, " ");
   }
 
+  const contentClass = isQuestion ? "collab-question" : isReply ? "collab-reply" : "";
+
   return (
-    <div className="feed-collab animate-fadeup" style={{ animationDelay: `${index * 40}ms` }}>
+    <div className={`feed-collab animate-fadeup ${contentClass}`} style={{ animationDelay: `${index * 40}ms` }}>
       <span className="text-[12px] flex-shrink-0 leading-none mt-0.5">{icon}</span>
       <div className="min-w-0 flex-1">
         <span className="feed-collab-route">{routeText}</span>
@@ -275,15 +284,84 @@ function CollabRow({ event, messages, index }: {
 }
 
 function ReplanCard({ event, index }: { event: GovTimelineEvent; index: number }) {
+  const metadata = event.metadata as Record<string, unknown> || {};
+  const action = event.action || "replan";
+  const isTriggered = action === "replan_triggered";
+  const isFailed = action === "replan_failed";
+
+  const triggerReason = String(metadata.trigger_reason || "policy_replan").replace(/_/g, " ");
+  const strategy = String(metadata.strategy || "deterministic");
+  const targetRole = String(metadata.target_role || "");
+  const replanCount = Number(metadata.replan_count || 0);
+  const maxReplans = Number(metadata.max_replans_per_task || 1);
+
   const reason = event.summary || event.action || "Pipeline re-evaluated after reviewing outputs and gate results.";
+
   return (
     <div className="narrative-replan animate-fadeup" style={{ animationDelay: `${index * 40}ms` }}>
       <div className="flex items-center gap-2">
-        <span className="text-sm">🔄</span>
-        <span className="narrative-meta-label" style={{ color: "#b45309" }}>Master Brain re-planned</span>
+        <span className="text-sm">{isFailed ? "⚠️" : "🔄"}</span>
+        <span className="narrative-meta-label" style={{ color: isFailed ? "var(--s-failed)" : "var(--s-waiting)" }}>
+          {isFailed ? "Master Brain replan failed" : "Master Brain re-planned"}
+        </span>
         <span className="feed-collab-time ml-auto">{formatTs(event.ts)}</span>
       </div>
       <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--ui-text-secondary)]">{reason}</p>
+
+      {isTriggered && (
+        <div className="mt-2 space-y-1 text-[11px] text-[var(--ui-text-muted)]">
+          <div><span className="font-semibold">Trigger:</span> {triggerReason}</div>
+          <div><span className="font-semibold">Strategy:</span> {strategy}</div>
+          {targetRole && <div><span className="font-semibold">Retry:</span> {targetRole}</div>}
+          <div><span className="font-semibold">Attempt:</span> {replanCount} of {maxReplans}</div>
+        </div>
+      )}
+
+      {isFailed && (
+        <div className="mt-2 space-y-1 text-[11px] text-[var(--ui-text-muted)]">
+          <div><span className="font-semibold">Reason:</span> {triggerReason}</div>
+          <div><span className="font-semibold">Max replans:</span> {maxReplans} exhausted</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MemoryInjectionCard({ event, index }: { event: CollabEvent; index: number }) {
+  const memories = event.memories || [];
+  const count = event.memory_count || memories.length || 0;
+
+  return (
+    <div className="feed-memory animate-fadeup" style={{ animationDelay: `${index * 40}ms` }}>
+      <div className="flex items-center gap-2">
+        <span className="text-sm">📚</span>
+        <span className="feed-memory-title">{event.role || "Agent"} received memory context</span>
+        <span className="feed-memory-count">{count} item{count !== 1 ? "s" : ""}</span>
+      </div>
+      {memories.length > 0 && (
+        <div className="mt-2 space-y-1.5">
+          {memories.slice(0, 3).map((mem, idx) => (
+            <div key={`${mem.name}-${idx}`} className="feed-memory-item">
+              <span className="memory-name">{mem.name}</span>
+              {mem.relevance_score !== undefined && (
+                <span className={`memory-relevance ${
+                  mem.relevance_score >= 0.8 ? "high" :
+                  mem.relevance_score >= 0.6 ? "medium" :
+                  "low"
+                }`}>
+                  {(mem.relevance_score * 100).toFixed(0)}%
+                </span>
+              )}
+              {mem.content_snippet && (
+                <p className="memory-snippet">{mem.content_snippet}</p>
+              )}
+            </div>
+          ))}
+          {memories.length > 3 && (
+            <p className="text-[10px] text-[var(--t4)] italic">+{memories.length - 3} more memories</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -409,7 +487,7 @@ function ResolutionCard({ step, index }: { step: TaskStep; index: number }) {
       <div className="flex items-center gap-2">
         <span className="narrative-meta-label">Resolution</span>
         {hasDeep && (
-          <span className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold bg-indigo-50 text-indigo-600 border border-indigo-200">
+          <span className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold role-badge-indigo role-border-indigo">
             DEEP
           </span>
         )}
@@ -433,7 +511,7 @@ function ResolutionCard({ step, index }: { step: TaskStep; index: number }) {
             : g.gate;
           return (
             <span key={`${g.gate}-${idx}`} className={`rounded-md px-2 py-0.5 text-[10px] ${
-              g.passed ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"
+              g.passed ? "role-badge-emerald" : "role-badge-rose"
             }`}>
               {label}
               {g.violation_count != null && g.violation_count > 0 && !g.passed && (
@@ -452,11 +530,11 @@ function OrchestratorKickoff({ taskType, count }: { taskType: string; count: num
     <section className="narrative-kickoff animate-fadeup">
       <div className="flex items-center gap-2">
         <span className="text-base">{"\uD83C\uDFAF"}</span>
-        <span className="text-sm font-semibold text-indigo-600">Master Brain</span>
+        <span className="text-sm font-semibold role-text-indigo">Master Brain</span>
         <span className="text-[10px] text-[var(--ui-text-muted)] uppercase">Orchestrator</span>
       </div>
       <p className="mt-2 text-[13px] text-[var(--ui-text-secondary)] leading-relaxed">
-        Task classified as <span className="text-indigo-600 font-semibold">{taskType || "engineering"}</span>. Building and
+        Task classified as <span className="role-text-indigo font-semibold">{taskType || "engineering"}</span>. Building and
         supervising a {count}-agent virtual team for this run.
       </p>
     </section>
@@ -527,7 +605,7 @@ export default function AgentTimeline({ steps, taskType, collab, gov, costs, onO
   });
 
   const orphanCollab = (collab?.events ?? []).filter((_, i) => !usedCollabIds.has(i) &&
-    ["agent_consult_requested","agent_consult_completed","debate_round","integration_invoked","integration_blocked"].includes((collab!.events[i].type)));
+    ["agent_consult_requested","agent_consult_completed","debate_round","integration_invoked","integration_blocked","memory_injection"].includes((collab!.events[i].type)));
   const orphanGov    = (gov?.timeline ?? []).filter((_, i) => !usedGovIds.has(i));
 
   return (
@@ -553,10 +631,13 @@ export default function AgentTimeline({ steps, taskType, collab, gov, costs, onO
               onOpenFiles={step.files_changed.length > 0 ? () => onOpenFiles?.(step.agent, step.files_changed) : undefined}
             />
 
-            {/* Inline collab events for this step — agent-to-agent conversation */}
-            {collabEvents.map((e, ci) => (
-              <CollabRow key={`collab-${idx}-${ci}`} event={e} messages={collab?.messages ?? []} index={ci} />
-            ))}
+            {/* Inline collab events for this step — agent-to-agent conversation, memory injection */}
+            {collabEvents.map((e, ci) => {
+              if (e.type === "memory_injection") {
+                return <MemoryInjectionCard key={`memory-${idx}-${ci}`} event={e} index={ci} />;
+              }
+              return <CollabRow key={`collab-${idx}-${ci}`} event={e} messages={collab?.messages ?? []} index={ci} />;
+            })}
 
             {/* Inline governance checkpoints — Rigour policy decisions */}
             {govEvents.map((e, gi) => (
@@ -571,9 +652,12 @@ export default function AgentTimeline({ steps, taskType, collab, gov, costs, onO
       {/* Orphaned events: consultations / replans that occurred between steps */}
       {(orphanCollab.length > 0 || orphanGov.length > 0) && (
         <div className="narrative-block">
-          {orphanCollab.map((e, ci) => (
-            <CollabRow key={`orphan-c-${ci}`} event={e} messages={collab?.messages ?? []} index={ci} />
-          ))}
+          {orphanCollab.map((e, ci) => {
+            if (e.type === "memory_injection") {
+              return <MemoryInjectionCard key={`orphan-mem-${ci}`} event={e} index={ci} />;
+            }
+            return <CollabRow key={`orphan-c-${ci}`} event={e} messages={collab?.messages ?? []} index={ci} />;
+          })}
           {orphanGov.map((e, gi) => (
             <GovRow key={`orphan-g-${gi}`} event={e} index={gi} />
           ))}

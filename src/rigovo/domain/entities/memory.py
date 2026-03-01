@@ -20,6 +20,9 @@ class MemoryType(StrEnum):
     DOMAIN_KNOWLEDGE = (
         "domain_knowledge"  # Domain-specific facts ("PCI requires encryption at rest")
     )
+    GATE_LEARNING = "gate_learning"  # Quality gate violations and fixes learned
+    TEAM_PERFORMANCE = "team_performance"  # Which role combinations worked best
+    ARCHITECTURE = "architecture"  # Architectural patterns and insights discovered
 
 
 @dataclass

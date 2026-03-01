@@ -148,6 +148,12 @@ export interface Project {
 
 /* ---------- Task Detail (drill-down) ---------- */
 
+export interface ExecutionLogEntry {
+  command: string;
+  exit_code: number;
+  summary: string;
+}
+
 export interface TaskStep {
   agent: string;
   /** Human-readable agent name (e.g. "Backend Engineer 1") */
@@ -161,6 +167,10 @@ export interface TaskStep {
   cost_usd?: number;
   duration_ms?: number;
   gate_results: GateResult[];
+  /** Phase 14: Commands executed and their exit codes */
+  execution_log?: ExecutionLogEntry[];
+  /** Phase 14: Whether execution verification passed */
+  execution_verified?: boolean;
 }
 
 export interface GateResult {
@@ -193,6 +203,8 @@ export interface TaskDetail {
   steps: TaskStep[];
   cost: { total_tokens: number; total_cost_usd: number } | null;
   approval_data: Record<string, string>;
+  /** Confidence score computed from pipeline quality gates (0-100) */
+  confidence_score?: number;
 }
 
 /* ---------- Electron IPC bridge (exposed via preload) ---------- */

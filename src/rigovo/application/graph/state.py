@@ -5,6 +5,14 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 
+class ExecutionLogEntry(TypedDict, total=False):
+    """Record of a single executed command (Phase 14)."""
+
+    command: str
+    exit_code: int
+    summary: str
+
+
 class AgentOutput(TypedDict, total=False):
     """Output from a single agent's execution."""
 
@@ -15,6 +23,8 @@ class AgentOutput(TypedDict, total=False):
     duration_ms: int
     subtask_count: int
     subtask_tokens: int
+    execution_log: list[ExecutionLogEntry]  # Phase 14 execution verification
+    execution_verified: bool  # Whether execution verification passed
 
 
 class AgentMessage(TypedDict, total=False):

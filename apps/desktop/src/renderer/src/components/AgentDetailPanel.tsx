@@ -8,20 +8,21 @@ import type { CollaborationData, CostData } from "./AgentTimeline";
 import ResponseRenderer from "./ResponseRenderer";
 
 /* ═══════════════════════════════════════════════════════════════════ */
-/*  Role metadata — Matrix codenames + colours                          */
+/*  Role metadata — Professional titles + colours                       */
 /* ═══════════════════════════════════════════════════════════════════ */
 const ROLE_META: Record<string, { label: string; subtitle: string; color: string; icon: string }> = {
-  master:   { label: "Master Agent", subtitle: "Orchestrator",        color: "#4ade80", icon: "◎"  },
-  planner:  { label: "Planner",      subtitle: "Architecture",        color: "#a78bfa", icon: "🧠" },
-  coder:    { label: "Coder",        subtitle: "Engineering",         color: "#4ade80", icon: "💻" },
-  reviewer: { label: "Reviewer",     subtitle: "Code Review",         color: "#60a5fa", icon: "🔎" },
-  security: { label: "Security",     subtitle: "Audit",               color: "#f87171", icon: "🔐" },
-  qa:       { label: "QA",           subtitle: "Quality Assurance",   color: "#fb923c", icon: "🧪" },
-  devops:   { label: "DevOps",       subtitle: "Infrastructure",      color: "#f87171", icon: "⚙️"  },
-  sre:      { label: "SRE",          subtitle: "Reliability",         color: "#2dd4bf", icon: "📈" },
-  lead:     { label: "Lead",         subtitle: "Tech Lead",           color: "#a3a3a3", icon: "🎯" },
-  rigour:   { label: "Rigour",       subtitle: "Quality Gates",       color: "#22d3ee", icon: "⚡" },
-  memory:   { label: "Memory",       subtitle: "Context Store",       color: "#c084fc", icon: "🧬" },
+  master:   { label: "Chief Architect",     subtitle: "Orchestrator",        color: "#4ade80", icon: "◎"  },
+  planner:  { label: "Project Manager",     subtitle: "Planning & Design",   color: "#a78bfa", icon: "🧠" },
+  coder:    { label: "Software Engineer",   subtitle: "Implementation",      color: "#4ade80", icon: "💻" },
+  reviewer: { label: "Code Reviewer",       subtitle: "Code Review",         color: "#60a5fa", icon: "🔎" },
+  security: { label: "Security Engineer",   subtitle: "Security Audit",      color: "#f87171", icon: "🔐" },
+  qa:       { label: "QA Engineer",         subtitle: "Quality Assurance",   color: "#fb923c", icon: "🧪" },
+  devops:   { label: "DevOps Engineer",     subtitle: "Infrastructure",      color: "#818cf8", icon: "⚙️"  },
+  sre:      { label: "SRE Engineer",        subtitle: "Reliability",         color: "#2dd4bf", icon: "📈" },
+  lead:     { label: "Tech Lead",           subtitle: "Technical Leadership",color: "#a3a3a3", icon: "🎯" },
+  rigour:   { label: "Quality Gates",       subtitle: "Rigour Analysis",     color: "#22d3ee", icon: "⚡" },
+  memory:   { label: "Knowledge Base",      subtitle: "Semantic Memory",     color: "#c084fc", icon: "🧬" },
+  docs:     { label: "Technical Writer",    subtitle: "Documentation",       color: "#a8a29e", icon: "📝" },
 };
 
 /** Map of instance agent keyword → base role key (for "backend-engineer-1" etc.) */
@@ -346,6 +347,51 @@ function AgentOutput({ step }: { step: TaskStep }) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════ */
+/*  ExecutionLog — Phase 14 verification: commands run + exit codes      */
+/* ═══════════════════════════════════════════════════════════════════ */
+function ExecutionLogSection({ step }: { step: TaskStep }) {
+  if (!step.execution_log || step.execution_log.length === 0) return null;
+
+  const statusColor = step.execution_verified ? "#4ade80" : "#a3a3a3";
+  const statusLabel = step.execution_verified ? "Verified" : "Unverified";
+
+  return (
+    <div className="adp-section">
+      <div className="adp-section-hdr">
+        <span className="adp-section-icon">⚙️</span>
+        <span className="adp-section-title">Execution Log</span>
+        <span className="adp-gate-summary" style={{ color: statusColor }}>
+          {statusLabel}
+        </span>
+      </div>
+      <div className="adp-exec-log">
+        {step.execution_log.map((entry, i) => (
+          <div key={i} className="adp-exec-entry">
+            <div className="adp-exec-cmd">
+              <span className="adp-exec-cmd-text" title={entry.command}>
+                {entry.command.length > 60 ? `${entry.command.substring(0, 57)}…` : entry.command}
+              </span>
+              <span
+                className="adp-exec-code"
+                style={{
+                  background: entry.exit_code === 0 ? "#4ade8020" : "#f8717120",
+                  color: entry.exit_code === 0 ? "#4ade80" : "#f87171",
+                }}
+              >
+                {entry.exit_code === 0 ? "✓" : "✗"} {entry.exit_code}
+              </span>
+            </div>
+            {entry.summary && (
+              <p className="adp-exec-summary">{entry.summary.substring(0, 120)}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════ */
 /*  GateSection — gate results summary + pills                          */
 /* ═══════════════════════════════════════════════════════════════════ */
 function GateSection({ step }: { step: TaskStep }) {
@@ -410,6 +456,7 @@ export default function AgentDetailPanel({
       {activeRole && step && (
         <div className="adp-content">
           <AgentHeader step={step} role={activeRole} agentCost={agentCost} />
+          <ExecutionLogSection step={step} />
           <GateSection step={step} />
           <FileList
             files={step.files_changed}

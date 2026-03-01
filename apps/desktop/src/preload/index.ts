@@ -15,11 +15,12 @@ export interface ElectronAPI {
   stopEngine: () => Promise<{ running: boolean; pid: number | null; apiUrl: string }>;
   engineLastError: () => Promise<string>;
   openExternal: (url: string) => Promise<void>;
+  /** Open a folder picker. Returns the absolute path of the selected folder, or null if cancelled. */
   openFolder: () => Promise<string | null>;
   listProjectFiles: (projectPath: string) => Promise<string[]>;
-  /** Shallow-clone a git repo to destDir. Resolves with destDir on success. */
+  /** Shallow-clone a git repo to destDir. Resolves with the absolute destination path on success. */
   gitClone: (url: string, destDir: string) => Promise<string>;
-  /** Open a folder picker for choosing clone destination parent. */
+  /** Open a folder picker for choosing clone destination parent. Returns the absolute path or null if cancelled. */
   pickCloneDest: () => Promise<string | null>;
 }
 

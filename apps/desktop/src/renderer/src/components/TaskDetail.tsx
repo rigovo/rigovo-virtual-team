@@ -71,9 +71,10 @@ interface MissionData {
 
 /* ---- Role label helper (keeps TaskDetail independent of AgentDetailPanel internals) ---- */
 const AGENT_LABELS: Record<string, string> = {
-  master: "Master Agent", planner: "Planner", coder: "Coder",
-  reviewer: "Reviewer", security: "Security", qa: "QA",
-  devops: "DevOps", sre: "SRE", lead: "Lead", rigour: "Rigour", memory: "Memory",
+  master: "Chief Architect", planner: "Project Manager", coder: "Software Engineer",
+  reviewer: "Code Reviewer", security: "Security Engineer", qa: "QA Engineer",
+  devops: "DevOps Engineer", sre: "SRE Engineer", lead: "Tech Lead",
+  rigour: "Quality Gates", memory: "Knowledge Base",
 };
 function agentLabel(role: string): string {
   return AGENT_LABELS[role.toLowerCase()] ?? (role.charAt(0).toUpperCase() + role.slice(1));
@@ -308,6 +309,26 @@ const EDITORS = [
 
 function OpenInEditorBtn({ projectPath, onOpen }: { projectPath: string; onOpen: (url: string) => void }) {
   const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string>("");
+
+  if (!projectPath || !projectPath.trim()) {
+    return null;
+  }
+
+  const handleEditorClick = async (editorId: string) => {
+    try {
+      const editor = EDITORS.find(e => e.id === editorId);
+      if (!editor) return;
+      const url = editor.scheme(projectPath);
+      onOpen(url);
+      setOpen(false);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to open editor");
+      window.setTimeout(() => setError(""), 3000);
+    }
+  };
+
   return (
     <div className="relative">
       <button
@@ -315,6 +336,7 @@ function OpenInEditorBtn({ projectPath, onOpen }: { projectPath: string; onOpen:
         className="ghost-btn text-xs py-1.5 px-3 flex items-center gap-1.5"
         onClick={() => setOpen((v) => !v)}
         title="Open project in editor"
+        disabled={error !== ""}
       >
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
           <rect x="1" y="1.5" width="10" height="9" rx="1.5" />
@@ -325,7 +347,7 @@ function OpenInEditorBtn({ projectPath, onOpen }: { projectPath: string; onOpen:
           <path d="M2 3l2 2 2-2" />
         </svg>
       </button>
-      {open && (
+      {open && !error && (
         <div
           className="absolute right-0 top-full mt-1 z-40 bg-[var(--canvas)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden py-1 min-w-[130px]"
           onMouseLeave={() => setOpen(false)}
@@ -335,12 +357,17 @@ function OpenInEditorBtn({ projectPath, onOpen }: { projectPath: string; onOpen:
               key={e.id}
               type="button"
               className="flex items-center gap-2 w-full px-3 py-2 text-left text-[12px] text-[var(--t2)] hover:bg-[rgba(0,0,0,0.04)] transition-colors"
-              onClick={() => { onOpen(e.scheme(projectPath)); setOpen(false); }}
+              onClick={() => void handleEditorClick(e.id)}
             >
               <span className="text-base leading-none">{e.icon}</span>
               {e.label}
             </button>
           ))}
+        </div>
+      )}
+      {error && (
+        <div className="absolute right-0 top-full mt-1 z-40 bg-red-50 border border-red-200 rounded-xl shadow-lg overflow-hidden py-2 px-3 min-w-[200px] text-[11px] text-red-700">
+          {error}
         </div>
       )}
     </div>
@@ -406,6 +433,50 @@ function FailureBar({ steps, mission, onSelect }: {
       </div>
       <span className="td-failure-cta">Inspect →</span>
     </button>
+  );
+}
+
+/* ================================================================== */
+/*  QualitySummaryBar — compact quality metrics after NowStrip        */
+/* ================================================================== */
+function QualitySummaryBar({ steps, detail }: {
+  steps: TaskStep[];
+  detail: TaskDetailType | null;
+}) {
+  if (!detail) return null;
+
+  const allGates = steps.flatMap(s => s.gate_results ?? []);
+  const gatesPassed = allGates.filter(g => g.passed).length;
+  const gatesTotal = allGates.length;
+  const hasDeep = allGates.some(g => g.deep);
+
+  return (
+    <div className="td-quality-bar">
+      <div className="quality-bar-item">
+        <span className="quality-label">Gates:</span>
+        <span className={`quality-value ${gatesPassed === gatesTotal && gatesTotal > 0 ? "pass" : "neutral"}`}>
+          {gatesPassed}/{gatesTotal}
+        </span>
+      </div>
+      {hasDeep && (
+        <div className="quality-bar-item">
+          <span className="quality-icon">🧠</span>
+          <span className="quality-label">Deep analysis enabled</span>
+        </div>
+      )}
+      {detail.confidence_score !== undefined && (
+        <div className="quality-bar-item">
+          <span className="quality-label">Confidence:</span>
+          <span className={`quality-value ${
+            detail.confidence_score >= 80 ? "high" :
+            detail.confidence_score >= 60 ? "medium" :
+            "low"
+          }`}>
+            {detail.confidence_score.toFixed(0)}%
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -508,6 +579,18 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
                 "td-complexity-low"
               }`}>{detail.complexity}</span>
             )}
+            {detail?.confidence_score !== undefined && (
+              <span className={`td-confidence-badge ${
+                detail.confidence_score >= 80 ? "confidence-high" :
+                detail.confidence_score >= 60 ? "confidence-medium" :
+                "confidence-low"
+              }`}>
+                <span className="confidence-icon">
+                  {detail.confidence_score >= 80 ? "🛡" : detail.confidence_score >= 60 ? "⚠" : "❌"}
+                </span>
+                {detail.confidence_score.toFixed(0)}% Confidence
+              </span>
+            )}
             <span className="td-updated">{task.updatedAt}</span>
             {isApproval && (
               <span className="td-approval-chip">✋ Awaiting approval</span>
@@ -572,6 +655,9 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
           onSelect={setSelectedAgent}
         />
       )}
+
+      {/* ── Quality summary bar ── */}
+      {hasSteps && <QualitySummaryBar steps={detail!.steps} detail={detail} />}
 
       {/* ── Split layout: map or timeline (left) + agent detail (right) ── */}
       <div className={`td-map-layout flex-1 min-h-0 ${leftOpen ? "" : "td-map-layout--collapsed"}`}>

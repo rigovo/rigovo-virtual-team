@@ -225,9 +225,9 @@ export default function FileViewer({ taskId, filesByAgent, allFiles }: FileViewe
               />
             ) : fileError ? (
               <div className="flex h-full items-start justify-start p-3">
-                <div className="w-full rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-700">Evidence unavailable</p>
-                  <p className="mt-1 text-xs text-amber-600">{fileError}</p>
+                <div className="w-full rounded-lg role-border-amber role-surface-amber px-3 py-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider role-text-amber">Evidence unavailable</p>
+                  <p className="mt-1 text-xs role-text-amber" style={{ opacity: 0.85 }}>{fileError}</p>
                 </div>
               </div>
             ) : null}

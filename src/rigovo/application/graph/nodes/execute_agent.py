@@ -261,6 +261,44 @@ def _contract_failure_result(
     }
 
 
+def _build_expert_context_block(
+    current_role: str,
+    verification_history: list[dict[str, Any]] | None = None,
+    workspace_conventions: list[str] | None = None,
+) -> str:
+    """
+    Build expert knowledge injection context for this role.
+
+    Injects:
+    - Past violations THIS role caused (from verification history)
+    - Workspace conventions specific to this role
+    Returns a short context block (< 500 chars) to inject into system message.
+    """
+    parts: list[str] = []
+
+    # Extract past violations for this role
+    if verification_history:
+        role_violations: list[str] = []
+        for entry in verification_history:
+            if entry.get("role") == current_role or entry.get("instance_id") == current_role:
+                if not entry.get("passed", True) and entry.get("failure_details"):
+                    role_violations.extend(entry.get("failure_details", []))
+
+        if role_violations:
+            # Take top 2 unique violations
+            unique_violations = list(set(role_violations))[:2]
+            violation_text = ", ".join(v.split("]")[0] + "]" if "[" in v else v for v in unique_violations)
+            parts.append(f"WATCH OUT: You previously failed {violation_text}. Avoid this.")
+
+    # Add role-specific workspace conventions
+    if workspace_conventions:
+        role_conventions = [c for c in workspace_conventions if current_role.lower() in c.lower() or "all" in c.lower()]
+        if role_conventions:
+            parts.append(f"CONVENTIONS: {role_conventions[0][:80]}")
+
+    return " ".join(parts)
+
+
 def _build_agent_messages(
     state: TaskState,
     system_prompt: str,
@@ -283,6 +321,15 @@ def _build_agent_messages(
     full_context = agent_context.to_full_context()
     if full_context:
         system_prompt += f"\n\n{full_context}"
+
+    # Inject expert knowledge specific to this role's past violations and conventions
+    expert_block = _build_expert_context_block(
+        current_role,
+        verification_history=state.get("verification_history"),
+        workspace_conventions=agent_config.get("custom_rules"),
+    )
+    if expert_block:
+        system_prompt += f"\n\n{expert_block}"
 
     # Role-specific action imperatives — forces execution not description
     _ACTION_IMPERATIVES: dict[str, str] = {
@@ -881,13 +928,14 @@ async def _run_agentic_loop(
     Run the agentic tool loop: LLM calls tools → execute → feed back → repeat.
 
     Returns:
-        (final_text, total_input_tokens, total_output_tokens, files_changed)
+        (final_text, total_input_tokens, total_output_tokens, files_changed, subtask_metrics)
     """
     total_input_tokens = 0
     total_output_tokens = 0
     all_text_parts: list[str] = []
     subtask_count_ref = {"value": 0}
     subtask_token_total_ref = {"value": 0}
+    execution_log: list[dict[str, Any]] = []  # Track run_command calls with exit codes
     agent_messages = agent_messages if agent_messages is not None else []
     events = events if events is not None else []
     temperature = agent_config.get("temperature", DEFAULT_TEMPERATURE)
@@ -1050,6 +1098,23 @@ async def _run_agentic_loop(
             else:
                 started = time.monotonic()
                 result_str = await tool_executor.execute(tc["name"], tc["input"])
+
+                # Track execution for run_command calls (Phase 14)
+                if tc["name"] == "run_command":
+                    try:
+                        cmd_result = json.loads(result_str)
+                        exit_code = cmd_result.get("exit_code", -1)
+                        summary = cmd_result.get("stdout", "")[:200]
+                        if cmd_result.get("stderr"):
+                            summary = cmd_result.get("stderr", "")[:200]
+                        execution_log.append({
+                            "command": str(tc["input"].get("command", "")).strip()[:100],
+                            "exit_code": exit_code,
+                            "summary": summary,
+                        })
+                    except (json.JSONDecodeError, AttributeError):
+                        pass  # Not JSON — keep going
+
                 if tc["name"] == "invoke_integration":
                     elapsed_ms = int((time.monotonic() - started) * MS_PER_SECOND)
                     try:
@@ -1139,6 +1204,7 @@ async def _run_agentic_loop(
         {
             "subtask_count": subtask_count_ref["value"],
             "subtask_tokens": subtask_token_total_ref["value"],
+            "execution_log": execution_log,  # Phase 14
         },
     )
 
@@ -1407,6 +1473,15 @@ async def execute_agent_node(
     )
 
     # --- Build output ---
+    # Extract execution log from subtask_metrics (added by _run_agentic_loop)
+    execution_log = subtask_metrics.get("execution_log", [])
+
+    # Add execution verification status (Phase 14)
+    # True if this role executed commands and should have verification results
+    execution_verified = (
+        current_role in {"coder", "qa", "devops", "sre"} and len(execution_log) > 0
+    )
+
     agent_output: AgentOutput = {
         "summary": final_text,
         "files_changed": files_changed,
@@ -1415,6 +1490,8 @@ async def execute_agent_node(
         "duration_ms": duration_ms,
         "subtask_count": int(subtask_metrics.get("subtask_count", 0) or 0),
         "subtask_tokens": int(subtask_metrics.get("subtask_tokens", 0) or 0),
+        "execution_log": execution_log,  # Phase 14
+        "execution_verified": execution_verified,  # Phase 14
     }
 
     # --- Contract guards (output) ---
@@ -1444,6 +1521,8 @@ async def execute_agent_node(
             "files_changed": files_changed,
             "summary": final_text,
             "subtask_count": int(subtask_metrics.get("subtask_count", 0) or 0),
+            "execution_log": execution_log,
+            "execution_verified": execution_verified,
         }
     )
 

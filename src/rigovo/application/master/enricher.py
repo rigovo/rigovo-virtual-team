@@ -11,7 +11,10 @@ import json
 import logging
 from dataclasses import dataclass, field
 
+from uuid import UUID
+
 from rigovo.domain.entities.agent import Agent, EnrichmentContext
+from rigovo.domain.entities.memory import Memory, MemoryType
 from rigovo.domain.entities.quality import GateResult
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 
@@ -32,6 +35,9 @@ Categories:
 - domain_knowledge: Patterns, conventions, or facts learned
 - pre_check_rules: Quick checks the agent should do before submitting
 - workspace_conventions: Project-specific conventions discovered
+- gate_learnings: Quality gate violations and how to avoid them (NEW)
+- team_performance: Which role combinations worked best (NEW)
+- architecture_insights: Patterns discovered in the codebase (NEW)
 
 Respond ONLY with valid JSON:
 {
@@ -39,6 +45,9 @@ Respond ONLY with valid JSON:
   "domain_knowledge": ["knowledge 1"],
   "pre_check_rules": ["rule 1"],
   "workspace_conventions": ["convention 1"],
+  "gate_learnings": ["violation type and fix"],
+  "team_performance": ["role combination effectiveness"],
+  "architecture_insights": ["pattern discovered"],
   "reasoning": "brief explanation of what was learned"
 }
 
@@ -48,17 +57,30 @@ Rules:
 - Keep each item to 1-2 sentences
 - Focus on actionable, concrete knowledge
 - Max 5 items per category per enrichment cycle
+- gate_learnings: Extract specific violations that occurred and remedies
+- team_performance: Note which agents worked well together or conflicts
+- architecture_insights: Document patterns in file structure, module org, etc.
 """
 
 
 @dataclass
 class EnrichmentUpdate:
-    """Result of an enrichment analysis."""
+    """Result of an enrichment analysis.
+
+    Includes both agent-level learnings (pitfalls, domain knowledge) and
+    company-level learnings (gate violations, team performance, architecture).
+    """
 
     known_pitfalls: list[str] = field(default_factory=list)
     domain_knowledge: list[str] = field(default_factory=list)
     pre_check_rules: list[str] = field(default_factory=list)
     workspace_conventions: list[str] = field(default_factory=list)
+
+    # Phase 9: Company-level learnings for Master Agent
+    gate_learnings: list[str] = field(default_factory=list)  # Quality gate violations and fixes
+    team_performance: list[str] = field(default_factory=list)  # Role combination effectiveness
+    architecture_insights: list[str] = field(default_factory=list)  # Codebase patterns
+
     reasoning: str = ""
 
 
@@ -113,6 +135,87 @@ class ContextEnricher:
 
         return self._parse_response(response.content)
 
+    def extract_memories(
+        self,
+        update: EnrichmentUpdate,
+        workspace_id: UUID,
+        source_project_id: UUID | None = None,
+        source_task_id: UUID | None = None,
+        source_agent_id: UUID | None = None,
+    ) -> list[Memory]:
+        """Extract workspace-level memories from enrichment update.
+
+        Phase 9: Convert company-level learnings (gate violations, team performance,
+        architecture patterns) into Memory objects for cross-project learning.
+
+        Args:
+            update: The enrichment update containing learnings.
+            workspace_id: Workspace ID for memory storage.
+            source_project_id: Project this learning came from.
+            source_task_id: Task ID that generated this learning.
+            source_agent_id: Agent ID that discovered this learning.
+
+        Returns:
+            List of Memory objects ready to persist.
+        """
+        memories: list[Memory] = []
+
+        # Convert gate learnings to memories
+        for learning in update.gate_learnings:
+            memories.append(Memory(
+                workspace_id=workspace_id,
+                content=learning,
+                memory_type=MemoryType.GATE_LEARNING,
+                source_project_id=source_project_id,
+                source_task_id=source_task_id,
+                source_agent_id=source_agent_id,
+            ))
+
+        # Convert team performance insights to memories
+        for insight in update.team_performance:
+            memories.append(Memory(
+                workspace_id=workspace_id,
+                content=insight,
+                memory_type=MemoryType.TEAM_PERFORMANCE,
+                source_project_id=source_project_id,
+                source_task_id=source_task_id,
+                source_agent_id=source_agent_id,
+            ))
+
+        # Convert architecture insights to memories
+        for insight in update.architecture_insights:
+            memories.append(Memory(
+                workspace_id=workspace_id,
+                content=insight,
+                memory_type=MemoryType.ARCHITECTURE,
+                source_project_id=source_project_id,
+                source_task_id=source_task_id,
+                source_agent_id=source_agent_id,
+            ))
+
+        # Also convert standard enrichment updates to appropriate memory types
+        for outcome in update.domain_knowledge:
+            memories.append(Memory(
+                workspace_id=workspace_id,
+                content=outcome,
+                memory_type=MemoryType.DOMAIN_KNOWLEDGE,
+                source_project_id=source_project_id,
+                source_task_id=source_task_id,
+                source_agent_id=source_agent_id,
+            ))
+
+        logger.info(
+            "Extracted %d memories from enrichment update "
+            "(gate_learnings=%d, team_performance=%d, architecture=%d, domain=%d)",
+            len(memories),
+            len(update.gate_learnings),
+            len(update.team_performance),
+            len(update.architecture_insights),
+            len(update.domain_knowledge),
+        )
+
+        return memories
+
     def merge_enrichment(
         self,
         existing: EnrichmentContext | None,
@@ -160,6 +263,10 @@ class ContextEnricher:
                 domain_knowledge=data.get("domain_knowledge", [])[:5],
                 pre_check_rules=data.get("pre_check_rules", [])[:5],
                 workspace_conventions=data.get("workspace_conventions", [])[:5],
+                # Phase 9: Company-level learnings
+                gate_learnings=data.get("gate_learnings", [])[:5],
+                team_performance=data.get("team_performance", [])[:5],
+                architecture_insights=data.get("architecture_insights", [])[:5],
                 reasoning=data.get("reasoning", ""),
             )
 

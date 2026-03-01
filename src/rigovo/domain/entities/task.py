@@ -80,6 +80,10 @@ class PipelineStep:
     # Each entry: {gate, passed, message, severity, violation_count, gates_run, deep, pro}
     gate_violations: list[dict[str, Any]] = field(default_factory=list)
 
+    # Phase 14: Execution verification — commands run by agent and their results
+    execution_log: list[dict[str, Any]] = field(default_factory=list)
+    execution_verified: bool = False
+
 
 @dataclass
 class Task:
@@ -99,6 +103,8 @@ class Task:
     project_id: UUID | None = None
     team_id: UUID | None = None
     tier: str = "auto"  # "auto" | "notify" | "approve" — persisted so resume restores it
+    workspace_path: str = ""  # Absolute path of the target repo/folder for this task (if provided)
+    workspace_label: str = ""  # Human-readable label shown in sidebar (e.g. folder name)
 
     # Classification (set by Master Agent)
     task_type: TaskType | None = None

@@ -188,6 +188,8 @@ def _on_agent_event(event: dict) -> None:
             "cost_usd": event.get("cost", 0.0),
             "duration_ms": event.get("duration_ms", 0),
             "gate_results": existing.get("gate_results", []),
+            "execution_log": event.get("execution_log", existing.get("execution_log", [])),
+            "execution_verified": event.get("execution_verified", existing.get("execution_verified", False)),
         }
     elif etype == "gate_results":
         # Wire quality_check_node gate results into the agent's live step.
@@ -456,6 +458,79 @@ def _tier_from_task(task) -> str:
     if complexity == "high":
         return "notify"
     return "auto"
+
+
+def _compute_confidence_score(pipeline_steps: list) -> int:
+    """
+    Compute confidence score from pipeline steps.
+
+    Scoring logic (Phase 11):
+    - Start at 100
+    - Subtract 10 if no deep analysis ran on ANY step
+    - Subtract 5 for each gate retry
+    - Subtract 15 for each unresolved gate failure
+    - Subtract 10 for each persona violation
+    - Floor at 0, cap at 100
+    """
+    score = 100
+
+    if not pipeline_steps:
+        return score
+
+    # Check if deep analysis ran on ANY step
+    any_deep_ran = False
+    for step in pipeline_steps:
+        if not step or not isinstance(step, object):
+            continue
+        # Check gate_violations for deep flag
+        gate_violations = getattr(step, "gate_violations", []) or []
+        if isinstance(gate_violations, list):
+            for gv in gate_violations:
+                if isinstance(gv, dict) and gv.get("deep"):
+                    any_deep_ran = True
+                    break
+        if any_deep_ran:
+            break
+
+    if not any_deep_ran:
+        score -= 10
+
+    # Count retries and failures from gate_violations
+    total_retries = 0
+    total_failures = 0
+    persona_violations_count = 0
+
+    for step in pipeline_steps:
+        if not step or not isinstance(step, object):
+            continue
+
+        # Accumulate retry count
+        retry_count = getattr(step, "retry_count", 0) or 0
+        if isinstance(retry_count, int):
+            total_retries += retry_count
+
+        # Check gate_violations for failures and persona violations
+        gate_violations = getattr(step, "gate_violations", []) or []
+        if isinstance(gate_violations, list):
+            for gv in gate_violations:
+                if not isinstance(gv, dict):
+                    continue
+
+                passed = gv.get("passed", True)
+                if not passed:
+                    total_failures += 1
+
+                gate_name = gv.get("gate", "")
+                if gate_name == "persona":
+                    persona_violations_count += 1
+
+    # Apply penalties
+    score -= min(total_retries * 5, 50)  # Cap retry penalty at 50
+    score -= min(total_failures * 15, 50)  # Cap failure penalty at 50
+    score -= min(persona_violations_count * 10, 30)  # Cap persona penalty at 30
+
+    # Floor at 0, cap at 100
+    return max(0, min(100, score))
 
 
 def _setup_logging(root: Path) -> Path:
@@ -798,6 +873,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         use_task_id: str | None = None,
         tier: str = "auto",
         project_id: str = "",
+        workspace_path: str = "",
+        workspace_label: str = "",
     ) -> None:
         """Run a task in background. use_task_id ensures the DB record is reused, not duplicated.
 
@@ -807,6 +884,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
           "approve" → pause at plan_approval and commit_approval; block until human decision
 
         project_id is stored on the task record so agents know which repo they work on.
+        workspace_path is the absolute path of the target folder/repo for this task (if provided).
+        workspace_label is the human-readable label shown in the sidebar.
         """
         import logging as _logging
 
@@ -894,6 +973,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 task_id=real_task_id,
                 project_id=project_id or None,
                 tier=tier,
+                workspace_path=workspace_path,
+                workspace_label=workspace_label,
             )
         except Exception as exc:
             _bg_logger.error("Task %s failed in background: %s", real_task_id, exc, exc_info=True)
@@ -1853,6 +1934,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                         "cost_usd": ps.cost_usd,
                         "duration_ms": ps.duration_ms,
                         "gate_results": gate_results,
+                        "execution_log": ps.execution_log or [],
+                        "execution_verified": ps.execution_verified,
                     }
                 )
 
@@ -1870,6 +1953,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         except Exception:
             logger.warning("Unable to load cost details for task %s", task_id, exc_info=True)
 
+        # Compute confidence score from pipeline steps
+        confidence_score = _compute_confidence_score(task.pipeline_steps or [])
+
         return {
             "id": str(task.id),
             "description": task.description,
@@ -1884,6 +1970,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "steps": steps,
             "cost": cost,
             "approval_data": task.approval_data or {},
+            "confidence_score": confidence_score,
         }
 
     @app.post("/v1/tasks")
@@ -1928,13 +2015,16 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         task_id = str(uuid4())
         safe_tier = req.tier if req.tier in ("auto", "notify", "approve") else "auto"
         safe_project_id = req.project_id.strip() if req.project_id else ""
+        safe_workspace_path = req.workspace_path.strip() if req.workspace_path else ""
+        safe_workspace_label = req.workspace_label.strip() if req.workspace_label else ""
         import logging as _logging
 
         _logging.getLogger("rigovo.audit").info(
-            "Task created: id=%s tier=%s project=%s desc=%r",
+            "Task created: id=%s tier=%s project=%s workspace=%r desc=%r",
             task_id,
             safe_tier,
             safe_project_id or "none",
+            safe_workspace_path or "none",
             req.description.strip()[:100],
         )
         background_tasks.add_task(
@@ -1944,6 +2034,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             task_id,
             safe_tier,
             safe_project_id,
+            safe_workspace_path,
+            safe_workspace_label,
         )
         return {
             "status": "created",
@@ -2253,6 +2345,13 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                     f"{ev.get('role', 'agent')} blocked for {ev.get('kind', 'integration')}:"
                     f"{ev.get('operation', 'op')} ({ev.get('blocked_reason', 'policy')})"
                 )
+            elif ev_type == "replan_triggered":
+                trigger_reason = ev.get("trigger_reason", "policy_replan")
+                strategy = ev.get("strategy", "deterministic")
+                summary = f"Replan triggered: {trigger_reason} (strategy: {strategy})"
+            elif ev_type == "replan_failed":
+                trigger_reason = ev.get("trigger_reason", "unknown")
+                summary = f"Replan failed: {trigger_reason} — budget exhausted"
             else:
                 summary = ev_type.replace("_", " ")
 

@@ -1,15 +1,20 @@
 """Quality check node — runs deterministic gates on agent output.
 
 Phase 7: Now includes persona boundary enforcement and role-aware
-gate filtering. The quality check pipeline is:
+gate filtering.
 
-1. Contract failure check (hard stop)
-2. Skip check for non-code-producing roles
-3. No-files-produced check for code-producing roles
-4. Run Rigour quality gates (AST analysis)
-5. Incorporate execution verification results (Phase 4)
-6. Persona boundary enforcement (Phase 7) — check agent stayed in scope
-7. Build fix packet with role-aware severity (Phase 7)
+Phase 9: Adds structural validation for Master Agent (classify role) output.
+
+The quality check pipeline is:
+
+1. Master Agent validation (Phase 9) — if current role is classify/master
+2. Contract failure check (hard stop)
+3. Skip check for non-code-producing roles
+4. No-files-produced check for code-producing roles
+5. Run Rigour quality gates (AST analysis)
+6. Incorporate execution verification results (Phase 4)
+7. Persona boundary enforcement (Phase 7) — check agent stayed in scope
+8. Build fix packet with role-aware severity (Phase 7)
 """
 
 from __future__ import annotations
@@ -56,9 +61,17 @@ def _resolve_deep_mode(state: TaskState, current_role: str) -> tuple[bool, bool]
     - always: enable on every gated agent step
     - ci: enable only when task is launched in CI mode
     - critical_only: enable only for critical tasks
-    - final (default): enable only for the final gated role in the pipeline
+    - smart (default): intelligent per-step analysis
+    - final: enable only for the final gated role in the pipeline
+
+    Smart mode logic:
+    - If retry_count > 0: enable deep (catching subtle issues on retry)
+    - If complexity == "critical": enable deep
+    - If base_role == "security": enable deep (security is non-negotiable)
+    - If this is the last code-gated role in pipeline: enable deep
+    - Otherwise: standard gates only (fast first pass)
     """
-    mode = str(state.get("deep_mode", "final")).strip().lower()
+    mode = str(state.get("deep_mode", "smart")).strip().lower()
     use_pro = bool(state.get("deep_pro", False))
 
     if mode == "never":
@@ -71,7 +84,37 @@ def _resolve_deep_mode(state: TaskState, current_role: str) -> tuple[bool, bool]
         classification = state.get("classification", {})
         return classification.get("complexity") == "critical", use_pro
 
-    # final (default): run deep only on the last code-gated role.
+    if mode == "smart":
+        # Smart mode: enable deep analysis when it matters most
+        retry_count = state.get("retry_count", 0)
+        if retry_count > 0:
+            # On retry, use deep to catch subtle issues
+            return True, use_pro
+
+        # Check task complexity
+        classification = state.get("classification", {})
+        if classification.get("complexity") == "critical":
+            return True, use_pro
+
+        # Check base role — security is non-negotiable
+        team_config = state.get("team_config", {})
+        agents = team_config.get("agents", {})
+        agent_config = agents.get(current_role, {})
+        base_role = agent_config.get("role", current_role)
+        if base_role == "security":
+            return True, use_pro
+
+        # Check if this is the last code-gated role in pipeline
+        pipeline_order = team_config.get("pipeline_order", [])
+        gates_after = set(team_config.get("gates_after", []))
+        gated_in_order = [r for r in pipeline_order if r in gates_after]
+        if gated_in_order and current_role == gated_in_order[-1]:
+            return True, use_pro
+
+        # Otherwise: standard gates only (fast first pass)
+        return False, use_pro
+
+    # final: run deep only on the last code-gated role.
     team_config = state.get("team_config", {})
     pipeline_order = team_config.get("pipeline_order", [])
     gates_after = set(team_config.get("gates_after", []))
@@ -122,6 +165,171 @@ def _persona_violations_to_gate_violations(
             suggestion=f"Stay within the '{pv.role}' role scope.",
         ))
     return result
+
+
+async def _validate_master_agent_output(
+    state: TaskState,
+    current_role: str,
+) -> dict[str, Any]:
+    """Validate Master Agent (classify role) structural output.
+
+    The Master Agent produces a staffing plan that must satisfy:
+    1. At least 1 agent assigned
+    2. All depends_on references must exist in the agent list
+    3. No circular dependencies in the pipeline
+    4. Has domain_analysis and architecture_notes
+
+    This is NOT a quality gate in the traditional sense — it's a structural
+    validation that the Master Agent's output is logically sound.
+    """
+    staffing_plan = state.get("staffing_plan", {})
+    agent_list = staffing_plan.get("agents", [])
+    execution_dag = staffing_plan.get("execution_dag", {})
+
+    violations: list[Violation] = []
+
+    # Check 1: At least one agent
+    if not agent_list:
+        violations.append(Violation(
+            gate_id="master-no-agents",
+            message="Staffing plan must include at least 1 agent",
+            severity=ViolationSeverity.ERROR,
+            suggestion="Master Agent must assign at least a planner and a coder",
+            category="structural",
+        ))
+
+    # Check 2: Validate all depends_on references exist
+    instance_ids = {a.get("instance_id") for a in agent_list if isinstance(a, dict)}
+    for agent in agent_list:
+        if not isinstance(agent, dict):
+            continue
+        instance_id = agent.get("instance_id")
+        depends_on = agent.get("depends_on", [])
+        for dep in depends_on:
+            if dep not in instance_ids:
+                violations.append(Violation(
+                    gate_id="master-invalid-dependency",
+                    message=f"Agent '{instance_id}' depends on '{dep}' which does not exist",
+                    severity=ViolationSeverity.ERROR,
+                    suggestion=f"Ensure all dependencies reference existing agents in the plan",
+                    category="structural",
+                    file_path=None,
+                ))
+
+    # Check 3: Detect circular dependencies (simple cycle detection)
+    if execution_dag:
+        visited: set[str] = set()
+        rec_stack: set[str] = set()
+
+        def has_cycle(node: str) -> bool:
+            """DFS to detect cycles."""
+            visited.add(node)
+            rec_stack.add(node)
+
+            for neighbor in execution_dag.get(node, []):
+                if neighbor not in visited:
+                    if has_cycle(neighbor):
+                        return True
+                elif neighbor in rec_stack:
+                    return True
+
+            rec_stack.discard(node)
+            return False
+
+        for agent_id in execution_dag:
+            if agent_id not in visited:
+                if has_cycle(agent_id):
+                    violations.append(Violation(
+                        gate_id="master-circular-dependency",
+                        message=f"Circular dependency detected in pipeline involving '{agent_id}'",
+                        severity=ViolationSeverity.ERROR,
+                        suggestion="Fix the dependency graph so no agent waits (directly or indirectly) on its own work",
+                        category="structural",
+                    ))
+                    break
+
+    # Check 4: Verify domain_analysis and architecture_notes exist
+    if not staffing_plan.get("domain_analysis"):
+        violations.append(Violation(
+            gate_id="master-missing-analysis",
+            message="Staffing plan must include domain_analysis (2-3 sentences)",
+            severity=ViolationSeverity.WARNING,
+            suggestion="Add a brief analysis of the engineering domain and key constraints",
+            category="structural",
+        ))
+
+    if not staffing_plan.get("architecture_notes"):
+        violations.append(Violation(
+            gate_id="master-missing-architecture",
+            message="Staffing plan should include architecture_notes (key architectural decisions)",
+            severity=ViolationSeverity.WARNING,
+            suggestion="Add architectural guidance for the team",
+            category="structural",
+        ))
+
+    # Build gate result
+    all_passed = not any(v.severity == ViolationSeverity.ERROR for v in violations)
+    structured_violations = [_serialize_violation(v) for v in violations]
+
+    gate_summary = {
+        "status": GateStatus.PASSED if all_passed else GateStatus.FAILED,
+        "passed": all_passed,
+        "gates_run": 4,  # 4 structural checks
+        "gates_passed": 4 - len([v for v in violations if v.severity == ViolationSeverity.ERROR]),
+        "violation_count": len(violations),
+        "violations": structured_violations,
+        "deep": False,  # Structural validation is fast
+        "pro": False,
+    }
+
+    gate_history = list(state.get("gate_history", []))
+    gate_history.append({"role": current_role, **gate_summary})
+
+    events = state.get("events", [])
+    events.append({
+        "type": "gate_results",
+        "role": current_role,
+        "passed": all_passed,
+        "gates_run": 4,
+        "violations": len(violations),
+        "reason": "gates_passed" if all_passed else "gates_failed",
+    })
+
+    update: dict[str, Any] = {
+        "gate_results": gate_summary,
+        "gate_history": gate_history,
+        "events": events,
+    }
+
+    if not all_passed:
+        # Build fix packet for retry
+        fix_items = [
+            FixItem(
+                gate_id=v.gate_id,
+                file_path=v.file_path or "",
+                message=v.message,
+                suggestion=v.suggestion,
+                severity=v.severity,
+                line=v.line,
+            )
+            for v in violations
+        ]
+        retry_count = state.get("retry_count", 0) + 1
+        max_retries = state.get("max_retries", 5)
+
+        fix_packet = FixPacket(
+            items=fix_items,
+            attempt=retry_count,
+            max_attempts=max_retries,
+        )
+
+        update["fix_packets"] = state.get("fix_packets", []) + [fix_packet.to_prompt()]
+        update["retry_count"] = retry_count
+        update["status"] = f"gate_failed_{current_role}"
+    else:
+        update["status"] = f"gate_passed_{current_role}"
+
+    return update
 
 
 async def quality_check_node(
@@ -187,6 +395,11 @@ async def quality_check_node(
             "status": f"gate_failed_{current_role}",
             "events": events,
         }
+
+    # Special case: Master Agent (classify role) gets structural validation
+    # The Master Agent must produce a valid staffing plan with correct structure
+    if current_role == "classify" or base_role == "master":
+        return await _validate_master_agent_output(state, current_role)
 
     # Only run gates on code-producing roles
     if current_role not in gates_after:
@@ -349,6 +562,7 @@ async def quality_check_node(
                     "passed": False,
                     "gates_run": 1,
                     "violations": 1,
+                    "reason": "no_files_produced",
                 }
             ],
         }

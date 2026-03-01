@@ -8,9 +8,10 @@ need enrichment, re-prompting, or replacement.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 
-from rigovo.domain.entities.agent import Agent, AgentStats
+from rigovo.domain.entities.agent import Agent, AgentSkillProfile, AgentStats
 from rigovo.domain.entities.quality import GateResult, GateStatus
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,57 @@ class AgentEvaluator:
         )
 
         return stats
+
+    def update_skill_profile(
+        self,
+        role: str,
+        gate_results: list[GateResult] | None,
+        duration_ms: int,
+        tokens_used: int,
+        existing_profile: AgentSkillProfile | None = None,
+    ) -> AgentSkillProfile:
+        """
+        Update or create a skill profile for a role.
+
+        Tracks: success rate, common violations, average resource usage.
+        Violations are extracted from failed gate results.
+        """
+        profile = existing_profile or AgentSkillProfile(role=role)
+
+        # Extract violation types from failed gates
+        violations: list[str] = []
+        if gate_results:
+            for gate in gate_results:
+                if not gate.passed and gate.gate:
+                    violations.append(gate.gate)
+
+        # Update task count
+        prev_count = profile.task_count
+        profile.task_count += 1
+
+        # Update success rate (rolling average)
+        gate_passed = gate_results and any(g.passed for g in gate_results)
+        prev_success = profile.success_rate * prev_count
+        profile.success_rate = (prev_success + (1.0 if gate_passed else 0.0)) / profile.task_count
+
+        # Update average tokens
+        prev_tokens = profile.avg_tokens * prev_count
+        profile.avg_tokens = (prev_tokens + tokens_used) // profile.task_count
+
+        # Update average duration
+        prev_duration = profile.avg_duration_ms * prev_count
+        profile.avg_duration_ms = (prev_duration + duration_ms) // profile.task_count
+
+        # Track top 3 common violations
+        if violations:
+            # Combine with existing violations and count
+            all_violations = profile.common_violations + violations
+            violation_counts = Counter(all_violations)
+            profile.common_violations = [
+                v for v, _ in violation_counts.most_common(3)
+            ]
+
+        return profile
 
     def _compute_quality_score(
         self,

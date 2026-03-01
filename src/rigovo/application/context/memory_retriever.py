@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 # --- Retrieval limits ---
 MAX_MEMORIES_PER_AGENT = 8
+MAX_MEMORIES_FOR_MASTER = 15  # Master Agent gets more context for cross-project learning
 MAX_MEMORY_CONTENT_LENGTH = 500
 MIN_RELEVANCE_SCORE = 0.3  # Don't inject low-relevance memories
 
@@ -35,6 +36,13 @@ ROLE_MEMORY_PREFERENCES: dict[str, list[MemoryType]] = {
     "devops": [MemoryType.CONVENTION, MemoryType.PATTERN],
     "sre": [MemoryType.ERROR_FIX, MemoryType.CONVENTION],
     "lead": [MemoryType.PATTERN, MemoryType.DOMAIN_KNOWLEDGE, MemoryType.TASK_OUTCOME],
+    "master": [
+        MemoryType.GATE_LEARNING,
+        MemoryType.TEAM_PERFORMANCE,
+        MemoryType.ARCHITECTURE,
+        MemoryType.TASK_OUTCOME,
+        MemoryType.DOMAIN_KNOWLEDGE,
+    ],  # Master Agent gets comprehensive insights
 }
 
 
@@ -122,6 +130,66 @@ class MemoryRetriever:
         return RetrievedMemories(
             memories=scored,
             role=role,
+            query=task_description,
+        )
+
+    async def retrieve_for_master(
+        self,
+        task_description: str,
+        memories: list[Memory],
+        similarity_scores: list[float],
+    ) -> RetrievedMemories:
+        """Retrieve and rank memories specifically for the Master Agent.
+
+        The Master Agent is the Distinguished Engineer who learns from every
+        execution across the workspace. It gets more memories (15 vs 8) and
+        focuses on:
+        - Gate learnings (violations and fixes)
+        - Team performance insights (role combinations)
+        - Architectural patterns discovered
+        - Task outcomes and domain knowledge
+
+        Args:
+            task_description: The task the Master Agent is analyzing.
+            memories: Workspace-level memories to filter.
+            similarity_scores: Cosine similarity for each memory.
+
+        Returns:
+            Ranked, filtered memories optimized for Master Agent analysis.
+        """
+        await asyncio.sleep(0)  # Yield to event loop
+        if not memories:
+            return RetrievedMemories(role="master", query=task_description)
+
+        # Rank all memories
+        scored = self._ranker.rank(memories, similarity_scores)
+
+        # Filter by minimum relevance
+        scored = [s for s in scored if s.score >= MIN_RELEVANCE_SCORE]
+
+        # Filter for Master Agent's preferred memory types
+        master_types = ROLE_MEMORY_PREFERENCES.get("master", [])
+        if master_types:
+            # Keep only memories that match master's preferred types
+            scored = [s for s in scored if s.memory.memory_type in master_types]
+
+        # If we filtered too aggressively, relax to include all types
+        if not scored and similarity_scores:
+            scored = self._ranker.rank(memories, similarity_scores)
+            scored = [s for s in scored if s.score >= MIN_RELEVANCE_SCORE]
+
+        # Boost cross-project memories (they're more generally useful)
+        scored = sorted(
+            scored,
+            key=lambda s: (-int(s.memory.is_cross_project), -s.score),
+        )
+
+        # Cap at higher limit for Master Agent (company-level context)
+        scored = scored[:MAX_MEMORIES_FOR_MASTER]
+
+        return RetrievedMemories(
+            memories=scored,
+            role="master",
             query=task_description,
         )
 

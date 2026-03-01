@@ -64,6 +64,24 @@ class AgentStats:
 
 
 @dataclass
+class AgentSkillProfile:
+    """
+    Skill profile for an agent role — tracks performance metrics across tasks.
+
+    Updated after each task execution by the Master Agent evaluator.
+    Captures success rate, common violations, and resource consumption patterns.
+    """
+
+    role: str
+    success_rate: float = 0.0  # Gate pass rate: 0.0-1.0
+    common_violations: list[str] = field(default_factory=list)  # Top 3 violation types
+    avg_tokens: int = 0
+    avg_duration_ms: int = 0
+    task_count: int = 0
+    last_updated: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
 class EnrichmentContext:
     """
     Knowledge injected by the Master Agent into an agent's context.

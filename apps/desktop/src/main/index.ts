@@ -254,23 +254,58 @@ function registerIpc(): void {
       buttonLabel: "Open Project",
     });
     if (result.canceled || !result.filePaths.length) return null;
-    return result.filePaths[0];
+    const folderPath = result.filePaths[0];
+    // Validate that the selected path is actually a directory
+    try {
+      const stats = statSync(folderPath);
+      if (!stats.isDirectory()) {
+        throw new Error("Selected path is not a directory");
+      }
+    } catch (err) {
+      throw new Error(`Invalid folder path: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return folderPath;
   });
 
   // Git clone — shallow-clone a remote repo to a local destination
   ipcMain.handle("git:clone", async (_event, url: string, destDir: string) => {
     return new Promise<string>((resolve, reject) => {
+      // Validate inputs
+      if (!url || !url.trim()) {
+        reject(new Error("Repository URL cannot be empty"));
+        return;
+      }
+      if (!destDir || !destDir.trim()) {
+        reject(new Error("Destination directory cannot be empty"));
+        return;
+      }
+
       const stderr: string[] = [];
       const proc = spawn("git", ["clone", "--depth=1", url, destDir], {
         stdio: ["ignore", "ignore", "pipe"],
         detached: false,
       });
+
+      const timeoutId = setTimeout(() => {
+        proc.kill();
+        reject(new Error("Git clone operation timed out (>60s)"));
+      }, 60000);
+
       proc.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk.toString("utf8")));
       proc.on("close", (code) => {
-        if (code === 0) resolve(destDir);
-        else reject(new Error(`git clone failed (code ${code}): ${stderr.join("").trim()}`));
+        clearTimeout(timeoutId);
+        if (code === 0) {
+          resolve(destDir);
+        } else {
+          const errorMsg = stderr.join("").trim();
+          const detail = errorMsg || `Process exited with code ${code}`;
+          reject(new Error(`Git clone failed: ${detail}`));
+        }
       });
-      proc.on("error", reject);
+      proc.on("error", (err) => {
+        clearTimeout(timeoutId);
+        reject(new Error(`Failed to spawn git process: ${err.message}`));
+      });
     });
   });
 
@@ -283,7 +318,17 @@ function registerIpc(): void {
       buttonLabel: "Clone Here",
     });
     if (result.canceled || !result.filePaths.length) return null;
-    return result.filePaths[0];
+    const destPath = result.filePaths[0];
+    // Validate that the selected path is a directory
+    try {
+      const stats = statSync(destPath);
+      if (!stats.isDirectory()) {
+        throw new Error("Selected path is not a directory");
+      }
+    } catch (err) {
+      throw new Error(`Invalid destination path: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return destPath;
   });
 }
 
