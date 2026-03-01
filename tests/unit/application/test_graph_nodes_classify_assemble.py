@@ -66,7 +66,9 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
 
         result = await classify_node(state, mock_llm)
 
-        assert result["classification"] == classification
+        # workspace_type is derived and added when not present in LLM response
+        expected = {**classification, "workspace_type": "existing_project"}
+        assert result["classification"] == expected
         assert result["status"] == "classified"
         assert "cost_accumulator" in result
         assert "classifier" in result["cost_accumulator"]

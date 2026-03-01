@@ -33,8 +33,9 @@ class AgentMessage(TypedDict, total=False):
 class ClassificationData(TypedDict, total=False):
     """Master Agent's classification of a task."""
 
-    task_type: str  # feature, bug, refactor, etc.
+    task_type: str  # feature, bug, refactor, new_project, etc.
     complexity: str  # low, medium, high, critical
+    workspace_type: str  # new_project | existing_project
     reasoning: str  # Why this classification
 
 

@@ -162,6 +162,22 @@ class ContextBuilder:
         # 1. Quality contract — what this role is held to
         ctx.quality_contract = ROLE_QUALITY_CONTRACT.get(role, "")
 
+        # 1b. Workspace-type quality contract addendum
+        if project_snapshot is not None:
+            wt = getattr(project_snapshot, "workspace_type", "existing_project")
+            if wt == "new_project":
+                ctx.quality_contract += (
+                    "\n\nWORKSPACE IS A NEW PROJECT: There are no existing patterns to match. "
+                    "Create the full project structure from scratch. Choose sensible "
+                    "framework defaults. Do not look for files that don't exist yet."
+                )
+            else:
+                ctx.quality_contract += (
+                    "\n\nWORKSPACE IS AN EXISTING PROJECT: Match the code style, naming "
+                    "conventions, directory layout, and tech stack already present. "
+                    "Do not introduce new frameworks or patterns unless explicitly required."
+                )
+
         # 2. Project context — what the codebase looks like
         if project_snapshot:
             ctx.project_section = self._build_project_section(

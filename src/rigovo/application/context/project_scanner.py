@@ -10,13 +10,20 @@ A chatbot guesses. An intelligent agent READS FIRST.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # --- Scan limits to prevent blowup on huge repos ---
 MAX_TREE_DEPTH = 4
+
+# Minimum source files to consider a project "existing" (has established patterns)
+NEW_PROJECT_SOURCE_FILE_THRESHOLD = 5
+
+# Files that indicate this is Rigovo's own installation directory — self-scan guard
+_RIGOVO_FOOTPRINT = {"rigovo.yml", "rigovo.yaml"}
+_RIGOVO_SRC_PACKAGE = "rigovo"
 MAX_FILES_IN_TREE = 500
 MAX_KEY_FILE_SIZE_BYTES = 50_000  # 50KB — enough for most source files
 MAX_KEY_FILES_TO_READ = 10
@@ -111,14 +118,45 @@ class ProjectSnapshot:
     total_file_count: int
     entry_points: list[str]  # ["src/main.py", "app/index.ts"]
     test_directories: list[str]  # ["tests/", "spec/"]
+    workspace_type: str = field(default="existing_project")  # new_project | existing_project
+    is_rigovo_self: bool = field(default=False)  # True if scanning Rigovo's own directory
 
     def to_context_section(self) -> str:
         """Render as a context section for injection into agent prompts."""
-        parts = [
-            "--- PROJECT CONTEXT (scanned at task start) ---",
-            f"\nProject root: {self.root}",
-            f"Source files: {self.source_file_count} | Total: {self.total_file_count}",
-        ]
+        parts = ["--- PROJECT CONTEXT (scanned at task start) ---"]
+
+        # Workspace type — critical for agents to know whether to match patterns
+        # or build from scratch
+        if self.workspace_type == "new_project":
+            parts.append(
+                "\n⚠️  WORKSPACE TYPE: NEW PROJECT\n"
+                "This is a blank or nearly-blank workspace. There are no established\n"
+                "patterns to follow. You must create the full project structure from\n"
+                "scratch. Choose sensible defaults for the tech stack and layout."
+            )
+        else:
+            parts.append(
+                "\nWORKSPACE TYPE: EXISTING PROJECT\n"
+                "This workspace has an established codebase. Match the existing code\n"
+                "style, naming conventions, directory structure, and tech stack.\n"
+                "Do NOT introduce new frameworks or patterns unless the plan says to."
+            )
+
+        # Rigovo self-scan guard — prevents agents from applying Rigovo's own
+        # patterns to user tasks when run from Rigovo's installation directory
+        if self.is_rigovo_self:
+            parts.append(
+                "\n⛔ WORKSPACE GUARD: This appears to be the Rigovo installation directory.\n"
+                "The files you see (rigovo.yml, src/rigovo/, pyproject.toml, etc.) are\n"
+                "Rigovo's OWN source code — NOT the user's project. Do NOT apply Rigovo's\n"
+                "internal patterns (LangGraph, FastAPI, SQLite) to the user's task.\n"
+                "The user's target workspace should be mounted separately via --project."
+            )
+
+        parts.append(
+            f"\nProject root: {self.root}"
+            f"\nSource files: {self.source_file_count} | Total: {self.total_file_count}"
+        )
 
         if self.tech_stack:
             parts.append(f"Tech stack: {', '.join(self.tech_stack)}")
@@ -158,6 +196,9 @@ class ProjectScanner:
         entry_points = self._find_entry_points(root)
         test_dirs = self._find_test_directories(root)
 
+        workspace_type = self._classify_workspace(root, source_count)
+        is_rigovo_self = self._detect_rigovo_self(root)
+
         return ProjectSnapshot(
             root=project_root,
             tree="\n".join(tree_lines),
@@ -167,7 +208,32 @@ class ProjectScanner:
             total_file_count=total_count,
             entry_points=entry_points,
             test_directories=test_dirs,
+            workspace_type=workspace_type,
+            is_rigovo_self=is_rigovo_self,
         )
+
+    def _classify_workspace(self, root: Path, source_count: int) -> str:
+        """Classify workspace as new_project or existing_project.
+
+        A project is considered NEW if it has fewer than threshold source files.
+        This controls whether agents build from scratch or match existing patterns.
+        """
+        if source_count < NEW_PROJECT_SOURCE_FILE_THRESHOLD:
+            return "new_project"
+        return "existing_project"
+
+    def _detect_rigovo_self(self, root: Path) -> bool:
+        """Detect if the scanned root is Rigovo's own installation directory.
+
+        When someone runs `rigovo run ...` from the Rigovo repo itself, the
+        scanner sees Rigovo's own code. This guard prevents agents from
+        applying Rigovo's internal patterns to the user's task.
+        """
+        # Check for Rigovo footprint files at the root
+        has_rigovo_yml = any((root / f).is_file() for f in _RIGOVO_FOOTPRINT)
+        # Check for Rigovo source package directory
+        has_rigovo_src = (root / "src" / _RIGOVO_SRC_PACKAGE).is_dir()
+        return has_rigovo_yml and has_rigovo_src
 
     def _build_tree(
         self,
