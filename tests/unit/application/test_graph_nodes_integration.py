@@ -76,9 +76,13 @@ class TestNodeIntegration(unittest.IsolatedAsyncioTestCase):
         agent.id = "agent-1"
         agent.name = "Engineer"
         agent.role = "engineer"
+        agent.instance_id = "engineer"
         agent.system_prompt = "You are an engineer."
         agent.llm_model = "claude-sonnet-4-6"
         agent.tools = []
+        agent.depends_on = []
+        agent.input_contract = {}
+        agent.output_contract = {}
         agent.enrichment = MagicMock()
         agent.enrichment.to_prompt_section.return_value = "Context"
 
@@ -88,6 +92,11 @@ class TestNodeIntegration(unittest.IsolatedAsyncioTestCase):
         mock_pipeline.agent_count = 1
         mock_pipeline.roles = ["engineer"]
         mock_pipeline.gates_after = []
+        mock_pipeline.execution_dag = {}
+        mock_pipeline.parallel_groups = []
+        mock_pipeline.instance_assignments = {}
+        mock_pipeline.instance_verifications = {}
+        mock_pipeline.instance_specialisations = {}
         mock_assembler.assemble.return_value = mock_pipeline
 
         assemble_result = await assemble_node(

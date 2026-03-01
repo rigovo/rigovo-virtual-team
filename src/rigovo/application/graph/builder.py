@@ -40,6 +40,7 @@ from rigovo.application.graph.nodes.execute_agent import (
 )
 from rigovo.application.graph.nodes.finalize import finalize_node
 from rigovo.application.graph.nodes.quality_check import quality_check_node
+from rigovo.application.graph.nodes.verify_execution import verify_execution_node
 from rigovo.application.graph.nodes.replan import replan_node
 from rigovo.application.graph.nodes.route_team import route_team_node
 from rigovo.application.graph.nodes.scan_project import scan_project_node
@@ -224,6 +225,9 @@ class GraphBuilder:
                 memory_retriever=memory_retriever,
             )
 
+        async def _verify_execution(state: TaskState) -> dict:
+            return await verify_execution_node(state)
+
         async def _quality_check(state: TaskState) -> dict:
             return await quality_check_node(state, gates)
 
@@ -258,28 +262,28 @@ class GraphBuilder:
             return await finalize_node(state)
 
         async def _parallel_fan_out(state: TaskState) -> dict:
-            """Execute all currently ready parallelizable agents simultaneously."""
+            """Execute all currently ready parallelizable agent instances simultaneously."""
             team_config = state.get("team_config", {})
             pipeline_order = team_config.get("pipeline_order", [])
             ready_roles = state.get("ready_roles", [])
             if ready_roles:
-                remaining_roles = list(ready_roles)
+                remaining_instances = list(ready_roles)
             else:
                 current_index = state.get("current_agent_index", 0)
-                remaining_roles = pipeline_order[current_index + 1 :]
+                remaining_instances = pipeline_order[current_index + 1:]
 
             # Emit parallel_started event
             events = list(state.get("events", []))
             events.append(
                 {
                     "type": "parallel_started",
-                    "roles": remaining_roles,
+                    "instances": remaining_instances,
                 }
             )
 
             result = await execute_agents_parallel(
                 {**state, "events": events},
-                remaining_roles,
+                remaining_instances,
                 llm_factory,
                 cost_calc,
                 stream_cb,
@@ -293,7 +297,7 @@ class GraphBuilder:
             result_events.append({"type": "parallel_complete"})
             result["events"] = result_events
             completed_roles = set(state.get("completed_roles", []))
-            completed_roles.update(remaining_roles)
+            completed_roles.update(remaining_instances)
             result["completed_roles"] = sorted(completed_roles)
 
             # Recompute DAG-ready roles after this parallel wave.
@@ -302,6 +306,7 @@ class GraphBuilder:
                     **state,
                     **result,
                     "current_agent_role": "",
+                    "current_instance_id": "",
                     "completed_roles": sorted(completed_roles),
                 }
             )
@@ -318,6 +323,7 @@ class GraphBuilder:
         graph.add_node("assemble", _assemble)
         graph.add_node("plan_approval", _plan_approval)
         graph.add_node("execute_agent", _execute_agent)
+        graph.add_node("verify_execution", _verify_execution)
         graph.add_node("quality_check", _quality_check)
         graph.add_node("route_next", _route_next)
         graph.add_node("parallel_fan_out", _parallel_fan_out)
@@ -345,8 +351,9 @@ class GraphBuilder:
             },
         )
 
-        # Agent execution → quality gates
-        graph.add_edge("execute_agent", "quality_check")
+        # Agent execution → verify execution → quality gates
+        graph.add_edge("execute_agent", "verify_execution")
+        graph.add_edge("verify_execution", "quality_check")
 
         graph.add_conditional_edges(
             "quality_check",
@@ -484,7 +491,8 @@ class GraphBuilder:
 
         if self._enable_parallel:
             # Split into sequential and parallel groups
-            sequential, parallel = self._split_pipeline(pipeline_order)
+            agents_cfg = state.get("team_config", {}).get("agents", {})
+            sequential, parallel = self._split_pipeline(pipeline_order, agents_cfg)
             await self._run_sequential_agents(state, sequential)
             if parallel:
                 update = await execute_agents_parallel(
@@ -543,10 +551,11 @@ class GraphBuilder:
         state: dict,
         pipeline_order: list[str],
     ) -> None:
-        """Run agents one-by-one with quality gate retry loops."""
-        for i, role in enumerate(pipeline_order):
+        """Run agent instances one-by-one with quality gate retry loops."""
+        for i, instance_id in enumerate(pipeline_order):
             state["current_agent_index"] = i
-            state["current_agent_role"] = role
+            state["current_agent_role"] = instance_id  # Config key = instance_id
+            state["current_instance_id"] = instance_id
 
             update = await execute_agent_node(
                 state,
@@ -557,6 +566,10 @@ class GraphBuilder:
                 embedding_provider=self._embedding_provider,
                 memory_retriever=self._memory_retriever,
             )
+            state.update(update)
+
+            # Phase 4: execution verification before quality gates
+            update = await verify_execution_node(state)
             state.update(update)
 
             update = await quality_check_node(state, self._quality_gates)
@@ -578,6 +591,9 @@ class GraphBuilder:
                         memory_retriever=self._memory_retriever,
                     )
                     state.update(update)
+                    # Phase 4: verify again on retry
+                    update = await verify_execution_node(state)
+                    state.update(update)
                     update = await quality_check_node(state, self._quality_gates)
                     state.update(update)
                     gate_results = state.get("gate_results", {})
@@ -589,13 +605,21 @@ class GraphBuilder:
     @staticmethod
     def _split_pipeline(
         pipeline_order: list[str],
+        agents_cfg: dict[str, dict] | None = None,
     ) -> tuple[list[str], list[str]]:
-        """Split pipeline into sequential (must run first) and parallel groups."""
+        """Split pipeline into sequential (must run first) and parallel groups.
+
+        Instance-ID aware: resolves base role from agent config to decide
+        parallelizability. Falls back to treating the key itself as the role
+        for backward compatibility.
+        """
+        agents_cfg = agents_cfg or {}
         sequential = []
         parallel = []
-        for role in pipeline_order:
+        for instance_id in pipeline_order:
+            role = agents_cfg.get(instance_id, {}).get("role", instance_id)
             if role in PARALLELIZABLE_ROLES:
-                parallel.append(role)
+                parallel.append(instance_id)
             else:
-                sequential.append(role)
+                sequential.append(instance_id)
         return sequential, parallel

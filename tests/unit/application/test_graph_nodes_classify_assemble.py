@@ -13,7 +13,11 @@ from rigovo.application.graph.nodes.classify import classify_node
 from rigovo.application.graph.nodes.assemble import assemble_node
 from rigovo.application.graph.nodes.route_team import route_team_node
 from rigovo.application.graph.state import TaskState, AgentOutput
-from rigovo.application.master.classifier import ClassificationResult
+from rigovo.application.master.classifier import (
+    AgentAssignment,
+    ClassificationResult,
+    StaffingPlan,
+)
 from rigovo.application.master.router import RoutingResult
 from rigovo.domain.entities.task import TaskType, TaskComplexity
 from rigovo.domain.interfaces.llm_provider import LLMResponse, LLMUsage
@@ -121,16 +125,33 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
         }
         mock_llm = AsyncMock()
         mock_classifier = AsyncMock()
-        mock_classifier.classify.return_value = ClassificationResult(
+        mock_classifier.analyze.return_value = StaffingPlan(
             task_type=TaskType.BUG,
             complexity=TaskComplexity.HIGH,
+            workspace_type="existing_project",
+            domain_analysis="Authentication bug fix",
+            architecture_notes="Follow existing patterns",
+            agents=[
+                AgentAssignment(
+                    instance_id="coder-1",
+                    role="coder",
+                    specialisation="fullstack",
+                    assignment="Fix login bug",
+                    depends_on=[],
+                    verification="Tests pass",
+                ),
+            ],
+            risks=[],
+            acceptance_criteria=["Login works"],
             reasoning="Cross-cutting auth fixes",
         )
 
         result = await classify_node(state, mock_llm, classifier=mock_classifier)
         assert result["classification"]["task_type"] == "bug"
         assert result["classification"]["complexity"] == "high"
-        assert result["cost_accumulator"]["classifier"]["tokens"] == 0
+        assert result["cost_accumulator"]["master_agent"]["tokens"] == 0
+        assert "staffing_plan" in result
+        assert len(result["staffing_plan"]["agents"]) == 1
         mock_llm.invoke.assert_not_called()
 
 
@@ -189,9 +210,13 @@ class TestAssembleNode(unittest.IsolatedAsyncioTestCase):
         agent1.id = "agent-1"
         agent1.name = "Backend Engineer"
         agent1.role = "backend"
+        agent1.instance_id = "backend"
         agent1.system_prompt = "You are a backend engineer."
         agent1.llm_model = "claude-sonnet-4-6"
         agent1.tools = []
+        agent1.depends_on = []
+        agent1.input_contract = {}
+        agent1.output_contract = {}
         agent1.enrichment = MagicMock()
         agent1.enrichment.to_prompt_section.return_value = "Backend context"
 
@@ -199,9 +224,13 @@ class TestAssembleNode(unittest.IsolatedAsyncioTestCase):
         agent2.id = "agent-2"
         agent2.name = "Frontend Engineer"
         agent2.role = "frontend"
+        agent2.instance_id = "frontend"
         agent2.system_prompt = "You are a frontend engineer."
         agent2.llm_model = "claude-sonnet-4-6"
         agent2.tools = []
+        agent2.depends_on = []
+        agent2.input_contract = {}
+        agent2.output_contract = {}
         agent2.enrichment = MagicMock()
         agent2.enrichment.to_prompt_section.return_value = "Frontend context"
 
@@ -212,6 +241,11 @@ class TestAssembleNode(unittest.IsolatedAsyncioTestCase):
         mock_assembler.agent_count = 2
         mock_assembler.roles = ["backend", "frontend"]
         mock_assembler.gates_after = ["backend"]
+        mock_assembler.instance_assignments = {}
+        mock_assembler.instance_verifications = {}
+        mock_assembler.instance_specialisations = {}
+        mock_assembler.execution_dag = {}
+        mock_assembler.parallel_groups = []
 
         result = await assemble_node(
             state, agents=[agent1, agent2], assembler=mock_assembler
@@ -247,6 +281,11 @@ class TestAssembleNode(unittest.IsolatedAsyncioTestCase):
         mock_pipeline.agent_count = 0
         mock_pipeline.roles = []
         mock_pipeline.gates_after = []
+        mock_pipeline.execution_dag = {}
+        mock_pipeline.parallel_groups = []
+        mock_pipeline.instance_assignments = {}
+        mock_pipeline.instance_verifications = {}
+        mock_pipeline.instance_specialisations = {}
         mock_assembler.assemble.return_value = mock_pipeline
 
         result = await assemble_node(state, agents=[], assembler=mock_assembler)

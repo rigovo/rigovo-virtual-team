@@ -1,4 +1,12 @@
-"""Classify node — Master Agent classifies the task type and complexity."""
+"""Classify node — Master Agent (Distinguished Engineer) analyzes the task.
+
+This node is the Master Agent's moment. It receives the task description
+and the project snapshot (from scan_project) and produces a full staffing
+plan — which agents, how many, what each one does, and in what order.
+
+The output is stored in ``state["staffing_plan"]`` (new) and
+``state["classification"]`` (backward-compatible).
+"""
 
 from __future__ import annotations
 
@@ -6,9 +14,13 @@ import json
 from typing import Any
 
 from rigovo.application.graph.state import TaskState
-from rigovo.application.master.classifier import TaskClassifier
+from rigovo.application.master.classifier import (
+    StaffingPlan,
+    TaskClassifier,
+)
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 
+# Lightweight fallback prompt (used when no classifier is injected)
 CLASSIFICATION_PROMPT = """\
 You are a task classifier for a software engineering team.
 
@@ -39,26 +51,43 @@ async def classify_node(
     llm: LLMProvider,
     classifier: TaskClassifier | None = None,
 ) -> dict[str, Any]:
-    """Classify the task using the Master Agent's LLM."""
-    # If a pre-built classifier is injected (e.g. from container), use it.
-    # Then merge in workspace_type from project snapshot if available.
+    """Run the Master Agent's analysis on the task.
+
+    When a full ``TaskClassifier`` is injected (the normal path via
+    container), it runs the SME ``analyze()`` method which produces a
+    ``StaffingPlan``.  The plan is stored in state and the legacy
+    ``classification`` dict is derived from it.
+
+    Falls back to a lightweight LLM classification when no classifier
+    is available (unit tests, minimal setups).
+    """
+    project_snapshot = state.get("project_snapshot")
+
+    # ── Primary path: Full SME analysis ──────────────────────────────
     if classifier is not None:
-        result = await classifier.classify(state["description"])
+        plan: StaffingPlan = await classifier.analyze(
+            state["description"],
+            project_snapshot=project_snapshot,
+        )
+
+        # Build legacy classification dict for backward compatibility
         classification: dict[str, Any] = {
-            "task_type": str(result.task_type.value),
-            "complexity": str(result.complexity.value),
-            "reasoning": result.reasoning,
+            "task_type": str(plan.task_type.value),
+            "complexity": str(plan.complexity.value),
+            "workspace_type": plan.workspace_type,
+            "reasoning": plan.reasoning,
         }
-        # Derive workspace_type from the project snapshot when classifier
-        # doesn't produce it (backward compatibility)
-        classification["workspace_type"] = _derive_workspace_type(state, classification)
+
+        # Serialize the staffing plan for state transport
+        staffing_plan_dict = _serialize_staffing_plan(plan)
 
         return {
             "classification": classification,
+            "staffing_plan": staffing_plan_dict,
             "status": "classified",
             "cost_accumulator": {
                 **state.get("cost_accumulator", {}),
-                "classifier": {
+                "master_agent": {
                     "tokens": 0,
                     "cost": 0.0,
                 },
@@ -67,14 +96,28 @@ async def classify_node(
             + [
                 {
                     "type": "task_classified",
-                    "task_type": classification.get("task_type"),
-                    "complexity": classification.get("complexity"),
-                    "workspace_type": classification.get("workspace_type"),
-                    "reasoning": classification.get("reasoning"),
+                    "task_type": classification["task_type"],
+                    "complexity": classification["complexity"],
+                    "workspace_type": classification["workspace_type"],
+                    "reasoning": classification["reasoning"],
+                    "domain_analysis": plan.domain_analysis,
+                    "agent_count": len(plan.agents),
+                    "agent_instances": [
+                        {
+                            "instance_id": a.instance_id,
+                            "role": a.role,
+                            "specialisation": a.specialisation,
+                            "assignment": a.assignment[:200],
+                        }
+                        for a in plan.agents
+                    ],
+                    "risks": plan.risks[:5],
+                    "acceptance_criteria": plan.acceptance_criteria[:5],
                 }
             ],
         }
 
+    # ── Fallback: lightweight LLM classification ──────────────────────
     response = await llm.invoke(
         messages=[
             {"role": "system", "content": CLASSIFICATION_PROMPT},
@@ -85,7 +128,6 @@ async def classify_node(
     )
 
     try:
-        # Strip markdown code fences if LLM wraps JSON in ```json ... ```
         text = response.content.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[-1]
@@ -101,7 +143,6 @@ async def classify_node(
             "reasoning": "Failed to parse classification, defaulting to feature/medium.",
         }
 
-    # If LLM didn't produce workspace_type, derive it from the snapshot
     if "workspace_type" not in classification:
         classification["workspace_type"] = _derive_workspace_type(state, classification)
 
@@ -112,7 +153,7 @@ async def classify_node(
             **state.get("cost_accumulator", {}),
             "classifier": {
                 "tokens": response.usage.total_tokens,
-                "cost": 0.0,  # Will be calculated by cost tracker
+                "cost": 0.0,
             },
         },
         "events": state.get("events", [])
@@ -129,20 +170,40 @@ async def classify_node(
 
 
 def _derive_workspace_type(state: TaskState, classification: dict[str, Any]) -> str:
-    """Derive workspace_type when the LLM didn't produce it.
-
-    Uses two signals:
-    1. task_type == new_project → clearly new
-    2. project snapshot source file count < threshold → nearly empty workspace
-    """
+    """Derive workspace_type when the LLM didn't produce it."""
     if classification.get("task_type") == "new_project":
         return "new_project"
-
     snapshot = state.get("project_snapshot")
     if snapshot is not None:
-        # ProjectSnapshot.workspace_type is set by the scanner based on file count
         wt = getattr(snapshot, "workspace_type", "existing_project")
         if wt == "new_project":
             return "new_project"
-
     return "existing_project"
+
+
+def _serialize_staffing_plan(plan: StaffingPlan) -> dict[str, Any]:
+    """Serialize a StaffingPlan to a dict suitable for graph state."""
+    return {
+        "task_type": str(plan.task_type.value),
+        "complexity": str(plan.complexity.value),
+        "workspace_type": plan.workspace_type,
+        "domain_analysis": plan.domain_analysis,
+        "architecture_notes": plan.architecture_notes,
+        "agents": [
+            {
+                "instance_id": a.instance_id,
+                "role": a.role,
+                "specialisation": a.specialisation,
+                "assignment": a.assignment,
+                "depends_on": a.depends_on,
+                "tools_required": a.tools_required,
+                "verification": a.verification,
+            }
+            for a in plan.agents
+        ],
+        "risks": plan.risks,
+        "acceptance_criteria": plan.acceptance_criteria,
+        "reasoning": plan.reasoning,
+        "execution_dag": plan.execution_dag,
+        "parallel_groups": plan.parallel_groups,
+    }

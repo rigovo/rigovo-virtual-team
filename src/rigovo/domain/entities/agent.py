@@ -134,6 +134,9 @@ class Agent:
     # Enrichment (set by Master Agent)
     enrichment: EnrichmentContext = field(default_factory=EnrichmentContext)
 
+    # Instance identity (set by team assembler for multi-instance roles)
+    instance_id: str = ""  # e.g. "backend-engineer-1", "qa-unit-1"
+
     # Pipeline ordering within team
     pipeline_order: int = 0
     is_active: bool = True

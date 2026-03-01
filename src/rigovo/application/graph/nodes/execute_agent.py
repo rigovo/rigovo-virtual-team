@@ -534,17 +534,32 @@ def _handle_consult_agent(
         )
 
     team_agents = state.get("team_config", {}).get("agents", {})
-    to_role = str(tool_input.get("to_role", "")).strip()
+    to_target = str(tool_input.get("to_role", "")).strip()
     question = str(tool_input.get("question", "")).strip()
 
-    if not to_role:
+    if not to_target:
         return json.dumps({"status": "error", "error": "Missing required field: to_role"})
-    if to_role not in team_agents:
-        return json.dumps({"status": "error", "error": f"Unknown role: {to_role}"})
     if not question:
         return json.dumps({"status": "error", "error": "Missing required field: question"})
-    allowed_targets = policy_targets.get(from_role, set())
-    if to_role not in allowed_targets:
+
+    # Resolve to_target: could be an instance_id or a base role name
+    # If it's a base role, find the first instance of that role
+    to_role = to_target
+    if to_target not in team_agents:
+        # Try to find an instance by role name
+        for iid, cfg in team_agents.items():
+            if cfg.get("role") == to_target:
+                to_role = iid
+                break
+        else:
+            return json.dumps({"status": "error", "error": f"Unknown agent: {to_target}"})
+
+    # Resolve the base role of from_role for policy checking
+    from_base_role = team_agents.get(from_role, {}).get("role", from_role)
+    to_base_role = team_agents.get(to_role, {}).get("role", to_role)
+
+    allowed_targets = policy_targets.get(from_base_role, set())
+    if to_base_role not in allowed_targets and to_role not in allowed_targets:
         return json.dumps(
             {
                 "status": "error",
@@ -643,9 +658,11 @@ def _fulfill_pending_consults(
         final_text[:max_response_chars] if final_text else "Completed work. No summary provided."
     )
     for msg in agent_messages:
+        # Match by instance_id or by base role (backward compat)
+        msg_target = msg.get("to_role", "")
         if (
             msg.get("type") == "consult_request"
-            and msg.get("to_role") == current_role
+            and (msg_target == current_role or msg_target == current_role.split("-")[0])
             and msg.get("status") == "pending"
         ):
             msg["status"] = "answered"
@@ -1076,22 +1093,33 @@ async def execute_agent_node(
         stream_callback: Optional callback(role, chunk) for streaming text.
     """
     team_config = state.get("team_config", {})
-    current_role = state.get("current_agent_role", "")
     agents = team_config.get("agents", {})
-    if current_role not in agents:
+
+    # Instance-ID aware: prefer current_instance_id, fall back to current_agent_role
+    current_instance = (
+        state.get("current_instance_id", "")
+        or state.get("current_agent_role", "")
+    )
+    # The agent config is keyed by instance_id in the new system
+    if current_instance not in agents:
+        # Backward compat: try current_agent_role
+        current_instance = state.get("current_agent_role", "")
+    if current_instance not in agents:
         return {
-            "status": f"agent_{current_role}_error",
-            "error": f"Agent role '{current_role}' not found in team config",
+            "status": f"agent_{current_instance}_error",
+            "error": f"Agent instance '{current_instance}' not found in team config",
             "events": state.get("events", [])
             + [
                 {
                     "type": "agent_timeout",
-                    "role": current_role,
-                    "error": f"Role '{current_role}' not configured",
+                    "role": current_instance,
+                    "error": f"Instance '{current_instance}' not configured",
                 }
             ],
         }
-    agent_config = agents[current_role]
+    agent_config = agents[current_instance]
+    # The base role (coder, reviewer, etc.) for tool resolution
+    current_role = agent_config.get("role", current_instance)
 
     # --- Contract guards (input) ---
     input_contract = agent_config.get("input_contract", {}) or {}
@@ -1163,7 +1191,9 @@ async def execute_agent_node(
         {
             "type": "agent_started",
             "role": current_role,
+            "instance_id": current_instance,
             "name": agent_config["name"],
+            "specialisation": agent_config.get("specialisation", ""),
         }
     )
 
@@ -1298,7 +1328,9 @@ async def execute_agent_node(
         {
             "type": "agent_complete",
             "role": current_role,
+            "instance_id": current_instance,
             "name": agent_config["name"],
+            "specialisation": agent_config.get("specialisation", ""),
             "tokens": total_tokens,
             "cost": cost,
             "duration_ms": duration_ms,
@@ -1311,7 +1343,8 @@ async def execute_agent_node(
     return {
         "agent_outputs": {
             **state.get("agent_outputs", {}),
-            current_role: agent_output,
+            # Key by instance_id so multiple agents of same role don't overwrite
+            current_instance: agent_output,
         },
         "cost_accumulator": {
             **state.get("cost_accumulator", {}),
@@ -1320,7 +1353,7 @@ async def execute_agent_node(
                 "cost": cost,
             },
         },
-        "status": f"agent_{current_role}_complete",
+        "status": f"agent_{current_instance}_complete",
         "agent_messages": agent_messages_log,
         "memory_context_by_role": memory_context_by_role,
         "memory_retrieval_log": memory_retrieval_log,
@@ -1391,7 +1424,7 @@ async def _execute_streaming(
 
 async def execute_agents_parallel(
     state: TaskState,
-    roles: list[str],
+    instance_ids: list[str],
     llm_factory: Any,
     cost_calculator: CostCalculator,
     stream_callback: Any | None = None,
@@ -1400,31 +1433,35 @@ async def execute_agents_parallel(
     memory_retriever: MemoryRetriever | None = None,
 ) -> dict[str, Any]:
     """
-    Execute multiple independent agents in parallel (item 8).
+    Execute multiple independent agent instances in parallel.
+
+    Instance-ID aware: ``instance_ids`` are instance_ids like
+    "reviewer-1", "qa-unit-1", not bare role names.
 
     Only used for agents that have no dependencies on each other's output.
     Each agent sees the SAME state — they don't see each other's results.
     """
 
-    def _build_role_state(base: TaskState, role: str) -> TaskState:
-        """Create an isolated task state for one parallel role execution."""
-        role_state: TaskState = dict(base)
-        role_state["current_agent_role"] = role
+    def _build_instance_state(base: TaskState, instance_id: str) -> TaskState:
+        """Create an isolated task state for one parallel instance execution."""
+        inst_state: TaskState = dict(base)
+        inst_state["current_agent_role"] = instance_id  # Config key = instance_id
+        inst_state["current_instance_id"] = instance_id
         # Isolate mutable collections so parallel agents can't cross-contaminate.
-        role_state["events"] = []
-        role_state["agent_messages"] = []
-        role_state["agent_outputs"] = dict(base.get("agent_outputs", {}))
-        role_state["cost_accumulator"] = dict(base.get("cost_accumulator", {}))
-        role_state["memory_context_by_role"] = dict(base.get("memory_context_by_role", {}))
-        role_state["memory_retrieval_log"] = dict(base.get("memory_retrieval_log", {}))
-        return role_state
+        inst_state["events"] = []
+        inst_state["agent_messages"] = []
+        inst_state["agent_outputs"] = dict(base.get("agent_outputs", {}))
+        inst_state["cost_accumulator"] = dict(base.get("cost_accumulator", {}))
+        inst_state["memory_context_by_role"] = dict(base.get("memory_context_by_role", {}))
+        inst_state["memory_retrieval_log"] = dict(base.get("memory_retrieval_log", {}))
+        return inst_state
 
     tasks = []
-    for role in roles:
-        role_state = _build_role_state(state, role)
+    for iid in instance_ids:
+        inst_state = _build_instance_state(state, iid)
         tasks.append(
             execute_agent_node(
-                role_state,
+                inst_state,
                 llm_factory,
                 cost_calculator,
                 stream_callback,
@@ -1444,33 +1481,35 @@ async def execute_agents_parallel(
     merged_events = list(state.get("events", []))
 
     for i, result in enumerate(results):
-        role = roles[i]
+        iid = instance_ids[i]
         if isinstance(result, Exception):
-            logger.error("Parallel agent %s failed: %s", role, result)
+            logger.error("Parallel agent %s failed: %s", iid, result)
             merged_events.append(
                 {
                     "type": "agent_timeout",
-                    "role": role,
+                    "instance_id": iid,
+                    "role": state.get("team_config", {}).get("agents", {}).get(iid, {}).get("role", iid),
                     "error": str(result),
                 }
             )
             continue
         if isinstance(result, dict):
+            # Merge agent outputs keyed by instance_id
             role_outputs = result.get("agent_outputs", {})
-            if role in role_outputs:
-                merged_outputs[role] = role_outputs[role]
+            if iid in role_outputs:
+                merged_outputs[iid] = role_outputs[iid]
 
-            # Merge only the current role's cost entry to avoid stale overwrites.
-            role_agent_id = str(
-                state.get("team_config", {}).get("agents", {}).get(role, {}).get("id", "")
+            # Merge cost entry
+            agent_id = str(
+                state.get("team_config", {}).get("agents", {}).get(iid, {}).get("id", "")
             )
             role_costs = result.get("cost_accumulator", {})
-            if role_agent_id and role_agent_id in role_costs:
-                merged_costs[role_agent_id] = role_costs[role_agent_id]
-            elif role in merged_outputs:
-                merged_costs[role_agent_id or role] = {
-                    "tokens": merged_outputs[role].get("tokens", 0),
-                    "cost": merged_outputs[role].get("cost", 0.0),
+            if agent_id and agent_id in role_costs:
+                merged_costs[agent_id] = role_costs[agent_id]
+            elif iid in merged_outputs:
+                merged_costs[agent_id or iid] = {
+                    "tokens": merged_outputs[iid].get("tokens", 0),
+                    "cost": merged_outputs[iid].get("cost", 0.0),
                 }
             merged_memory_context.update(result.get("memory_context_by_role", {}))
             role_memory_log = result.get("memory_retrieval_log", {})
@@ -1494,7 +1533,7 @@ async def execute_agents_parallel(
                         seen.add(mem_id)
                     merged_memory_log[role_key] = existing_entries
 
-            # Child role states start with events=[], so this extends only new events.
+            # Child instance states start with events=[], so this extends only new events.
             merged_events.extend(result.get("events", []))
 
     return {

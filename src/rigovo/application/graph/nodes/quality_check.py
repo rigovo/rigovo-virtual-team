@@ -251,6 +251,30 @@ async def quality_check_node(
         ],
     }
 
+    # ── Incorporate execution verification results (Phase 4) ──────────
+    # If verify_execution_node ran before us, check its results too.
+    exec_verification = state.get("execution_verification", {})
+    if isinstance(exec_verification, dict) and exec_verification.get("passed") is False:
+        # Execution verification failed — treat as gate failure
+        failure_details = exec_verification.get("failure_details", [])
+        for detail in failure_details:
+            all_violations.append(
+                Violation(
+                    gate_id="execution-verification-failed",
+                    message=str(detail)[:500],
+                    severity=ViolationSeverity.ERROR,
+                    suggestion="Fix the runtime errors. The code must compile, build, and pass tests.",
+                    category="correctness",
+                )
+            )
+        if failure_details:
+            all_passed = False
+            structured_violations = [_serialize_violation(v) for v in all_violations]
+            gate_summary["violations"] = structured_violations
+            gate_summary["violation_count"] = len(all_violations)
+            gate_summary["passed"] = False
+            gate_summary["status"] = GateStatus.FAILED
+
     # If failed, build a fix packet for the retry
     if not all_passed:
         fix_items = [

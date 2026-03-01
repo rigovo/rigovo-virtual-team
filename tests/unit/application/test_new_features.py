@@ -546,13 +546,14 @@ class TestHelperFunctions(unittest.TestCase):
         result = _check_budget_guards(state, "coder")
         assert result is None
 
-    def test_check_budget_guards_raises_over_limit(self):
-        """Budget guard raises when cost exceeds limit."""
+    def test_check_budget_guards_warns_over_cost_limit(self):
+        """Budget guard logs warning (soft limit) when cost exceeds limit."""
         state = _make_agent_state()
         state["budget_max_cost_per_task"] = 1.0
         state["cost_accumulator"] = {"a": {"cost": 2.0}}
-        with self.assertRaises(BudgetExceededError):
-            _check_budget_guards(state, "coder")
+        # Cost overruns are now soft warnings, not hard stops
+        result = _check_budget_guards(state, "coder")
+        assert result is None
 
     def test_check_budget_guards_token_limit(self):
         """Budget guard returns error dict when tokens exceed limit."""

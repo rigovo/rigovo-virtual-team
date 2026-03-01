@@ -74,7 +74,8 @@ class TestTeamAssembler:
 
         assert pipeline.agent_count == 4  # planner, coder, reviewer, qa
         assert pipeline.roles == ["planner", "coder", "reviewer", "qa"]
-        assert "coder" in pipeline.gates_after
+        # gates_after uses instance_ids (e.g. "coder-1") not bare role names
+        assert any(g.startswith("coder") for g in pipeline.gates_after)
 
     def test_bug_task_minimal_pipeline(self):
         agents = [
@@ -134,9 +135,11 @@ class TestTeamAssembler:
 
         pipeline = self.assembler.assemble(agents, TaskType.INFRA, TaskComplexity.MEDIUM)
 
-        # Gates should trigger after devops and sre (code-producing), not reviewer
-        for role in pipeline.gates_after:
-            assert role in ("coder", "devops", "sre")
+        # Gates should trigger after code-producing roles, not reviewer
+        # gates_after uses instance_ids (e.g. "coder-1", "devops-1")
+        for instance_id in pipeline.gates_after:
+            base_role = instance_id.rsplit("-", 1)[0] if "-" in instance_id else instance_id
+            assert base_role in ("coder", "devops", "sre")
 
 
 class TestMemoryRanker:

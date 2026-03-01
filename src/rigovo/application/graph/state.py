@@ -70,6 +70,11 @@ class TaskState(TypedDict, total=False):
     # --- Classification (set by classify node) ---
     classification: ClassificationData
 
+    # --- Staffing plan (set by classify node — Master Agent SME analysis) ---
+    # Contains per-instance agent assignments, dependency DAG, risks, acceptance
+    # criteria, domain analysis. This is the Master Agent's full output.
+    staffing_plan: dict[str, Any]
+
     # --- Team routing (set by route_team node) ---
     team_config: TeamConfig
     requested_team_name: str  # Optional user-requested team key/name
@@ -77,11 +82,21 @@ class TaskState(TypedDict, total=False):
     # --- Pipeline execution ---
     current_agent_index: int  # Index into pipeline_order
     current_agent_role: str  # Current agent's role ID
-    ready_roles: list[str]  # DAG roles ready to execute
-    completed_roles: list[str]  # DAG roles already completed
-    blocked_roles: list[str]  # DAG roles blocked by dependency failure
-    agent_outputs: dict[str, AgentOutput]  # {role: output}
+    current_instance_id: str  # Current agent instance (e.g. "backend-engineer-1")
+    ready_roles: list[str]  # DAG roles/instances ready to execute
+    completed_roles: list[str]  # DAG roles/instances already completed
+    blocked_roles: list[str]  # DAG roles/instances blocked by dependency failure
+    agent_outputs: dict[str, AgentOutput]  # {instance_id: output}
     agent_messages: list[AgentMessage]  # Inter-agent consultation thread
+
+    # --- Feedback loops (reviewer → engineer, QA → engineer) ---
+    feedback_loops: list[dict[str, Any]]  # History of push-backs and re-work cycles
+    active_feedback: dict[str, Any]  # Current feedback being addressed (if any)
+
+    # --- Execution verification (Phase 4) ---
+    # Per-agent runtime verification: build results, test results, config validation
+    execution_verification: dict[str, Any]  # Latest verification result for current agent
+    verification_history: list[dict[str, Any]]  # Per-agent verification summaries
 
     # --- Quality gates ---
     gate_results: dict[str, Any]  # Latest gate check result
