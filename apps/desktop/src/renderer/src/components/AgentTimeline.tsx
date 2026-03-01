@@ -160,9 +160,28 @@ function CollabRow({ event, messages, index }: {
   messages: CollabMessage[];
   index: number;
 }) {
-  const msgContent = event.message_id
-    ? messages.find((m) => m.id === event.message_id)?.content
-    : undefined;
+  // Primary lookup: by message_id. Fallback: match by role pair + type
+  const msgContent = (() => {
+    if (event.message_id) {
+      const byId = messages.find((m) => m.id === event.message_id)?.content;
+      if (byId) return byId;
+    }
+    // Secondary: find matching message by from/to roles
+    if (event.from_role || event.to_role) {
+      const typeMap: Record<string, string> = {
+        agent_consult_requested: "consult_request",
+        agent_consult_completed: "consult_response",
+      };
+      const matched = messages.find(
+        (m) =>
+          m.from_role === event.from_role &&
+          m.to_role   === event.to_role &&
+          (!typeMap[event.type] || m.type === typeMap[event.type])
+      );
+      if (matched?.content) return matched.content;
+    }
+    return undefined;
+  })();
   const ts = formatTs(event.created_at);
 
   let icon = "💬";
@@ -173,12 +192,12 @@ function CollabRow({ event, messages, index }: {
     case "agent_consult_requested":
       icon = "💬";
       routeText = `${event.from_role || "agent"} → ${event.to_role || "agent"}`;
-      bodyText = msgContent ? String(msgContent).slice(0, 200) : "Consultation requested";
+      bodyText = msgContent ? String(msgContent).slice(0, 240) : "";
       break;
     case "agent_consult_completed":
       icon = "↩️";
       routeText = `${event.to_role || "agent"} replied → ${event.from_role || "agent"}`;
-      bodyText = msgContent ? String(msgContent).slice(0, 200) : "Reply sent";
+      bodyText = msgContent ? String(msgContent).slice(0, 240) : "";
       break;
     case "debate_round":
       icon = "🔄";
@@ -212,7 +231,25 @@ function CollabRow({ event, messages, index }: {
   );
 }
 
+function ReplanCard({ event, index }: { event: GovTimelineEvent; index: number }) {
+  const reason = event.summary || event.action || "Pipeline re-evaluated after reviewing outputs and gate results.";
+  return (
+    <div className="narrative-replan animate-fadeup" style={{ animationDelay: `${index * 40}ms` }}>
+      <div className="flex items-center gap-2">
+        <span className="text-sm">🔄</span>
+        <span className="narrative-meta-label" style={{ color: "#b45309" }}>Master Brain re-planned</span>
+        <span className="feed-collab-time ml-auto">{formatTs(event.ts)}</span>
+      </div>
+      <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--ui-text-secondary)]">{reason}</p>
+    </div>
+  );
+}
+
 function GovRow({ event, index }: { event: GovTimelineEvent; index: number }) {
+  const isReplan = (event.action ?? "").toLowerCase().includes("replan")
+    || (event.category ?? "").toLowerCase().includes("replan");
+  if (isReplan) return <ReplanCard event={event} index={index} />;
+
   const cls = event.decision === "allow" ? "allow"
     : event.decision === "deny" ? "deny"
     : event.decision === "pending" ? "pending"
@@ -397,6 +434,29 @@ export default function AgentTimeline({ steps, taskType, collab, gov, costs, onO
     return { collabEvents, govEvents };
   }
 
+  /** Events not captured within any step window — consultations/replans between steps */
+  const usedCollabIds = new Set<number>();
+  const usedGovIds    = new Set<number>();
+
+  const stepWindows = visibleSteps.map((s) => ({ start: toMs(s.started_at), end: toMs(s.completed_at) }));
+
+  (collab?.events ?? []).forEach((e, i) => {
+    const ts = toMs(e.created_at);
+    if (ts > 0 && stepWindows.some(({ start, end }) => ts >= start && (end === 0 || ts <= end + 5000))) {
+      usedCollabIds.add(i);
+    }
+  });
+  (gov?.timeline ?? []).forEach((e, i) => {
+    const ts = toMs(e.ts);
+    if (ts > 0 && stepWindows.some(({ start, end }) => ts >= start && (end === 0 || ts <= end + 5000))) {
+      usedGovIds.add(i);
+    }
+  });
+
+  const orphanCollab = (collab?.events ?? []).filter((_, i) => !usedCollabIds.has(i) &&
+    ["agent_consult_requested","agent_consult_completed","debate_round","integration_invoked","integration_blocked"].includes((collab!.events[i].type)));
+  const orphanGov    = (gov?.timeline ?? []).filter((_, i) => !usedGovIds.has(i));
+
   return (
     <div className="space-y-3 pb-4">
       <OrchestratorKickoff taskType={taskType} count={steps.length} />
@@ -434,6 +494,18 @@ export default function AgentTimeline({ steps, taskType, collab, gov, costs, onO
           </div>
         );
       })}
+
+      {/* Orphaned events: consultations / replans that occurred between steps */}
+      {(orphanCollab.length > 0 || orphanGov.length > 0) && (
+        <div className="narrative-block">
+          {orphanCollab.map((e, ci) => (
+            <CollabRow key={`orphan-c-${ci}`} event={e} messages={collab?.messages ?? []} index={ci} />
+          ))}
+          {orphanGov.map((e, gi) => (
+            <GovRow key={`orphan-g-${gi}`} event={e} index={gi} />
+          ))}
+        </div>
+      )}
 
       {queued.length > 0 && (
         <section className="narrative-queued">

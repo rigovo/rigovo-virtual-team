@@ -1,6 +1,6 @@
 /* ------------------------------------------------------------------ */
-/*  TaskDetail — full-width agent conversation view                    */
-/*  Unified Team Feed: timeline + collab events + governance inline    */
+/*  TaskDetail — split control plane                                    */
+/*  Left: Map (graph) or Timeline toggle | Right: agent detail panel   */
 /* ------------------------------------------------------------------ */
 import { useCallback, useEffect, useState } from "react";
 import type { InboxTask, TaskDetail as TaskDetailType, TaskStep } from "../types";
@@ -8,7 +8,9 @@ import { tierClass, statusClass } from "../defaults";
 import { API_BASE, readJson } from "../api";
 import AgentTimeline from "./AgentTimeline";
 import type { CollaborationData, GovernanceData, CostData } from "./AgentTimeline";
+import NeuralCalibrationMap from "./NeuralCalibrationMap";
 import FileViewer from "./FileViewer";
+import AgentDetailPanel from "./AgentDetailPanel";
 
 interface TaskDetailProps {
   task: InboxTask;
@@ -65,6 +67,32 @@ interface MissionData {
     actor: string;
     metadata: Record<string, unknown>;
   }>;
+}
+
+/* ---- Role label helper (keeps TaskDetail independent of AgentDetailPanel internals) ---- */
+const AGENT_LABELS: Record<string, string> = {
+  master: "Master Agent", planner: "Planner", coder: "Coder",
+  reviewer: "Reviewer", security: "Security", qa: "QA",
+  devops: "DevOps", sre: "SRE", lead: "Lead", rigour: "Rigour", memory: "Memory",
+};
+function agentLabel(role: string): string {
+  return AGENT_LABELS[role.toLowerCase()] ?? (role.charAt(0).toUpperCase() + role.slice(1));
+}
+
+/* ---- Elapsed time hook ---- */
+function useElapsed(startedAt: string | null): string | null {
+  const [secs, setSecs] = useState<number | null>(null);
+  useEffect(() => {
+    if (!startedAt) { setSecs(null); return; }
+    const update = () => setSecs(Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
+    update();
+    const t = setInterval(update, 1000);
+    return () => clearInterval(t);
+  }, [startedAt]);
+  if (secs === null || secs < 0) return null;
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
 /* ---- Pipeline phase info (for processing state) ---- */
@@ -320,6 +348,68 @@ function OpenInEditorBtn({ projectPath, onOpen }: { projectPath: string; onOpen:
 }
 
 /* ================================================================== */
+/*  NowStrip — live "what is happening right now" bar                 */
+/* ================================================================== */
+function NowStrip({ steps }: { steps: TaskStep[] }) {
+  const running = steps.find(s => s.status === "running") ?? null;
+  const elapsed = useElapsed(running?.started_at ?? null);
+  if (!running) return null;
+
+  const done  = steps.filter(s => s.status === "complete").length;
+  const total = steps.length;
+
+  return (
+    <div className="td-now-strip">
+      <span className="td-now-pulse"><span /><span /><span /></span>
+      <span className="td-now-agent">{agentLabel(running.agent).toUpperCase()}</span>
+      <span className="td-now-sep">·</span>
+      <span className="td-now-progress">{done} of {total} agents done</span>
+      {elapsed && (
+        <>
+          <span className="td-now-sep">·</span>
+          <span className="td-now-time">{elapsed}</span>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  FailureBar — prominent failure reason when task fails             */
+/* ================================================================== */
+function FailureBar({ steps, mission, onSelect }: {
+  steps: TaskStep[];
+  mission: MissionData | null;
+  onSelect: (agent: string) => void;
+}) {
+  const failedStep = steps.find(s => s.status === "failed");
+  if (!failedStep) return null;
+
+  /* Build the most meaningful reason available */
+  let reason = "";
+  const failedGates = failedStep.gate_results.filter(g => !g.passed);
+  if (failedGates.length > 0) {
+    reason = failedGates.map(g => g.message || g.gate).join(" · ");
+  } else if (failedStep.output.trim()) {
+    const lines = failedStep.output.split("\n").filter(l => l.trim());
+    reason = lines[lines.length - 1] ?? "";
+  } else if (mission?.decision_trace.length) {
+    reason = mission.decision_trace[mission.decision_trace.length - 1]?.summary ?? "";
+  }
+
+  return (
+    <button type="button" className="td-failure-bar" onClick={() => onSelect(failedStep.agent)}>
+      <span className="td-failure-icon">✕</span>
+      <div className="td-failure-body">
+        <span className="td-failure-who">{agentLabel(failedStep.agent)} failed</span>
+        {reason && <span className="td-failure-reason">{reason.slice(0, 160)}</span>}
+      </div>
+      <span className="td-failure-cta">Inspect →</span>
+    </button>
+  );
+}
+
+/* ================================================================== */
 /*  TaskDetail — main export                                           */
 /* ================================================================== */
 export default function TaskDetail({ task, detail, onAction, actionMsg, projectPath, onOpenInEditor }: TaskDetailProps) {
@@ -328,6 +418,9 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
   const [gov, setGov]           = useState<GovernanceData | null>(null);
   const [costs, setCosts]       = useState<CostData | null>(null);
   const [files, setFiles]       = useState<FilesData | null>(null);
+  const [viewMode, setViewMode]           = useState<"map" | "timeline">("map");
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  const [leftOpen, setLeftOpen]           = useState(true);
 
   const [drawer, setDrawer] = useState<{ agent: string; files: string[]; byAgent: Record<string, string[]> } | null>(null);
 
@@ -351,7 +444,7 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
     return () => { alive = false; };
   }, [task.id, detail?.steps.length]);
 
-  /* Fetch side data (collab, gov, costs, files) — lifted from SidePanel */
+  /* Fetch side data (collab, gov, costs, files) */
   const fetchSideData = useCallback(async () => {
     if (task.id.startsWith("demo-")) return;
     const [cb, gv, c, f] = await Promise.all([
@@ -361,7 +454,7 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
       readJson<FilesData>(`${API_BASE}/v1/tasks/${task.id}/files`),
     ]);
     if (cb) setCollab(cb);
-    if (gv) setGov(gv);
+    if (gv) setGov(gv);  // retained for future governance panel
     if (c)  setCosts(c);
     if (f)  setFiles(f);
   }, [task.id]);
@@ -388,105 +481,163 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
     });
   }
 
+  /* ── Derived stats ── */
+  const totalFiles  = allFilesData.files.length;
+  const replanCount = mission?.workflow.replan_triggered ?? 0;
+  const allGates    = detail?.steps.flatMap(s => s.gate_results) ?? [];
+  const gatesFailed = allGates.filter(g => !g.passed).length;
+
   return (
     <div className="animate-fadeup h-full flex flex-col">
-      {/* ── Header bar ── */}
-      <div className="mb-4 pb-3 border-b border-[var(--ui-border)] flex-shrink-0">
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="text-base font-bold text-[var(--ui-text)] leading-tight flex-1 min-w-0">{task.title}</h2>
-          {/* Open in editor — top right of header */}
-          {projectPath && onOpenInEditor && (
-            <OpenInEditorBtn
-              projectPath={projectPath}
-              onOpen={onOpenInEditor}
-            />
-          )}
-        </div>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <span className={tierClass(task.tier)}>{task.tier}</span>
-          <span className={statusClass(task.status)}>{task.status}</span>
-          {detail?.task_type && (
-            <span className="text-[10px] rounded-md px-2 py-0.5 bg-[rgba(0,0,0,0.04)] text-[var(--ui-text-secondary)] font-medium">
-              {detail.task_type}
-            </span>
-          )}
-          <span className="text-[10px] text-[var(--ui-text-subtle)]">{"\u00B7"} {task.updatedAt}</span>
 
-          {/* Action buttons */}
-          <div className="ml-auto flex items-center gap-2">
+      {/* ── Compact header ── */}
+      <div className="td-header flex-shrink-0">
+        <div className="td-header-left">
+          <h2 className="td-title">{task.title}</h2>
+          <div className="td-badges">
+            <span className={tierClass(task.tier)}>{task.tier}</span>
+            <span className={statusClass(task.status)}>{task.status}</span>
+            {detail?.task_type && (
+              <span className="td-type-badge">{detail.task_type}</span>
+            )}
+            <span className="td-updated">{task.updatedAt}</span>
             {isApproval && (
-              <span className="text-[11px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
-                Awaiting approval ↓
-              </span>
+              <span className="td-approval-chip">✋ Awaiting approval</span>
             )}
-            {isActive && (
-              <button type="button" className="warn-btn text-xs py-1.5 px-3"
-                onClick={() => onAction(`/v1/tasks/${task.id}/abort`, { reason: "Aborted by user" })}>
-                Abort
-              </button>
+            {replanCount > 0 && (
+              <span className="td-replan-chip">↺ {replanCount} replan{replanCount !== 1 ? "s" : ""}</span>
             )}
-            {canResume && (
-              <button type="button" className="ghost-btn text-xs py-1.5 px-3"
-                onClick={() => onAction(`/v1/tasks/${task.id}/resume`, { resume_now: true })}>
-                Resume
-              </button>
+            {gatesFailed > 0 && (
+              <span className="td-gate-fail-chip">⚡ {gatesFailed} gate{gatesFailed !== 1 ? "s" : ""} failed</span>
             )}
-            {actionMsg && <span className="text-[10px] text-[var(--ui-text-muted)]">{actionMsg}</span>}
           </div>
         </div>
-
-        {/* Agent pipeline strip */}
-        {hasSteps && (
-          <div className="mt-2.5">
-            <AgentStatusStrip steps={detail.steps} />
-          </div>
-        )}
+        <div className="td-header-right">
+          {/* View toggle: Map ↔ Timeline */}
+          {hasSteps && (
+            <div className="td-view-toggle">
+              <button
+                type="button"
+                className={`td-view-btn ${viewMode === "map" ? "active" : ""}`}
+                onClick={() => setViewMode("map")}
+                title="Neural Calibration Map"
+              >
+                ◉ Map
+              </button>
+              <button
+                type="button"
+                className={`td-view-btn ${viewMode === "timeline" ? "active" : ""}`}
+                onClick={() => setViewMode("timeline")}
+                title="Agent Timeline"
+              >
+                ☰ Timeline
+              </button>
+            </div>
+          )}
+          {projectPath && onOpenInEditor && (
+            <OpenInEditorBtn projectPath={projectPath} onOpen={onOpenInEditor} />
+          )}
+          {isActive && (
+            <button type="button" className="warn-btn text-xs py-1.5 px-3"
+              onClick={() => onAction(`/v1/tasks/${task.id}/abort`, { reason: "Aborted by user" })}>
+              Abort
+            </button>
+          )}
+          {canResume && (
+            <button type="button" className="ghost-btn text-xs py-1.5 px-3"
+              onClick={() => onAction(`/v1/tasks/${task.id}/resume`, { resume_now: true })}>
+              Resume
+            </button>
+          )}
+          {actionMsg && <span className="text-[10px] text-[var(--ui-text-muted)]">{actionMsg}</span>}
+        </div>
       </div>
 
-      <MissionControl mission={mission} />
+      {/* ── Live status strip (running) ── */}
+      {isActive && hasSteps && <NowStrip steps={detail!.steps} />}
 
-      {/* ── Approval banner ── */}
-      {isApproval && (
-        <div className="approval-banner animate-fadeup animate-border-pulse">
-          <div className="approval-banner-info">
-            <span className="approval-banner-icon">✋</span>
-            <div>
-              <p className="approval-banner-title">Your approval is needed</p>
-              <p className="approval-banner-desc">
-                Review the agent work below, then approve to continue or reject to stop the run.
-              </p>
-            </div>
-          </div>
-          <div className="approval-banner-actions">
-            <button type="button" className="primary-btn"
-              onClick={() => onAction(`/v1/tasks/${task.id}/approve`, { action: "approve", resume_now: true })}>
-              Approve &amp; Resume
-            </button>
-            <button type="button" className="warn-btn"
-              onClick={() => onAction(`/v1/tasks/${task.id}/deny`, { reason: "Rejected by operator" })}>
-              Reject
-            </button>
-          </div>
-        </div>
+      {/* ── Failure reason bar ── */}
+      {isFailed && hasSteps && (
+        <FailureBar
+          steps={detail!.steps}
+          mission={mission}
+          onSelect={setSelectedAgent}
+        />
       )}
 
-      {/* ── Unified feed ── */}
-      {isProcessing ? (
-        <ProcessingState status={task.status} />
-      ) : (
-        <div className="task-layout flex-1 min-h-0">
-          <div className="overflow-y-auto">
-            <AgentTimeline
-              steps={detail.steps}
-              taskType={detail.task_type}
-              collab={collab}
-              gov={gov}
-              costs={costs}
-              onOpenFiles={openFilesDrawer}
-            />
+      {/* ── Split layout: map or timeline (left) + agent detail (right) ── */}
+      <div className={`td-map-layout flex-1 min-h-0 ${leftOpen ? "" : "td-map-layout--collapsed"}`}>
+
+        {/* Panel collapse/expand toggle — sits on the divider */}
+        {hasSteps && (
+          <button
+            type="button"
+            className="td-panel-toggle"
+            onClick={() => setLeftOpen(v => !v)}
+            title={leftOpen ? "Collapse panel" : "Expand panel"}
+            aria-label={leftOpen ? "Collapse left panel" : "Expand left panel"}
+          >
+            {leftOpen ? "‹" : "›"}
+          </button>
+        )}
+
+        {/* Left: Neural Map or Timeline */}
+        {viewMode === "map" ? (
+          <div className={`td-map-left ${leftOpen ? "" : "td-panel-hidden"}`}>
+            {isProcessing ? (
+              <div className="td-map-processing">
+                <ProcessingState status={task.status} />
+              </div>
+            ) : (
+              <NeuralCalibrationMap
+                steps={detail.steps}
+                taskStatus={task.status}
+                taskType={detail.task_type}
+                collab={collab}
+                totalFiles={totalFiles}
+                totalCost={costs?.total_cost_usd ?? 0}
+                replanCount={replanCount}
+                gatesTotal={allGates.length}
+                gatesFailed={gatesFailed}
+                selectedAgent={selectedAgent}
+                onSelectAgent={setSelectedAgent}
+              />
+            )}
           </div>
+        ) : (
+          <div className={`td-timeline-left ${leftOpen ? "" : "td-panel-hidden"}`}>
+            {isProcessing ? (
+              <div className="p-4"><ProcessingState status={task.status} /></div>
+            ) : (
+              <AgentTimeline
+                steps={detail.steps}
+                taskType={detail.task_type ?? "engineering"}
+                collab={collab}
+                gov={gov}
+                costs={costs}
+                onOpenFiles={openFilesDrawer}
+              />
+            )}
+          </div>
+        )}
+
+        {/* Right: agent detail panel */}
+        <div className="td-map-right">
+          <AgentDetailPanel
+            steps={detail?.steps ?? []}
+            taskStatus={task.status}
+            selectedRole={selectedAgent}
+            collab={collab}
+            costs={costs}
+            totalFiles={totalFiles}
+            replanCount={replanCount}
+            onOpenFiles={openFilesDrawer}
+            isApproval={isApproval}
+            onApprove={() => onAction(`/v1/tasks/${task.id}/approve`, { action: "approve", resume_now: true })}
+            onReject={()  => onAction(`/v1/tasks/${task.id}/deny`,    { reason: "Rejected by operator" })}
+          />
         </div>
-      )}
+      </div>
 
       {/* ── Files bottom drawer ── */}
       {drawer && (

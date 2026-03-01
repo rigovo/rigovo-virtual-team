@@ -65,16 +65,26 @@ SUBAGENT_MAX_SUBTASKS_PER_STEP = 3
 SUBAGENT_MAX_ROUNDS = 10
 
 # Role-to-role consultation policy. Advisory-only, never full step completion.
+#
+# KEY RULE: Planner must NOT consult security/devops before code exists.
+# Security and DevOps work on CODE — there is nothing for them to review
+# until the Coder has written something. Planner may only consult Lead.
+#
+# All other roles may consult within their natural scope.
+# Max 1 consult per agent execution — prevents chatbot-style roundtrip loops.
 CONSULT_ALLOWED_TARGETS: dict[str, set[str]] = {
-    "planner": {"lead", "security", "devops"},
-    "coder": {"reviewer", "security", "qa"},
-    "reviewer": {"planner", "coder", "security", "qa", "devops", "sre", "lead"},
-    "security": {"coder", "reviewer", "devops", "sre", "lead"},
+    "planner": {"lead"},                                   # NOT security/devops — no code yet
+    "coder": {"reviewer", "security", "qa"},              # After writing — check correctness
+    "reviewer": {"planner", "coder", "lead"},
+    "security": {"coder", "reviewer", "lead"},
     "qa": {"coder", "reviewer"},
-    "devops": {"security", "sre", "reviewer", "lead"},
-    "sre": {"devops", "security", "reviewer", "lead"},
-    "lead": {"planner", "coder", "reviewer", "security", "qa", "devops", "sre"},
+    "devops": {"sre", "lead"},
+    "sre": {"devops", "lead"},
+    "lead": {"planner", "coder", "reviewer"},
 }
+
+# Max consultations per agent execution — prevents multi-roundtrip chatbot loops
+MAX_CONSULTS_PER_AGENT = 1
 
 
 def _resolve_consult_policy(state: TaskState | None) -> tuple[bool, int, int, dict[str, set[str]]]:
@@ -253,9 +263,29 @@ def _build_agent_messages(
     if full_context:
         system_prompt += f"\n\n{full_context}"
 
+    # Role-specific action imperatives — forces execution not description
+    _ACTION_IMPERATIVES: dict[str, str] = {
+        "planner": "Read the codebase now and produce the implementation plan.",
+        "coder": "Read the relevant files and write all changed files now using write_file.",
+        "reviewer": "Read the changed files now and produce your review verdict.",
+        "security": "Read the changed files now and produce your security audit.",
+        "qa": "Read the changed files and write the test files now using write_file, then run them.",
+        "devops": "Read existing configs now and write all updated files using write_file.",
+        "sre": "Read the changed files now and write any missing reliability code using write_file.",
+        "lead": "Read the plan and relevant architecture files now and give your verdict.",
+    }
+    action_imperative = _ACTION_IMPERATIVES.get(current_role, "Execute your task now.")
+
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Task: {state['description']}"},
+        {
+            "role": "user",
+            "content": (
+                f"Task: {state['description']}\n\n"
+                f"START NOW: {action_imperative}\n"
+                "Do not describe what you will do. Do it."
+            ),
+        },
     ]
 
     # Add fix packet if retrying
@@ -484,6 +514,25 @@ def _handle_consult_agent(
     if not enabled:
         return json.dumps({"status": "error", "error": "Consultation is disabled by policy"})
 
+    # Enforce per-agent consultation cap — prevents chatbot-style multi-roundtrip loops
+    consults_so_far = sum(
+        1
+        for m in agent_messages
+        if m.get("type") == "consult_request" and m.get("from_role") == from_role
+    )
+    if consults_so_far >= MAX_CONSULTS_PER_AGENT:
+        return json.dumps(
+            {
+                "status": "blocked",
+                "reason": "consultation_limit_reached",
+                "note": (
+                    f"'{from_role}' has already consulted {consults_so_far} time(s). "
+                    f"Max is {MAX_CONSULTS_PER_AGENT}. Proceed with your work using "
+                    "the information you have."
+                ),
+            }
+        )
+
     team_agents = state.get("team_config", {}).get("agents", {})
     to_role = str(tool_input.get("to_role", "")).strip()
     question = str(tool_input.get("question", "")).strip()
@@ -500,7 +549,8 @@ def _handle_consult_agent(
             {
                 "status": "error",
                 "error": (
-                    f"Consultation from '{from_role}' to '{to_role}' is not allowed by policy"
+                    f"Consultation from '{from_role}' to '{to_role}' is not allowed by policy. "
+                    "Proceed with your work independently."
                 ),
             }
         )

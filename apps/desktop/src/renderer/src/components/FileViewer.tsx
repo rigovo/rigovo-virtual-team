@@ -19,6 +19,18 @@ interface FileContent {
   language: string;
 }
 
+/* ---- System theme detection ---- */
+function useSystemDark(): boolean {
+  const [dark, setDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = (e: MediaQueryListEvent) => setDark(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+  return dark;
+}
+
 /* ---- Language detection ---- */
 const EXT_LANG: Record<string, string> = {
   ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
@@ -64,6 +76,7 @@ function fileIcon(path: string): string {
 /*  FileViewer component                                               */
 /* ================================================================== */
 export default function FileViewer({ taskId, filesByAgent, allFiles }: FileViewerProps) {
+  const isDark = useSystemDark();
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<FileContent | null>(null);
   const [fileError, setFileError] = useState<string>("");
@@ -76,14 +89,24 @@ export default function FileViewer({ taskId, filesByAgent, allFiles }: FileViewe
     setFileContent(null);
     setFileError("");
 
-    const res = await readJson<{ content: string; path: string; error?: string }>(
-      `${API_BASE}/v1/tasks/${taskId}/files/${encodeURIComponent(path)}`
-    );
+    // Try query-param form first (path with slashes), fall back to encoded segment
+    const urlQp  = `${API_BASE}/v1/tasks/${taskId}/files?path=${encodeURIComponent(path)}`;
+    const urlSeg = `${API_BASE}/v1/tasks/${taskId}/files/${encodeURIComponent(path)}`;
+
+    let res: { content?: string; path?: string; error?: string } | null = null;
+    res = await readJson(urlQp);
+    if (!res?.content) res = await readJson(urlSeg);
 
     if (res?.content && res.content.length > 0) {
       setFileContent({ path, content: res.content, language: detectLanguage(path) });
     } else {
-      setFileError(res?.error || "File content is unavailable for this run. The file path is recorded, but content was not persisted.");
+      const errMsg = res?.error ?? "";
+      // Surface a meaningful message — hide generic "Internal error" from users
+      setFileError(
+        errMsg && errMsg.toLowerCase() !== "internal error"
+          ? errMsg
+          : "Content not available — the backend did not persist this file's content for this run. Use 'Open in editor' to view it on disk."
+      );
     }
     setLoading(false);
   }, [taskId]);
@@ -178,7 +201,7 @@ export default function FileViewer({ taskId, filesByAgent, allFiles }: FileViewe
                 height="100%"
                 language={fileContent.language}
                 value={fileContent.content}
-                theme="vs-dark"
+                theme={isDark ? "vs-dark" : "vs"}
                 options={{
                   readOnly: true,
                   minimap: { enabled: false },
