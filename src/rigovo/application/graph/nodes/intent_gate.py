@@ -109,8 +109,17 @@ INTENT_PROFILES: dict[str, IntentProfile] = {
 _BRAINSTORM_PATTERNS: list[tuple[re.Pattern[str], float]] = [
     (re.compile(r"\b(?:no\s+idea|not\s+sure|thinking\s+about|brainstorm)", re.I), 0.95),
     (re.compile(r"\b(?:what\s+should\s+(?:i|we)\s+build|help\s+me\s+think)", re.I), 0.90),
-    (re.compile(r"\b(?:ideas?\s+for|suggest(?:ion)?s?\s+for|explore\s+(?:the\s+)?idea)", re.I), 0.85),
-    (re.compile(r"\b(?:planning\s+to\s+(?:create|build|start)|want\s+to\s+(?:create|build))\b.*(?:no\s+idea|not\s+sure|don'?t\s+know)", re.I), 0.95),
+    (
+        re.compile(r"\b(?:ideas?\s+for|suggest(?:ion)?s?\s+for|explore\s+(?:the\s+)?idea)", re.I),
+        0.85,
+    ),
+    (
+        re.compile(
+            r"\b(?:planning\s+to\s+(?:create|build|start)|want\s+to\s+(?:create|build))\b.*(?:no\s+idea|not\s+sure|don'?t\s+know)",
+            re.I,
+        ),
+        0.95,
+    ),
     (re.compile(r"\b(?:should\s+(?:i|we)|what\s+(?:if|about)|how\s+(?:should|would))", re.I), 0.70),
     (re.compile(r"\b(?:concept|prototype\s+idea|mvp\s+idea|roadmap)", re.I), 0.80),
     (re.compile(r"\b(?:which\s+(?:tech|stack|framework|language)|what\s+tech)", re.I), 0.80),
@@ -129,14 +138,22 @@ _RESEARCH_PATTERNS: list[tuple[re.Pattern[str], float]] = [
 # Fix signals — user wants a targeted bug fix
 _FIX_PATTERNS: list[tuple[re.Pattern[str], float]] = [
     (re.compile(r"\b(?:fix\s+(?:the|this|a)|hotfix|patch\s+(?:the|this))", re.I), 0.90),
-    (re.compile(r"\b(?:broken|crash(?:es|ing)?|error(?:s)?|bug(?:s)?|failing|regression)", re.I), 0.80),
+    (
+        re.compile(r"\b(?:broken|crash(?:es|ing)?|error(?:s)?|bug(?:s)?|failing|regression)", re.I),
+        0.80,
+    ),
     (re.compile(r"\b(?:not\s+working|doesn'?t\s+work|stopped\s+working)", re.I), 0.85),
     (re.compile(r"\b(?:resolve\s+(?:the|this)|troubleshoot)", re.I), 0.80),
 ]
 
 # Build signals — user wants new code or features (default for ambiguous)
 _BUILD_PATTERNS: list[tuple[re.Pattern[str], float]] = [
-    (re.compile(r"\b(?:implement|add\s+(?:a\s+)?(?:new\s+)?|create\s+(?:a\s+)?(?:new\s+)?)", re.I), 0.85),
+    (
+        re.compile(
+            r"\b(?:implement|add\s+(?:a\s+)?(?:new\s+)?|create\s+(?:a\s+)?(?:new\s+)?)", re.I
+        ),
+        0.85,
+    ),
     (re.compile(r"\b(?:build|develop|write|code|scaffold|set\s*up)", re.I), 0.80),
     (re.compile(r"\b(?:refactor|rewrite|restructure|migrate|upgrade)", re.I), 0.80),
     (re.compile(r"\b(?:deploy|ship|release|publish)", re.I), 0.75),
@@ -172,8 +189,7 @@ def detect_intent(description: str, classification: dict[str, Any] | None = None
                 return _make_profile("brainstorm", conf, m.group())
         # Even without explicit brainstorm keywords, very short + vague = brainstorm
         if word_count < 8 and not any(
-            p.search(desc_lower)
-            for p, _ in _FIX_PATTERNS + _BUILD_PATTERNS + _RESEARCH_PATTERNS
+            p.search(desc_lower) for p, _ in _FIX_PATTERNS + _BUILD_PATTERNS + _RESEARCH_PATTERNS
         ):
             return _make_profile("brainstorm", 0.60, "short_vague_input")
 
@@ -265,17 +281,19 @@ async def intent_gate_node(state: TaskState) -> dict[str, Any]:
     profile = detect_intent(description, class_hint)
 
     events = list(state.get("events", []))
-    events.append({
-        "type": "intent_detected",
-        "intent": profile.intent,
-        "confidence": profile.confidence,
-        "matched_signal": profile.matched_signal,
-        "max_agents": profile.max_agents,
-        "max_tool_rounds": profile.max_tool_rounds,
-        "max_file_reads": profile.max_file_reads,
-        "token_budget": profile.token_budget,
-        "planner_mode": profile.planner_mode,
-    })
+    events.append(
+        {
+            "type": "intent_detected",
+            "intent": profile.intent,
+            "confidence": profile.confidence,
+            "matched_signal": profile.matched_signal,
+            "max_agents": profile.max_agents,
+            "max_tool_rounds": profile.max_tool_rounds,
+            "max_file_reads": profile.max_file_reads,
+            "token_budget": profile.token_budget,
+            "planner_mode": profile.planner_mode,
+        }
+    )
 
     logger.info(
         "Intent Gate: intent=%s confidence=%.2f signal=%r → "

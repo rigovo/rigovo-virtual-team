@@ -175,14 +175,10 @@ const SCAN_EXCLUDE = new Set([
   "coverage", ".nyc_output", "tmp", ".tmp",
 ]);
 
-function walkProjectFiles(
-  root: string,
-  dir: string,
-  results: string[],
-  depth: number,
-  maxDepth: number,
-  maxFiles: number,
-): void {
+interface WalkOpts { root: string; dir: string; results: string[]; depth: number; maxDepth: number; maxFiles: number }
+
+function walkProjectFiles(opts: WalkOpts): void {
+  const { root, dir, results, depth, maxDepth, maxFiles } = opts;
   if (depth > maxDepth || results.length >= maxFiles) return;
   let entries: ReturnType<typeof readdirSync>;
   try {
@@ -196,7 +192,7 @@ function walkProjectFiles(
     if (SCAN_EXCLUDE.has(entry.name)) continue;
     const fullPath = join(dir, entry.name);
     if (entry.isDirectory()) {
-      walkProjectFiles(root, fullPath, results, depth + 1, maxDepth, maxFiles);
+      walkProjectFiles({ root, dir: fullPath, results, depth: depth + 1, maxDepth, maxFiles });
     } else if (entry.isFile()) {
       results.push(relative(root, fullPath));
     }
@@ -238,7 +234,7 @@ function registerIpc(): void {
       const stats = statSync(projectPath);
       if (!stats.isDirectory()) return [];
       const results: string[] = [];
-      walkProjectFiles(projectPath, projectPath, results, 0, 5, 800);
+      walkProjectFiles({ root: projectPath, dir: projectPath, results, depth: 0, maxDepth: 5, maxFiles: 800 });
       return results;
     } catch {
       return [];
@@ -426,13 +422,34 @@ function createWindow(): void {
 /* ------------------------------------------------------------------ */
 
 function killPort(port: number): void {
+  // Sanitise port to a strict integer to prevent command injection
+  const safePort = Math.trunc(Math.abs(port));
+  if (!Number.isFinite(safePort) || safePort < 1 || safePort > 65535) return;
+
   try {
     if (process.platform === "win32") {
-      const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: "utf8", timeout: 3000 });
-      const pids = new Set(out.trim().split("\n").map((l) => l.trim().split(/\s+/).pop()).filter(Boolean));
-      for (const pid of pids) { try { execSync(`taskkill /PID ${pid} /F`, { timeout: 3000 }); } catch { /* ignore */ } }
+      const out = execSync(
+        `netstat -ano | findstr :${String(safePort)} | findstr LISTENING`,
+        { encoding: "utf8", timeout: 3000, windowsHide: true },
+      );
+      const pids = new Set(
+        out.trim().split("\n")
+          .map((l) => l.trim().split(/\s+/).pop())
+          .filter((p): p is string => !!p && /^\d+$/.test(p)),
+      );
+      for (const pid of pids) {
+        try { execSync(`taskkill /PID ${pid} /F`, { timeout: 3000, windowsHide: true }); } catch { /* ignore */ }
+      }
     } else {
-      execSync(`lsof -ti :${port} | xargs kill -9 2>/dev/null || true`, { encoding: "utf8", timeout: 3000 });
+      // Use spawn-safe approach: get PIDs first, then kill individually
+      const out = execSync(
+        `lsof -ti :${String(safePort)}`,
+        { encoding: "utf8", timeout: 3000 },
+      ).trim();
+      const pids = out.split("\n").filter((p) => /^\d+$/.test(p.trim()));
+      for (const pid of pids) {
+        try { process.kill(Number(pid), "SIGKILL"); } catch { /* ignore */ }
+      }
     }
   } catch {
     // Port was not in use or kill failed — safe to ignore

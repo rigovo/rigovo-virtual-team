@@ -558,8 +558,10 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
     if (task.id.startsWith("demo-")) { setMission(null); return; }
     let alive = true;
     void (async () => {
-      const data = await readJson<MissionData>(`${API_BASE}/v1/tasks/${task.id}/mission`);
-      if (alive) setMission(data);
+      try {
+        const data = await readJson<MissionData>(`${API_BASE}/v1/tasks/${task.id}/mission`);
+        if (alive) setMission(data);
+      } catch { /* mission fetch failed */ }
     })();
     return () => { alive = false; };
   }, [task.id, detail?.steps.length]);

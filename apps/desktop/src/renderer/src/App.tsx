@@ -326,6 +326,7 @@ export default function App(): JSX.Element {
   useEffect(() => {
     let active = true;
     void (async () => {
+      try {
       const healthy = await isApiHealthy(API_BASE);
       if (!active) return;
       setApiReachable(healthy);
@@ -355,6 +356,7 @@ export default function App(): JSX.Element {
       });
       if (projectList?.length) { setProjects(projectList); setActiveProject(projectList[0]); }
       setRoute(auth.signed_in ? "control" : "auth");
+      } catch { /* bootstrap fetch failed — stay on auth screen */ }
     })();
     return () => { active = false; };
   }, []);
@@ -402,19 +404,21 @@ export default function App(): JSX.Element {
     if (route !== "control") return;
     let active = true;
     void (async () => {
-      const settings = await readJson<SettingsSnapshot>(`${API_BASE}/v1/settings`);
+      try {
+        const settings = await readJson<SettingsSnapshot>(`${API_BASE}/v1/settings`);
 
-      // Always show "Local" when running in Electron — we never use a remote cloud runtime
-      const runtime: string = electronAPI ? UI_LABELS.runtimeLocal : UI_LABELS.runtimeCloud;
+        // Always show "Local" when running in Electron — we never use a remote cloud runtime
+        const runtime: string = electronAPI ? UI_LABELS.runtimeLocal : UI_LABELS.runtimeCloud;
 
-      if (!active) return;
-      setSettingsSnapshot(settings || null);
-      setWorkspaceControls({
-        runtime,
-        permissions: buildPermissionLabel(settings?.plugins_policy?.min_trust_level),
-        model: settings?.default_model || "Default model",
-        effort: UI_LABELS.defaultEffort,
-      });
+        if (!active) return;
+        setSettingsSnapshot(settings || null);
+        setWorkspaceControls({
+          runtime,
+          permissions: buildPermissionLabel(settings?.plugins_policy?.min_trust_level),
+          model: settings?.default_model || "Default model",
+          effort: UI_LABELS.defaultEffort,
+        });
+      } catch { /* settings fetch failed — use defaults */ }
     })();
     return () => { active = false; };
   }, [route]);

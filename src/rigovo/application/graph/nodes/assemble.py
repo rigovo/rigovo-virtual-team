@@ -48,7 +48,9 @@ async def assemble_node(
         if len(plan_agents) > max_agents:
             logger.info(
                 "Intent cap: trimming team from %d to %d agents (intent=%s)",
-                len(plan_agents), max_agents, intent_profile.get("intent", ""),
+                len(plan_agents),
+                max_agents,
+                intent_profile.get("intent", ""),
             )
             # Keep the first N agents by pipeline priority (planner first)
             staffing_plan = {**staffing_plan, "agents": plan_agents[:max_agents]}

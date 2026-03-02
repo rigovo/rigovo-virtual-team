@@ -991,11 +991,7 @@ class RunTaskCommand:
                 else None
             )
             # Resolve model: YAML override > env var override > role default > catalog default
-            yaml_model = (
-                override.model
-                if override and getattr(override, "model", "")
-                else ""
-            )
+            yaml_model = override.model if override and getattr(override, "model", "") else ""
             env_model = env_agent_models.get(role_id, "")
             user_model = yaml_model or env_model or role_def.default_llm_model
             model = resolve_model_for_role(

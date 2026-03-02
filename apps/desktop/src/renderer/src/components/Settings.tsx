@@ -216,15 +216,17 @@ export default function Settings({ onBack }: SettingsProps) {
 
   useEffect(() => {
     void (async () => {
-      const caps = await readJson<RuntimeCapabilities>(`${API_BASE}/v1/runtime/capabilities`);
-      if (caps) setRuntimeCaps(caps);
-      const integrations = await readJson<IntegrationsPolicyResponse>(`${API_BASE}/v1/integrations/policy`);
-      if (integrations) setIntegrationsView(integrations);
-      const policy = await readJson<GovPolicyResponse>(`${API_BASE}/v1/control/policy`);
-      if (policy) setGovPolicy(policy);
-      if (window.electronAPI?.engineRuntimeConfig) {
-        try { setEngineRuntime(await window.electronAPI.engineRuntimeConfig()); } catch { /* */ }
-      }
+      try {
+        const caps = await readJson<RuntimeCapabilities>(`${API_BASE}/v1/runtime/capabilities`);
+        if (caps) setRuntimeCaps(caps);
+        const integrations = await readJson<IntegrationsPolicyResponse>(`${API_BASE}/v1/integrations/policy`);
+        if (integrations) setIntegrationsView(integrations);
+        const policy = await readJson<GovPolicyResponse>(`${API_BASE}/v1/control/policy`);
+        if (policy) setGovPolicy(policy);
+        if (window.electronAPI?.engineRuntimeConfig) {
+          try { setEngineRuntime(await window.electronAPI.engineRuntimeConfig()); } catch { /* */ }
+        }
+      } catch { /* capabilities fetch failed — use defaults */ }
     })();
   }, []);
 

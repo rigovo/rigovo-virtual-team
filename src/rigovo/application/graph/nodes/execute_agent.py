@@ -1214,17 +1214,21 @@ async def _run_agentic_loop(
                     nonlocal file_read_count
                     file_read_count += 1
                     if max_file_reads > 0 and file_read_count > max_file_reads:
-                        result_str = json.dumps({
-                            "error": (
-                                f"File read limit reached ({max_file_reads} max for "
-                                f"{intent_profile.get('intent', 'unknown')} intent). "
-                                "Focus on producing your output from what you've already read."
-                            ),
-                            "status": "blocked_by_intent",
-                        })
+                        result_str = json.dumps(
+                            {
+                                "error": (
+                                    f"File read limit reached ({max_file_reads} max for "
+                                    f"{intent_profile.get('intent', 'unknown')} intent). "
+                                    "Focus on producing your output from what you've already read."
+                                ),
+                                "status": "blocked_by_intent",
+                            }
+                        )
                         logger.info(
                             "Agent %s: file read #%d blocked (limit %d for %s intent)",
-                            role, file_read_count, max_file_reads,
+                            role,
+                            file_read_count,
+                            max_file_reads,
                             intent_profile.get("intent", "unknown"),
                         )
                         return tc, result_str

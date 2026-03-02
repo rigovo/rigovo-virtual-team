@@ -94,9 +94,7 @@ class Container:
                     except Exception:
                         pass
                 if not dsn:
-                    logger.warning(
-                        "Postgres configured but no DSN found — falling back to SQLite"
-                    )
+                    logger.warning("Postgres configured but no DSN found — falling back to SQLite")
                     return self._get_local_db()
 
                 from rigovo.infrastructure.persistence.postgres_local import (

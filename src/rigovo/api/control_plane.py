@@ -273,7 +273,9 @@ def _on_agent_event(event: dict) -> None:
             except RuntimeError:
                 asyncio.run(_persist_classification())
         except Exception:
-            _api_logger.debug("Could not persist early classification for %s", task_id, exc_info=True)
+            _api_logger.debug(
+                "Could not persist early classification for %s", task_id, exc_info=True
+            )
         return
 
     role = event.get("role", "")
@@ -3304,14 +3306,14 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 container.reload_config()
                 _logger.info("Hot-reloaded config after settings update: %s", changes)
             except Exception as exc:
-                _logger.warning("Config hot-reload failed (changes saved, apply on restart): %s", exc)
+                _logger.warning(
+                    "Config hot-reload failed (changes saved, apply on restart): %s", exc
+                )
 
         # DB backend/path changes still need a process restart (connection pooling)
         note = ""
         if restart_required:
-            note = (
-                "Database backend/DSN changes saved. Restart the app to switch database connections."
-            )
+            note = "Database backend/DSN changes saved. Restart the app to switch database connections."
 
         return {
             "status": "updated",
