@@ -227,6 +227,16 @@ export interface ElectronAPI {
   gitClone: (url: string, destDir: string) => Promise<string>;
   /** Open folder picker for selecting clone destination parent directory. */
   pickCloneDest: () => Promise<string | null>;
+  /** Get the current app version (e.g. "1.0.0-beta.1") */
+  appVersion: () => Promise<string>;
+  /** Manually check for updates. Returns whether an update is available. */
+  checkForUpdate: () => Promise<{ available: boolean; version: string }>;
+  /** Quit and install a downloaded update immediately. */
+  installUpdate: () => Promise<void>;
+  /** Listen for "update available" events from the main process. */
+  onUpdateAvailable: (callback: (info: { version: string; releaseDate?: string }) => void) => void;
+  /** Listen for "update downloaded" events from the main process. */
+  onUpdateDownloaded: (callback: (info: { version: string }) => void) => void;
 }
 
 declare global {

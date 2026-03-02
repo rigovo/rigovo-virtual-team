@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electro
 import { join, resolve, relative } from "node:path";
 import { ChildProcess, execSync, spawn } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
+import { autoUpdater, UpdateInfo } from "electron-updater";
 
 /* ------------------------------------------------------------------ */
 /*  Engine lifecycle – same semantics as the old Tauri Rust backend   */
@@ -457,6 +458,49 @@ function killPort(port: number): void {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Auto-updater — checks GitHub Releases for new versions            */
+/* ------------------------------------------------------------------ */
+
+function setupAutoUpdater(): void {
+  // Don't check for updates in dev mode
+  if (process.env.ELECTRON_RENDERER_URL) return;
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  // Allow pre-release (beta) updates since we're on beta channel
+  autoUpdater.allowPrerelease = true;
+
+  autoUpdater.on("update-available", (info: UpdateInfo) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      win.webContents.send("update:available", {
+        version: info.version,
+        releaseDate: info.releaseDate,
+      });
+    }
+  });
+
+  autoUpdater.on("update-downloaded", (info: UpdateInfo) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      win.webContents.send("update:downloaded", {
+        version: info.version,
+      });
+    }
+  });
+
+  autoUpdater.on("error", (err: Error) => {
+    // Silently log — don't bother the user if update check fails
+    // eslint-disable-next-line no-console
+    console.error("Auto-updater error:", err.message);
+  });
+
+  // Check for updates 5 seconds after launch, then every 4 hours
+  setTimeout(() => { void autoUpdater.checkForUpdates(); }, 5_000);
+  setInterval(() => { void autoUpdater.checkForUpdates(); }, 4 * 60 * 60 * 1000);
+}
+
+/* ------------------------------------------------------------------ */
 /*  App lifecycle                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -484,6 +528,23 @@ async function bootstrapDesktop(): Promise<void> {
   await app.whenReady();
   registerIpc();
   createWindow();
+  setupAutoUpdater();
+
+  // IPC: renderer can ask to install a downloaded update now
+  ipcMain.handle("update:install", () => {
+    autoUpdater.quitAndInstall(false, true);
+  });
+
+  // IPC: renderer can manually trigger an update check
+  ipcMain.handle("update:check", async () => {
+    const result = await autoUpdater.checkForUpdates();
+    return result?.updateInfo
+      ? { available: true, version: result.updateInfo.version }
+      : { available: false, version: app.getVersion() };
+  });
+
+  // IPC: get current app version
+  ipcMain.handle("app:version", () => app.getVersion());
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

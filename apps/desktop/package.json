@@ -1,6 +1,6 @@
 {
   "name": "rigovo-virtual-team",
-  "version": "0.1.0",
+  "version": "1.0.0-beta.1",
   "private": true,
   "main": "./out/main/index.js",
   "scripts": {
@@ -14,6 +14,7 @@
     "@electron-toolkit/utils": "^3.0.0",
     "@monaco-editor/react": "^4.7.0",
     "@xyflow/react": "^12.10.1",
+    "electron-updater": "^6.8.3",
     "monaco-editor": "^0.55.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -41,14 +42,27 @@
       "output": "release"
     },
     "icon": "resources/icon.png",
+    "publish": {
+      "provider": "github",
+      "owner": "rigovo",
+      "repo": "rigovo-teams",
+      "releaseType": "release"
+    },
     "mac": {
-      "target": "dmg",
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "icon": "resources/icon.icns",
       "category": "public.app-category.developer-tools"
     },
     "win": {
       "target": "nsis",
       "icon": "resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     },
     "linux": {
       "target": "AppImage",

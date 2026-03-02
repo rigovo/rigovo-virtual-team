@@ -15,6 +15,7 @@ interface SidebarProps {
   userInitials: string;
   organizationName?: string;
   totalUsers?: number;
+  appVersion?: string;
   inbox: InboxTask[];
   selected: string;
   activeView: SidebarView;
@@ -73,6 +74,7 @@ export default function Sidebar({
   userInitials,
   organizationName,
   totalUsers,
+  appVersion,
   inbox,
   selected,
   activeView,
@@ -85,6 +87,16 @@ export default function Sidebar({
   onRenameTask,
 }: SidebarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "available" | "downloaded">("idle");
+  const [updateVersion, setUpdateVersion] = useState("");
+
+  // Listen for auto-update events from main process
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api) return;
+    api.onUpdateAvailable((info) => { setUpdateStatus("available"); setUpdateVersion(info.version); });
+    api.onUpdateDownloaded((info) => { setUpdateStatus("downloaded"); setUpdateVersion(info.version); });
+  }, []);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   // Inline rename state
@@ -372,6 +384,14 @@ export default function Sidebar({
                   {typeof totalUsers === "number" ? ` · ${totalUsers} users` : ""}
                 </div>
               )}
+              {appVersion && (
+                <div className="sb-pop-org" style={{ opacity: 0.6, fontSize: "11px" }}>
+                  v{appVersion}
+                  {appVersion.includes("beta") && (
+                    <span style={{ marginLeft: 6, padding: "1px 5px", borderRadius: 4, background: "var(--accent)", color: "#fff", fontSize: "9px", fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase" }}>beta</span>
+                  )}
+                </div>
+              )}
             </div>
 
             <button
@@ -381,6 +401,26 @@ export default function Sidebar({
             >
               Settings
             </button>
+
+            {updateStatus === "downloaded" && (
+              <button
+                type="button"
+                className="sb-pop-btn"
+                style={{ color: "var(--accent)", fontWeight: 600 }}
+                onClick={() => {
+                  setMenuOpen(false);
+                  if (window.electronAPI?.installUpdate) void window.electronAPI.installUpdate();
+                }}
+              >
+                Update to v{updateVersion} — restart now
+              </button>
+            )}
+
+            {updateStatus === "available" && (
+              <div className="sb-pop-org" style={{ padding: "4px 12px", fontSize: "11px", color: "var(--accent)" }}>
+                Downloading v{updateVersion}…
+              </div>
+            )}
 
             <div className="sb-pop-sep" />
 

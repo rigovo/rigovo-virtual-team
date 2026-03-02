@@ -233,6 +233,7 @@ export default function App(): JSX.Element {
   const [, setMode] = useState<"live" | "fallback">("fallback");
   const [engine, setEngine] = useState<EngineStatus>({ running: false, pid: null, apiUrl: API_BASE });
   const [engineError, setEngineError] = useState<string>("");
+  const [appVersion, setAppVersion] = useState("");
   const [apiReachable, setApiReachable] = useState<boolean | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
@@ -294,6 +295,13 @@ export default function App(): JSX.Element {
       }
     })();
   }, [startEngine]);
+
+  // Fetch app version on mount
+  useEffect(() => {
+    if (electronAPI?.appVersion) {
+      void electronAPI.appVersion().then((v) => setAppVersion(v)).catch(() => { /* ignore */ });
+    }
+  }, []);
 
   // Poll engine last-error when engine is not running, so startup failures surface automatically
   useEffect(() => {
@@ -746,6 +754,7 @@ export default function App(): JSX.Element {
         userInitials={userInitials}
         organizationName={workspaceMeta.org}
         totalUsers={workspaceMeta.users}
+        appVersion={appVersion}
         inbox={inbox}
         selected={selected}
         activeView={workspacePage}
