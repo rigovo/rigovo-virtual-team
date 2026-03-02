@@ -3232,6 +3232,65 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "note": note,
         }
 
+    # ── Database tools API ──────────────────────────────────────────
+
+    @app.post("/v1/settings/test-db-connection")
+    async def test_db_connection(req: dict) -> dict:
+        """Test a PostgreSQL DSN before saving it.
+
+        Lets the Settings UI validate connectivity before committing
+        the change, so users aren't stuck with a broken backend.
+        """
+        dsn = req.get("dsn", "").strip()
+        if not dsn:
+            return {"ok": False, "error": "No DSN provided."}
+        try:
+            from rigovo.infrastructure.persistence.postgres_local import (
+                PostgresDatabase,
+            )
+
+            pg = PostgresDatabase(dsn)
+            result = pg.test_connection()
+            pg.close()
+            return result
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.post("/v1/settings/migrate-to-postgres")
+    async def migrate_to_postgres(req: dict) -> dict:
+        """One-click migration from SQLite to PostgreSQL.
+
+        Reads all data from the current SQLite database and inserts it
+        into the target PostgreSQL database. Idempotent — safe to run
+        multiple times (uses ON CONFLICT DO UPDATE).
+        """
+        dsn = req.get("dsn", "").strip()
+        if not dsn:
+            return {"ok": False, "error": "No PostgreSQL DSN provided."}
+
+        # Resolve SQLite path
+        sqlite_path = str(config.db_full_path) if hasattr(config, "db_full_path") else None
+        if not sqlite_path:
+            try:
+                sqlite_path = str(config.local_db_full_path)
+            except Exception:
+                sqlite_path = str(config.project_root / ".rigovo" / "local.db")
+
+        import os
+
+        if not os.path.exists(sqlite_path):
+            return {"ok": False, "error": f"SQLite database not found at {sqlite_path}"}
+
+        try:
+            from rigovo.infrastructure.persistence.postgres_local import (
+                migrate_sqlite_to_postgres,
+            )
+
+            result = migrate_sqlite_to_postgres(sqlite_path, dsn)
+            return result
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # ── Logs API ──────────────────────────────────────────────────────
     # Users can view app, error, and audit logs from the desktop UI.
     # Logs are stored in <project>/.rigovo/logs/

@@ -1,154 +1,161 @@
-import { Fragment } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
+import type { Components } from "react-markdown";
 
 interface ResponseRendererProps {
   output: string;
   maxHeightClass?: string;
 }
 
-type Segment =
-  | { type: "text"; value: string }
-  | { type: "code"; language: string; value: string };
+/**
+ * Custom component overrides that match the existing Rigovo design language.
+ *
+ * react-markdown renders markdown AST nodes via these component functions.
+ * Every element is styled with the same CSS-variable palette and Tailwind
+ * classes the old hand-rolled renderer used, so the visual change is
+ * seamless, but now we get full CommonMark + GFM (tables, strikethrough,
+ * task lists, autolinks) for free.
+ */
+const markdownComponents: Components = {
+  /* ─── Headings ─── */
+  h1: ({ children }) => (
+    <h1 className="text-[15px] font-semibold leading-snug text-[var(--ui-text)]">{children}</h1>
+  ),
+  h2: ({ children }) => (
+    <h2 className="text-[14px] font-semibold leading-snug text-[var(--ui-text)]">{children}</h2>
+  ),
+  h3: ({ children }) => (
+    <h3 className="text-[13px] font-semibold leading-snug text-[var(--ui-text-secondary)]">{children}</h3>
+  ),
+  h4: ({ children }) => (
+    <h4 className="text-[13px] font-medium text-[var(--ui-text-secondary)]">{children}</h4>
+  ),
 
-function splitSegments(output: string): Segment[] {
-  const segments: Segment[] = [];
-  const fence = /```([\w+-]*)\n([\s\S]*?)```/g;
-  let cursor = 0;
-  let match: RegExpExecArray | null;
+  /* ─── Paragraphs & inline ─── */
+  p: ({ children }) => (
+    <p className="text-[13px] leading-relaxed text-[var(--ui-text-secondary)]">{children}</p>
+  ),
+  strong: ({ children }) => (
+    <strong className="font-semibold text-[var(--ui-text)]">{children}</strong>
+  ),
+  em: ({ children }) => <em>{children}</em>,
+  del: ({ children }) => <del className="opacity-60">{children}</del>,
 
-  while ((match = fence.exec(output)) !== null) {
-    if (match.index > cursor) {
-      segments.push({ type: "text", value: output.slice(cursor, match.index) });
-    }
-    segments.push({
-      type: "code",
-      language: (match[1] || "text").trim(),
-      value: match[2] || "",
-    });
-    cursor = match.index + match[0].length;
-  }
+  /* ─── Lists ─── */
+  ul: ({ children }) => (
+    <ul className="list-disc space-y-1 pl-5 text-[13px] leading-relaxed text-[var(--ui-text-secondary)]">
+      {children}
+    </ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="list-decimal space-y-1 pl-5 text-[13px] leading-relaxed text-[var(--ui-text-secondary)]">
+      {children}
+    </ol>
+  ),
+  li: ({ children }) => <li>{children}</li>,
 
-  if (cursor < output.length) {
-    segments.push({ type: "text", value: output.slice(cursor) });
-  }
+  /* ─── Code ─── */
+  code: ({ className, children, ...props }) => {
+    // Detect fenced code blocks: react-markdown sets className="language-xxx"
+    const match = /language-(\w+)/.exec(className || "");
+    const isBlock = match || (typeof children === "string" && children.includes("\n"));
 
-  return segments;
-}
-
-function inlineCode(text: string): Array<string | JSX.Element> {
-  const parts = text.split(/(`[^`]+`)/g);
-  return parts.map((part, idx) => {
-    if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
+    if (isBlock) {
       return (
-        <code key={idx} className="rounded bg-[rgba(0,0,0,0.05)] px-1 py-0.5 text-[12px] text-[var(--ui-text)]">
-          {part.slice(1, -1)}
-        </code>
-      );
-    }
-    return part;
-  });
-}
-
-function renderParagraph(text: string, key: string) {
-  const lines = text.split("\n").filter((line) => line.trim().length > 0);
-  if (!lines.length) return null;
-
-  if (lines.every((line) => /^\s*[-*]\s+/.test(line))) {
-    return (
-      <ul key={key} className="list-disc space-y-1 pl-5 text-[13px] leading-relaxed text-[var(--ui-text-secondary)]">
-        {lines.map((line, idx) => (
-          <li key={`${key}-li-${idx}`}>{inlineCode(line.replace(/^\s*[-*]\s+/, ""))}</li>
-        ))}
-      </ul>
-    );
-  }
-
-  if (lines.every((line) => /^\s*\d+\.\s+/.test(line))) {
-    return (
-      <ol key={key} className="list-decimal space-y-1 pl-5 text-[13px] leading-relaxed text-[var(--ui-text-secondary)]">
-        {lines.map((line, idx) => (
-          <li key={`${key}-li-${idx}`}>{inlineCode(line.replace(/^\s*\d+\.\s+/, ""))}</li>
-        ))}
-      </ol>
-    );
-  }
-
-  if (lines.length === 1 && /^#{1,4}\s+/.test(lines[0])) {
-    const line = lines[0];
-    const level = (line.match(/^#+/)?.[0].length ?? 1);
-    const content = line.replace(/^#{1,4}\s+/, "");
-    const cls =
-      level <= 1
-        ? "text-[15px] font-semibold text-[var(--ui-text)]"
-        : level === 2
-          ? "text-[14px] font-semibold text-[var(--ui-text)]"
-          : "text-[13px] font-semibold text-[var(--ui-text-secondary)]";
-    return (
-      <p key={key} className={cls}>
-        {inlineCode(content)}
-      </p>
-    );
-  }
-
-  return (
-    <p key={key} className="text-[13px] leading-relaxed text-[var(--ui-text-secondary)]">
-      {lines.map((line, idx) => (
-        <Fragment key={`${key}-line-${idx}`}>
-          {inlineCode(line)}
-          {idx < lines.length - 1 ? <br /> : null}
-        </Fragment>
-      ))}
-    </p>
-  );
-}
-
-function renderText(text: string, key: string) {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-
-  try {
-    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
-      const pretty = JSON.stringify(JSON.parse(trimmed), null, 2);
-      return (
-        <div key={key} className="overflow-x-auto rounded-xl border border-[var(--ui-border)] bg-[rgba(0,0,0,0.02)] p-3">
-          <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-muted)]">JSON</p>
-          <pre className="whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--ui-text-secondary)]">{pretty}</pre>
+        <div className="overflow-x-auto rounded-xl border border-[var(--ui-border)] bg-[rgba(0,0,0,0.02)] p-3">
+          {match && (
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-muted)]">
+              {match[1]}
+            </p>
+          )}
+          <pre className="whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--ui-text-secondary)]">
+            <code {...props}>{children}</code>
+          </pre>
         </div>
       );
     }
-  } catch {
-    // Not valid JSON; render as text.
-  }
 
-  const paragraphs = text
-    .split(/\n\s*\n/g)
-    .map((p) => p.trim())
-    .filter(Boolean);
+    // Inline code
+    return (
+      <code
+        className="rounded bg-[rgba(0,0,0,0.05)] px-1 py-0.5 text-[12px] text-[var(--ui-text)]"
+        {...props}
+      >
+        {children}
+      </code>
+    );
+  },
 
-  return (
-    <div key={key} className="space-y-2.5">
-      {paragraphs.map((paragraph, idx) => renderParagraph(paragraph, `${key}-${idx}`))}
+  // Override <pre> so react-markdown's default wrapper doesn't nest
+  pre: ({ children }) => <>{children}</>,
+
+  /* ─── Tables (GFM) ─── */
+  table: ({ children }) => (
+    <div className="overflow-x-auto rounded-lg border border-[var(--ui-border)]">
+      <table className="w-full border-collapse text-[12px]">{children}</table>
     </div>
-  );
-}
+  ),
+  thead: ({ children }) => (
+    <thead className="bg-[rgba(0,0,0,0.03)]">{children}</thead>
+  ),
+  tbody: ({ children }) => <tbody>{children}</tbody>,
+  tr: ({ children }) => (
+    <tr className="border-b border-[var(--ui-border)]">{children}</tr>
+  ),
+  th: ({ children }) => (
+    <th className="px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--ui-text-muted)]">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="px-3 py-1.5 text-[var(--ui-text-secondary)]">{children}</td>
+  ),
+
+  /* ─── Block-level elements ─── */
+  blockquote: ({ children }) => (
+    <blockquote className="border-l-2 border-[var(--ui-border)] pl-3 text-[13px] italic text-[var(--ui-text-muted)]">
+      {children}
+    </blockquote>
+  ),
+  hr: () => <hr className="border-t border-[var(--ui-border)]" />,
+
+  /* ─── Links ─── */
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-[var(--accent)] underline decoration-[var(--accent)]/30 hover:decoration-[var(--accent)]"
+    >
+      {children}
+    </a>
+  ),
+
+  /* ─── Images ─── */
+  img: ({ src, alt }) => (
+    <img
+      src={src}
+      alt={alt || ""}
+      className="max-w-full rounded-lg border border-[var(--ui-border)]"
+      loading="lazy"
+    />
+  ),
+};
 
 export default function ResponseRenderer({ output, maxHeightClass = "max-h-72" }: ResponseRendererProps) {
-  const segments = splitSegments(output);
+  if (!output || !output.trim()) return null;
 
   return (
-    <div className={`space-y-3 overflow-y-auto ${maxHeightClass}`}>
-      {segments.map((segment, idx) => {
-        if (segment.type === "code") {
-          return (
-            <div key={`code-${idx}`} className="overflow-x-auto rounded-xl border border-[var(--ui-border)] bg-[rgba(0,0,0,0.02)] p-3">
-              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-muted)]">
-                {segment.language || "code"}
-              </p>
-              <pre className="whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--ui-text-secondary)]">{segment.value}</pre>
-            </div>
-          );
-        }
-        return renderText(segment.value, `text-${idx}`);
-      })}
+    <div className={`rr-markdown space-y-2.5 overflow-y-auto ${maxHeightClass}`}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeRaw, rehypeSanitize]}
+        components={markdownComponents}
+      >
+        {output}
+      </ReactMarkdown>
     </div>
   );
 }

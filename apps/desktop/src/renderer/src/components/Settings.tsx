@@ -862,6 +862,59 @@ export default function Settings({ onBack }: SettingsProps) {
               <p className="text-xs" style={{ color: "var(--ui-text-subtle)" }}>
                 Current DSN: {data.database.dsn_configured ? <strong>{data.database.dsn_masked}</strong> : "not configured"}
               </p>
+              {/* Test connection + Migrate buttons */}
+              <div className="flex items-center gap-2">
+                <button type="button" disabled={saving || !dbUrl.trim()}
+                  onClick={async () => {
+                    setSaving(true);
+                    try {
+                      const res = await fetch(`${API_BASE}/v1/settings/test-db-connection`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ dsn: dbUrl }),
+                      });
+                      const d = await res.json();
+                      if (d.ok) {
+                        showToast(`Connection OK — ${d.database} (${String(d.version).slice(0, 40)})`, "success");
+                      } else {
+                        showToast(`Connection failed: ${d.error}`, "error");
+                      }
+                    } catch (e) {
+                      showToast(`Test failed: ${e instanceof Error ? e.message : "unknown"}`, "error");
+                    }
+                    setSaving(false);
+                  }}
+                  className="rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+                  style={{ borderColor: "rgba(139,92,246,0.3)", color: "#6d28d9", background: "rgba(139,92,246,0.06)" }}>
+                  {saving ? "Testing..." : "Test connection"}
+                </button>
+                <button type="button" disabled={saving || !dbUrl.trim()}
+                  onClick={async () => {
+                    if (!confirm("Migrate all data from SQLite to PostgreSQL?\n\nThis copies tasks, audit logs, memories, and config caches. Existing PostgreSQL data is preserved (upsert).")) return;
+                    setSaving(true);
+                    try {
+                      const res = await fetch(`${API_BASE}/v1/settings/migrate-to-postgres`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ dsn: dbUrl }),
+                      });
+                      const d = await res.json();
+                      if (d.ok) {
+                        const counts = Object.entries(d.tables || {}).map(([t, c]) => `${t}: ${c}`).join(", ");
+                        showToast(`Migration complete — ${counts}`, "success");
+                      } else {
+                        showToast(`Migration failed: ${d.error}`, "error");
+                      }
+                    } catch (e) {
+                      showToast(`Migration error: ${e instanceof Error ? e.message : "unknown"}`, "error");
+                    }
+                    setSaving(false);
+                  }}
+                  className="rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+                  style={{ borderColor: "rgba(34,197,94,0.3)", color: "#15803d", background: "rgba(34,197,94,0.06)" }}>
+                  {saving ? "Migrating..." : "Migrate from SQLite →"}
+                </button>
+              </div>
               {/* psycopg install hint */}
               <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "rgba(139,92,246,0.04)", border: "1px solid rgba(139,92,246,0.15)", color: "var(--ui-text-muted)" }}>
                 Requires <code style={{ background: "rgba(0,0,0,0.06)", padding: "0 4px", borderRadius: 3 }}>psycopg[binary]</code> installed in the engine environment:{" "}

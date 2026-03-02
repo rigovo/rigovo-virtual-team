@@ -1,4 +1,16 @@
-"""PostgreSQL database adapter — production persistence backend."""
+"""PostgreSQL database adapter — production persistence backend.
+
+Provides the same interface as ``sqlite_local.LocalDatabase`` so that
+repositories (SqliteTaskRepository, etc.) work transparently with either
+backend.
+
+Key differences from SQLite adapter:
+- ``?`` placeholder rewriting → ``%s``
+- ``INSERT OR REPLACE`` → ``ON CONFLICT … DO UPDATE``
+- Uses ``psycopg`` (psycopg 3) with dict_row factory
+- Connection health check + automatic reconnect
+- Graceful error messages when dsn/driver is missing
+"""
 
 from __future__ import annotations
 
@@ -8,7 +20,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # Must stay in sync with sqlite_local.SCHEMA_VERSION
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -21,6 +33,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     workspace_id TEXT NOT NULL,
     project_id TEXT,
     team_id TEXT,
+    tier TEXT DEFAULT 'auto',
     description TEXT NOT NULL,
     task_type TEXT,
     complexity TEXT,
@@ -38,7 +51,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     error TEXT,
     started_at TEXT,
     completed_at TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    checkpoint_timeline TEXT,
+    last_heartbeat DOUBLE PRECISION
 );
 
 CREATE TABLE IF NOT EXISTS cost_ledger (
@@ -143,29 +158,69 @@ CREATE INDEX IF NOT EXISTS idx_memories_workspace ON memories(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_sync_queue_entity_type ON sync_queue(entity_type);
 """
 
+# Tables and their columns for migration transfer (order matters for FKs)
+_MIGRATION_TABLES = [
+    "tasks",
+    "cost_ledger",
+    "audit_log",
+    "memories",
+    "team_cache",
+    "agent_cache",
+    "workspace_cache",
+]
+
 
 class PostgresDatabase:
     """Postgres adapter with a sqlite-compatible API used by repositories."""
 
     def __init__(self, dsn: str) -> None:
         if not dsn:
-            raise ValueError("Postgres DSN is required (set RIGOVO_DB_URL)")
+            raise ValueError(
+                "Postgres DSN is required. Set RIGOVO_DB_URL in Settings → Storage "
+                "or as an environment variable.\n"
+                "Example: postgresql://user:pass@localhost:5432/rigovo"
+            )
         self._dsn = dsn
         self._conn = None
 
     def _get_conn(self):
         if self._conn is not None:
-            return self._conn
+            # Health check — reconnect if connection dropped
+            try:
+                self._conn.execute("SELECT 1")
+                return self._conn
+            except Exception:
+                logger.warning("Postgres connection lost, reconnecting…")
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
 
         try:
             import psycopg
             from psycopg.rows import dict_row
         except ImportError as e:
             raise RuntimeError(
-                "Postgres backend requires psycopg. Install with: pip install 'psycopg[binary]'"
+                "Postgres backend requires psycopg.\n"
+                "Install with:  pip install 'psycopg[binary]'\n"
+                "Or:            pip install psycopg psycopg-binary"
             ) from e
 
-        self._conn = psycopg.connect(self._dsn, row_factory=dict_row)
+        try:
+            self._conn = psycopg.connect(self._dsn, row_factory=dict_row)
+        except Exception as e:
+            dsn_safe = _mask_dsn(self._dsn)
+            raise RuntimeError(
+                f"Cannot connect to PostgreSQL at {dsn_safe}.\n"
+                f"Error: {e}\n\n"
+                "Troubleshooting:\n"
+                "  1. Verify the DSN is correct (postgresql://user:pass@host:port/dbname)\n"
+                "  2. Ensure the PostgreSQL server is running\n"
+                "  3. Check network/firewall allows connections\n"
+                "  4. Verify the database exists: createdb rigovo"
+            ) from e
+
         return self._conn
 
     @staticmethod
@@ -203,6 +258,10 @@ class PostgresDatabase:
         return self._convert_placeholders(sql)
 
     def initialize(self) -> None:
+        """Create schema and apply migrations.
+
+        Called once on startup. Idempotent — safe to call multiple times.
+        """
         conn = self._get_conn()
         with conn.cursor() as cur:
             try:
@@ -211,9 +270,19 @@ class PostgresDatabase:
                 current_version = int(row["version"]) if row and row["version"] else 0
             except Exception:
                 current_version = 0
+                conn.rollback()  # Clear error state before DDL
 
             if current_version < SCHEMA_VERSION:
-                cur.execute(SCHEMA_SQL)
+                # Split schema SQL into individual statements for Postgres
+                for stmt in SCHEMA_SQL.split(";"):
+                    stmt = stmt.strip()
+                    if stmt:
+                        try:
+                            cur.execute(stmt)
+                        except Exception as e:
+                            # Some statements may already exist — safe to continue
+                            logger.debug("Schema statement skipped: %s", e)
+                            conn.rollback()
                 cur.execute(
                     "INSERT INTO schema_version (version) VALUES (%s) ON CONFLICT (version) DO NOTHING",
                     (SCHEMA_VERSION,),
@@ -223,15 +292,18 @@ class PostgresDatabase:
 
             # Idempotent column migrations (safe on existing databases)
             for _col_sql in [
+                "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tier TEXT DEFAULT 'auto'",
                 "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS custom_title TEXT",
                 "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_path TEXT",
                 "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_label TEXT",
+                "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS checkpoint_timeline TEXT",
+                "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_heartbeat DOUBLE PRECISION",
             ]:
                 try:
                     cur.execute(_col_sql)
                     conn.commit()
                 except Exception:
-                    pass  # column already exists
+                    conn.rollback()  # Clear error state
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()):
         conn = self._get_conn()
@@ -261,3 +333,144 @@ class PostgresDatabase:
         if self._conn is not None:
             self._conn.close()
             self._conn = None
+
+    def test_connection(self) -> dict[str, Any]:
+        """Test connectivity and return server info.
+
+        Returns dict with 'ok', 'version', 'database', 'error' keys.
+        Used by Settings UI to validate DSN before saving.
+        """
+        try:
+            conn = self._get_conn()
+            row = conn.execute("SELECT version() AS v, current_database() AS db").fetchone()
+            return {
+                "ok": True,
+                "version": row["v"] if row else "unknown",
+                "database": row["db"] if row else "unknown",
+                "error": None,
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "version": None,
+                "database": None,
+                "error": str(e),
+            }
+
+
+def migrate_sqlite_to_postgres(sqlite_path: str, postgres_dsn: str) -> dict[str, Any]:
+    """Migrate all data from a SQLite database to PostgreSQL.
+
+    This is the one-click migration path for non-technical users who
+    started with SQLite and later set up PostgreSQL.
+
+    Steps:
+    1. Open SQLite and read all rows from each table
+    2. Connect to PostgreSQL and ensure schema exists
+    3. Insert all rows with ON CONFLICT DO UPDATE (idempotent)
+    4. Report counts
+
+    Returns:
+        {
+            "ok": True/False,
+            "tables": {"tasks": 42, "audit_log": 100, ...},
+            "error": None or error string,
+        }
+    """
+    import sqlite3
+
+    result: dict[str, Any] = {"ok": False, "tables": {}, "error": None}
+
+    # 1. Open SQLite
+    try:
+        sqlite_conn = sqlite3.connect(sqlite_path)
+        sqlite_conn.row_factory = sqlite3.Row
+    except Exception as e:
+        result["error"] = f"Cannot open SQLite database: {e}"
+        return result
+
+    # 2. Connect to PostgreSQL and ensure schema
+    try:
+        pg = PostgresDatabase(postgres_dsn)
+        pg.initialize()
+    except Exception as e:
+        sqlite_conn.close()
+        result["error"] = f"Cannot connect to PostgreSQL: {e}"
+        return result
+
+    # 3. Transfer each table
+    for table in _MIGRATION_TABLES:
+        try:
+            # Read all rows from SQLite
+            rows = sqlite_conn.execute(f"SELECT * FROM {table}").fetchall()  # noqa: S608
+            if not rows:
+                result["tables"][table] = 0
+                continue
+
+            # Get column names from first row
+            columns = list(rows[0].keys())
+
+            # Build Postgres upsert SQL
+            placeholders = ", ".join(["%s"] * len(columns))
+            col_list = ", ".join(columns)
+            update_cols = [c for c in columns if c.lower() != "id"]
+
+            if update_cols:
+                updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+                sql = (
+                    f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) "
+                    f"ON CONFLICT (id) DO UPDATE SET {updates}"
+                )
+            else:
+                sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING"
+
+            # Insert rows in batches
+            pg_conn = pg._get_conn()
+            with pg_conn.cursor() as cur:
+                for row in rows:
+                    values = tuple(row[c] for c in columns)
+                    try:
+                        cur.execute(sql, values)
+                    except Exception as e:
+                        logger.warning("Skipping row in %s: %s", table, e)
+                        pg_conn.rollback()
+                        continue
+                pg_conn.commit()
+
+            result["tables"][table] = len(rows)
+            logger.info("Migrated %d rows from %s", len(rows), table)
+
+        except Exception as e:
+            logger.warning("Table %s migration failed: %s", table, e)
+            result["tables"][table] = -1  # -1 = error
+
+    # 4. Transfer schema_version
+    try:
+        pg_conn = pg._get_conn()
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO schema_version (version) VALUES (%s) ON CONFLICT (version) DO NOTHING",
+                (SCHEMA_VERSION,),
+            )
+            pg_conn.commit()
+    except Exception:
+        pass
+
+    sqlite_conn.close()
+
+    # Check if any table had errors
+    errors = [t for t, c in result["tables"].items() if c == -1]
+    if errors:
+        result["error"] = f"Some tables had errors: {', '.join(errors)}"
+    else:
+        result["ok"] = True
+
+    return result
+
+
+def _mask_dsn(dsn: str) -> str:
+    """Mask password in DSN for safe logging."""
+    if "@" in dsn:
+        parts = dsn.rsplit("@", 1)
+        return f"••••@{parts[1]}"
+    return dsn[:10] + "••••" if len(dsn) > 10 else "••••"

@@ -193,9 +193,10 @@ class RigourQualityGate(QualityGate):
         if gate_input.pro:
             cmd.append("--pro")
 
+        # Files are positional arguments, not --file flags.
+        # Rigour CLI: `rigour check [options] [files...]`
         if gate_input.files_changed:
-            for f in gate_input.files_changed:
-                cmd.extend(["--file", f])
+            cmd.extend(gate_input.files_changed)
 
         project_root = (
             Path(gate_input.project_root)

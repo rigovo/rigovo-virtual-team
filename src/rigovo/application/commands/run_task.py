@@ -54,6 +54,93 @@ from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
 logger = logging.getLogger(__name__)
 
 
+def _write_failure_log(
+    project_root: str | Path,
+    task_id: str,
+    failure_reason: str,
+    final_state: dict,
+) -> None:
+    """Write detailed failure diagnostics to .rigovo/logs/ for debugging.
+
+    Creates a human-readable log file that the user can inspect to
+    understand exactly why a pipeline failed. Includes gate results,
+    agent outputs, events, and cost data.
+    """
+    try:
+        log_dir = Path(project_root) / ".rigovo" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"pipeline_failure_{task_id[:8]}.log"
+
+        lines = [
+            f"=== Pipeline Failure Report ===",
+            f"Task ID: {task_id}",
+            f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Failure reason: {failure_reason or 'unknown'}",
+            "",
+            "--- Pipeline State ---",
+            f"Status: {final_state.get('status', 'unknown')}",
+            f"Current agent: {final_state.get('current_agent_role', 'N/A')}",
+            f"Completed roles: {', '.join(final_state.get('completed_roles', []))}",
+            f"Retry count: {final_state.get('retry_count', 0)} / {final_state.get('max_retries', 5)}",
+            "",
+        ]
+
+        # Gate results
+        gate_results = final_state.get("gate_results", {})
+        if gate_results:
+            lines.append("--- Quality Gate Results ---")
+            lines.append(f"Passed: {gate_results.get('passed', 'N/A')}")
+            lines.append(f"Score: {gate_results.get('score', 'N/A')}")
+            for v in gate_results.get("violations", []):
+                if isinstance(v, dict):
+                    lines.append(f"  VIOLATION: [{v.get('gate', '?')}] {v.get('message', '?')} (severity: {v.get('severity', '?')})")
+            lines.append("")
+
+        # Gate history
+        gate_history = final_state.get("gate_history", [])
+        if gate_history:
+            lines.append("--- Gate History ---")
+            for entry in gate_history:
+                if isinstance(entry, dict):
+                    status = "PASS" if entry.get("passed") else "FAIL"
+                    lines.append(f"  [{status}] {entry.get('role', '?')}: {entry.get('message', '')}")
+            lines.append("")
+
+        # Agent outputs (summaries only)
+        agent_outputs = final_state.get("agent_outputs", {})
+        if agent_outputs:
+            lines.append("--- Agent Outputs ---")
+            for role, output in agent_outputs.items():
+                if isinstance(output, dict):
+                    summary = str(output.get("summary", ""))[:300]
+                    files = output.get("files_changed", [])
+                    lines.append(f"  [{role}] {summary}")
+                    if files:
+                        lines.append(f"    Files: {', '.join(files[:10])}")
+            lines.append("")
+
+        # Recent events
+        events = final_state.get("events", [])
+        if events:
+            lines.append("--- Recent Events (last 20) ---")
+            for ev in events[-20:]:
+                if isinstance(ev, dict):
+                    lines.append(f"  [{ev.get('type', '?')}] {ev.get('message', ev.get('detail', ''))}")
+            lines.append("")
+
+        # Error field
+        error = final_state.get("error", "")
+        if error:
+            lines.append("--- Error ---")
+            lines.append(error)
+            lines.append("")
+
+        log_path.write_text("\n".join(lines), encoding="utf-8")
+        logger.info("Failure log written to %s", log_path)
+    except Exception as e:
+        logger.warning("Could not write failure log: %s", e)
+
+
 class RunTaskCommand:
     """
     Executes a task through the full pipeline.
@@ -360,20 +447,36 @@ class RunTaskCommand:
                 resume_thread_id=resume_thread_id,
             )
         except Exception as e:
-            logger.exception("Task execution failed: %s", e)
-            task.fail()
+            error_msg = str(e)
+
+            # Provide human-readable messages for known failure types
+            if "recursion limit" in error_msg.lower() or "recursion_limit" in error_msg.lower():
+                error_msg = (
+                    f"Pipeline exceeded step limit: {error_msg}. "
+                    "This usually means agents are stuck in a retry loop. "
+                    "Check .rigovo/logs/ for the failure report."
+                )
+            elif "psycopg" in error_msg.lower() or "connection refused" in error_msg.lower():
+                error_msg = f"Database connection error: {error_msg}"
+
+            logger.exception("Task execution failed: %s", error_msg)
+
+            # Write failure log even for exceptions
+            _write_failure_log(project_root, str(task_id), error_msg, initial_state)
+
+            task.fail(error_msg)
             if self._task_repo:
                 await self._task_repo.save(task)
             self._emit_sync(
                 "task_failed",
                 {
                     "task_id": str(task_id),
-                    "error": str(e),
+                    "error": error_msg,
                 },
             )
             return {
                 "status": "failed",
-                "error": str(e),
+                "error": error_msg,
                 "task_id": str(task_id),
             }
 
@@ -386,8 +489,10 @@ class RunTaskCommand:
         elif status == "rejected":
             task.reject(feedback=final_state.get("approval_feedback", ""))
         else:
-            # Capture the pipeline error reason so UI can display it
+            # Capture the pipeline error reason so UI can display it.
+            # Check multiple failure sources in priority order.
             failure_reason = final_state.get("error", "")
+
             if not failure_reason:
                 # Check events for pipeline_failed_dependency / dag_blocked
                 for ev in reversed(final_state.get("events", [])):
@@ -397,6 +502,41 @@ class RunTaskCommand:
                         remaining = ev.get("remaining_instances", [])
                         failure_reason = f"Pipeline stalled: unresolved dependencies for {', '.join(remaining)}"
                         break
+
+            if not failure_reason:
+                # Check quality gate failures
+                gate_results = final_state.get("gate_results", {})
+                if isinstance(gate_results, dict) and not gate_results.get("passed", True):
+                    violations = gate_results.get("violations", [])
+                    if violations:
+                        viol_summary = "; ".join(
+                            v.get("message", v.get("gate", "unknown"))
+                            for v in violations[:3]
+                            if isinstance(v, dict)
+                        )
+                        failure_reason = f"Quality gate failed: {viol_summary}"
+                    else:
+                        failure_reason = f"Quality gate failed (score: {gate_results.get('score', 'N/A')})"
+
+            if not failure_reason:
+                # Check gate_history for the last failure
+                gate_history = final_state.get("gate_history", [])
+                for entry in reversed(gate_history):
+                    if isinstance(entry, dict) and not entry.get("passed", True):
+                        failure_reason = f"Quality gate failed for {entry.get('role', 'unknown')}: {entry.get('message', '')}"
+                        break
+
+            if not failure_reason:
+                # Check if we hit a recursion limit (LangGraph)
+                retry_count = final_state.get("retry_count", 0)
+                max_retries = final_state.get("max_retries", 5)
+                if retry_count >= max_retries:
+                    role = final_state.get("current_agent_role", "unknown")
+                    failure_reason = f"Max retries ({max_retries}) exhausted for agent '{role}'"
+
+            # Write detailed failure log for debugging
+            _write_failure_log(project_root, str(task_id), failure_reason, final_state)
+
             task.fail(failure_reason)
 
         # Persist classification from Master Agent (prevents "unclassified" in UI)
@@ -622,8 +762,11 @@ class RunTaskCommand:
             compiled = graph_builder.build_langgraph(checkpointer=checkpointer)
             logger.info("Running task via LangGraph orchestration engine")
 
-            # Configure for resume or fresh run
-            config: dict[str, Any] = {}
+            # Configure for resume or fresh run.
+            # Default LangGraph recursion_limit is 25 which is too low for
+            # multi-agent pipelines with verification, quality gates, debate
+            # loops, and reclassification.  100 handles even complex tasks.
+            config: dict[str, Any] = {"recursion_limit": 100}
             if resume_thread_id:
                 config["configurable"] = {"thread_id": resume_thread_id}
                 logger.info("Resuming from checkpoint: %s", resume_thread_id)
