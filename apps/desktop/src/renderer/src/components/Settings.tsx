@@ -873,14 +873,25 @@ export default function Settings({ onBack }: SettingsProps) {
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ dsn: dbUrl }),
                       });
+                      if (!res.ok) {
+                        // Non-200 HTTP status — FastAPI validation error, 404, etc.
+                        let detail = `HTTP ${res.status}`;
+                        try {
+                          const errBody = await res.json();
+                          detail = errBody.detail || errBody.error || detail;
+                        } catch { /* response wasn't JSON */ }
+                        showToast(`Connection failed: ${detail}`, "error");
+                        setSaving(false);
+                        return;
+                      }
                       const d = await res.json();
                       if (d.ok) {
                         showToast(`Connection OK — ${d.database} (${String(d.version).slice(0, 40)})`, "success");
                       } else {
-                        showToast(`Connection failed: ${d.error}`, "error");
+                        showToast(`Connection failed: ${d.error || d.detail || "Unknown error — check DSN format"}`, "error");
                       }
                     } catch (e) {
-                      showToast(`Test failed: ${e instanceof Error ? e.message : "unknown"}`, "error");
+                      showToast(`Test failed: ${e instanceof Error ? e.message : "Cannot reach Rigovo API"}`, "error");
                     }
                     setSaving(false);
                   }}
@@ -898,15 +909,25 @@ export default function Settings({ onBack }: SettingsProps) {
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ dsn: dbUrl }),
                       });
+                      if (!res.ok) {
+                        let detail = `HTTP ${res.status}`;
+                        try {
+                          const errBody = await res.json();
+                          detail = errBody.detail || errBody.error || detail;
+                        } catch { /* response wasn't JSON */ }
+                        showToast(`Migration failed: ${detail}`, "error");
+                        setSaving(false);
+                        return;
+                      }
                       const d = await res.json();
                       if (d.ok) {
                         const counts = Object.entries(d.tables || {}).map(([t, c]) => `${t}: ${c}`).join(", ");
                         showToast(`Migration complete — ${counts}`, "success");
                       } else {
-                        showToast(`Migration failed: ${d.error}`, "error");
+                        showToast(`Migration failed: ${d.error || d.detail || "Unknown error"}`, "error");
                       }
                     } catch (e) {
-                      showToast(`Migration error: ${e instanceof Error ? e.message : "unknown"}`, "error");
+                      showToast(`Migration error: ${e instanceof Error ? e.message : "Cannot reach Rigovo API"}`, "error");
                     }
                     setSaving(false);
                   }}

@@ -339,6 +339,9 @@ class PostgresDatabase:
 
         Returns dict with 'ok', 'version', 'database', 'error' keys.
         Used by Settings UI to validate DSN before saving.
+
+        **Contract:** Always returns all four keys — the UI depends on
+        ``error`` being a string (not None/missing) on failure.
         """
         try:
             conn = self._get_conn()
@@ -349,12 +352,23 @@ class PostgresDatabase:
                 "database": row["db"] if row else "unknown",
                 "error": None,
             }
-        except Exception as e:
+        except ImportError:
             return {
                 "ok": False,
                 "version": None,
                 "database": None,
-                "error": str(e),
+                "error": (
+                    "PostgreSQL driver not installed. "
+                    "Run: pip install 'psycopg[binary]' — then restart Rigovo."
+                ),
+            }
+        except Exception as e:
+            msg = str(e).strip()
+            return {
+                "ok": False,
+                "version": None,
+                "database": None,
+                "error": msg if msg else "Connection failed — check DSN and server status.",
             }
 
 

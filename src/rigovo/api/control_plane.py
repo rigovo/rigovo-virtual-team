@@ -3235,36 +3235,63 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
     # ── Database tools API ──────────────────────────────────────────
 
     @app.post("/v1/settings/test-db-connection")
-    async def test_db_connection(req: dict) -> dict:
+    async def test_db_connection(request: Request) -> dict:
         """Test a PostgreSQL DSN before saving it.
 
         Lets the Settings UI validate connectivity before committing
         the change, so users aren't stuck with a broken backend.
+
+        Uses Request object directly for robust body parsing — avoids
+        FastAPI validation edge cases that can return 422 without an
+        ``error`` field the frontend expects.
         """
-        dsn = req.get("dsn", "").strip()
+        try:
+            body = await request.json()
+        except Exception:
+            return {"ok": False, "error": "Invalid request body — expected JSON with 'dsn' field."}
+
+        dsn = (body.get("dsn") or "").strip() if isinstance(body, dict) else ""
         if not dsn:
-            return {"ok": False, "error": "No DSN provided."}
+            return {"ok": False, "error": "No DSN provided. Enter a PostgreSQL connection string."}
+
         try:
             from rigovo.infrastructure.persistence.postgres_local import (
                 PostgresDatabase,
             )
+        except ImportError as ie:
+            return {
+                "ok": False,
+                "error": (
+                    "PostgreSQL support not installed. "
+                    "Run: pip install 'psycopg[binary]' — then restart Rigovo."
+                ),
+            }
 
+        try:
             pg = PostgresDatabase(dsn)
             result = pg.test_connection()
             pg.close()
+            # Guarantee 'error' key exists even if test_connection omits it
+            if "error" not in result:
+                result["error"] = None if result.get("ok") else "Unknown connection error"
             return result
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": str(e) or "Connection failed (no details available)"}
 
     @app.post("/v1/settings/migrate-to-postgres")
-    async def migrate_to_postgres(req: dict) -> dict:
+    async def migrate_to_postgres(request: Request) -> dict:
         """One-click migration from SQLite to PostgreSQL.
 
         Reads all data from the current SQLite database and inserts it
         into the target PostgreSQL database. Idempotent — safe to run
         multiple times (uses ON CONFLICT DO UPDATE).
         """
-        dsn = req.get("dsn", "").strip()
+        try:
+            body = await request.json()
+        except Exception:
+            return {"ok": False, "error": "Invalid request body — expected JSON with 'dsn' field."}
+
+        dsn = (body.get("dsn") or "").strip() if isinstance(body, dict) else ""
         if not dsn:
             return {"ok": False, "error": "No PostgreSQL DSN provided."}
 
