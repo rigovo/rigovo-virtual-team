@@ -39,6 +39,7 @@ from rigovo.application.graph.nodes.execute_agent import (
     execute_agent_node,
     execute_agents_parallel,
 )
+from rigovo.application.graph.nodes.intent_gate import intent_gate_node
 from rigovo.application.graph.nodes.finalize import finalize_node
 from rigovo.application.graph.nodes.quality_check import quality_check_node
 from rigovo.application.graph.nodes.reclassify import reclassify_node
@@ -185,6 +186,9 @@ class GraphBuilder:
 
         async def _classify(state: TaskState) -> dict:
             return await classify_node(state, master_llm, classifier=classifier)
+
+        async def _intent_gate(state: TaskState) -> dict:
+            return await intent_gate_node(state)
 
         async def _route_team(state: TaskState) -> dict:
             if not available_teams:
@@ -354,6 +358,7 @@ class GraphBuilder:
         # --- Register nodes ---
         graph.add_node("scan_project", _scan_project)
         graph.add_node("classify", _classify)
+        graph.add_node("intent_gate", _intent_gate)
         graph.add_node("route_team", _route_team)
         graph.add_node("assemble", _assemble)
         graph.add_node("plan_approval", _plan_approval)
@@ -371,10 +376,11 @@ class GraphBuilder:
         graph.add_node("finalize", _finalize)
 
         # --- Edges ---
-        # Pipeline: scan → classify → assemble → plan_approval
+        # Pipeline: scan → classify → intent_gate → route_team → assemble → plan_approval
         graph.add_edge(START, "scan_project")
         graph.add_edge("scan_project", "classify")
-        graph.add_edge("classify", "route_team")
+        graph.add_edge("classify", "intent_gate")
+        graph.add_edge("intent_gate", "route_team")
         graph.add_edge("route_team", "assemble")
         graph.add_edge("assemble", "plan_approval")
 
@@ -497,6 +503,10 @@ class GraphBuilder:
             update = await classify_node(state, self._master_llm, classifier=self._classifier)
         else:
             update = await classify_node(state, self._master_llm)
+        state.update(update)
+
+        # 1b. Intent Gate — detect user intent and set constraints
+        update = await intent_gate_node(state)
         state.update(update)
 
         # 2. Route team

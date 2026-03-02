@@ -3298,11 +3298,19 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 },
             )
 
-        # LLM key/model changes apply immediately. DB backend/path changes require restart.
+        # Hot-reload rigovo.yml so next task uses updated settings (no restart needed)
+        if changes:
+            try:
+                container.reload_config()
+                _logger.info("Hot-reloaded config after settings update: %s", changes)
+            except Exception as exc:
+                _logger.warning("Config hot-reload failed (changes saved, apply on restart): %s", exc)
+
+        # DB backend/path changes still need a process restart (connection pooling)
         note = ""
         if restart_required:
             note = (
-                "Database settings saved. Restart the engine/app to apply backend or DSN changes."
+                "Database backend/DSN changes saved. Restart the app to switch database connections."
             )
 
         return {

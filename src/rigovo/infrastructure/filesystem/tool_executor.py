@@ -205,9 +205,19 @@ class ToolExecutor:
         )
 
     def _handle_write_file(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        content = inputs.get("content")
+        if content is None:
+            # LLM sometimes omits the "content" key — defensive guard
+            return {
+                "error": (
+                    "write_file requires a 'content' parameter. "
+                    "Please call write_file with both 'path' and 'content'."
+                ),
+                "status": "error",
+            }
         return self._writer.write_file(
             path=inputs["path"],
-            content=inputs["content"],
+            content=content,
         )
 
     def _handle_list_directory(self, inputs: dict[str, Any]) -> dict[str, Any]:

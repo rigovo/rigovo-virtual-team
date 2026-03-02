@@ -53,6 +53,12 @@ class LLMConfig(BaseSettings):
     """
 
     model: str = Field(default="claude-sonnet-4-6", alias="LLM_MODEL")
+    master_model: str = Field(default="", alias="LLM_MASTER_MODEL")  # empty = use main model
+
+    # Per-role model overrides — JSON string: '{"coder":"claude-opus-4-6","qa":"claude-haiku-4-5"}'
+    # These override ROLE_DEFAULT_MODELS in model_catalog.py for all tasks.
+    # Can also be set per-team in rigovo.yml under teams.engineering.agents.coder.model
+    agent_models: str = Field(default="", alias="LLM_AGENT_MODELS")
 
     # API keys — one per provider
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
@@ -67,6 +73,25 @@ class LLMConfig(BaseSettings):
     openai_base_url: str = Field(default="", alias="OPENAI_BASE_URL")  # custom OpenAI-compatible
 
     model_config = {"extra": "ignore"}
+
+    @property
+    def agent_model_overrides(self) -> dict[str, str]:
+        """Parse LLM_AGENT_MODELS env var into role→model dict.
+
+        Example: LLM_AGENT_MODELS='{"coder":"claude-opus-4-6","qa":"claude-haiku-4-5"}'
+        Returns empty dict if not set or invalid.
+        """
+        if not self.agent_models:
+            return {}
+        try:
+            import json
+
+            parsed = json.loads(self.agent_models)
+            if isinstance(parsed, dict):
+                return {str(k): str(v) for k, v in parsed.items() if v}
+        except (ValueError, TypeError):
+            pass
+        return {}
 
     @property
     def provider(self) -> str:

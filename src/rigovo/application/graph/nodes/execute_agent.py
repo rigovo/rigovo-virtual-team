@@ -411,8 +411,29 @@ def _build_agent_messages(
         system_prompt += f"\n\n{expert_block}"
 
     # Role-specific action imperatives — forces execution not description
+    # Intent-aware: brainstorm/think mode tells planner to reason, not read codebase
+    intent_profile = state.get("intent_profile") or {}
+    planner_mode = intent_profile.get("planner_mode", "survey")
+    intent_type = intent_profile.get("intent", "build")
+
+    if current_role == "planner" and planner_mode == "think":
+        _planner_imperative = (
+            "This is a BRAINSTORMING/RESEARCH task. DO NOT read the codebase. "
+            "DO NOT use read_file or list_directory. Instead, think through the "
+            "problem conceptually and produce your analysis from the task description alone. "
+            "Focus on ideas, architecture options, trade-offs, and recommendations."
+        )
+    elif current_role == "planner" and intent_type == "research":
+        _planner_imperative = (
+            "This is a RESEARCH/INVESTIGATION task. Read only the files directly relevant "
+            "to the investigation. Do NOT survey the entire codebase. Limit your file reads "
+            "to the specific area under investigation."
+        )
+    else:
+        _planner_imperative = "Read the codebase now and produce the implementation plan."
+
     _ACTION_IMPERATIVES: dict[str, str] = {
-        "planner": "Read the codebase now and produce the implementation plan.",
+        "planner": _planner_imperative,
         "coder": "Read the relevant files and write all changed files now using write_file.",
         "reviewer": "Read the changed files now and produce your review verdict.",
         "security": "Read the changed files now and produce your security audit.",
@@ -1029,6 +1050,12 @@ async def _run_agentic_loop(
     max_tokens = agent_config.get("max_tokens") or ROLE_MAX_TOKENS.get(role, DEFAULT_MAX_TOKENS)
     subagent_enabled, max_subtasks_per_step, max_subtask_rounds = _resolve_subagent_policy(state)
 
+    # Intent-aware file read cap — prevents planner from reading entire codebase
+    # for brainstorming/research tasks.  0 = unlimited.
+    intent_profile = (state or {}).get("intent_profile") or {}
+    max_file_reads = int(intent_profile.get("max_file_reads", 0))
+    file_read_count = 0
+
     for round_num in range(max_rounds):
         logger.info(
             "Agent %s: tool loop round %d (messages: %d)",
@@ -1182,6 +1209,26 @@ async def _run_agentic_loop(
                         events=events,
                     )
             else:
+                # Intent-aware file read cap — block reads beyond limit
+                if tc["name"] in ("read_file", "list_directory", "search_codebase"):
+                    nonlocal file_read_count
+                    file_read_count += 1
+                    if max_file_reads > 0 and file_read_count > max_file_reads:
+                        result_str = json.dumps({
+                            "error": (
+                                f"File read limit reached ({max_file_reads} max for "
+                                f"{intent_profile.get('intent', 'unknown')} intent). "
+                                "Focus on producing your output from what you've already read."
+                            ),
+                            "status": "blocked_by_intent",
+                        })
+                        logger.info(
+                            "Agent %s: file read #%d blocked (limit %d for %s intent)",
+                            role, file_read_count, max_file_reads,
+                            intent_profile.get("intent", "unknown"),
+                        )
+                        return tc, result_str
+
                 started = time.monotonic()
                 result_str = await tool_executor.execute(tc["name"], tc["input"])
 
@@ -1463,6 +1510,9 @@ async def execute_agent_node(
             # --- Agentic tool loop (for agents with tools) ---
             # Always use batch invoke for tool-calling agents.
             # This is the standard pattern: invoke → tools → invoke → tools → done.
+            # Intent-aware: use max_tool_rounds from intent profile if available
+            intent_profile = state.get("intent_profile") or {}
+            intent_max_rounds = intent_profile.get("max_tool_rounds", MAX_TOOL_ROUNDS)
             (
                 final_text,
                 input_tokens,
@@ -1481,6 +1531,7 @@ async def execute_agent_node(
                 events=events,
                 stream_callback=stream_callback,
                 batch_timeout=batch_timeout,
+                max_rounds=intent_max_rounds,
             )
             total_tokens = input_tokens + output_tokens
 

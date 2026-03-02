@@ -218,6 +218,7 @@ class RunTaskCommand:
         self._auto_approve = auto_approve
         self._budget_max_cost: float = 25.00  # soft warning only, never hard-stops
         self._budget_max_tokens: int = 500_000  # token soft limit
+        self._agent_model_overrides: dict[str, str] = {}  # Set via set_agent_model_overrides()
 
         # Master Agent sub-services
         self._classifier = TaskClassifier(master_llm)
@@ -968,10 +969,12 @@ class RunTaskCommand:
     ) -> list[Agent]:
         """Build agent entities from domain role definitions.
 
-        Uses the model catalog to assign the optimal model per role:
-        - Core roles (planner, coder) → Sonnet (needs full reasoning)
-        - Review roles (reviewer, qa, security) → Haiku (60-80% cheaper)
-        - User override via role_def.default_llm_model always wins
+        Model resolution priority (highest → lowest):
+        1. rigovo.yml per-agent override (teams.engineering.agents.coder.model)
+        2. LLM_AGENT_MODELS env var (JSON: {"coder":"claude-opus-4-6"})
+        3. Role definition default (role_def.default_llm_model)
+        4. ROLE_DEFAULT_MODELS in model_catalog.py
+        5. LLM_MODEL fallback
         """
         agents = []
         stable_team_uuid = (
@@ -979,20 +982,25 @@ class RunTaskCommand:
             if self._workspace_id
             else uuid5(NAMESPACE_DNS, team_key)
         )
+        # Env var overrides: LLM_AGENT_MODELS='{"coder":"...","qa":"..."}'
+        env_agent_models = getattr(self, "_agent_model_overrides", {})
         for role_id, role_def in agent_roles.items():
             override = (
                 team_cfg.agents.get(role_id)
                 if getattr(team_cfg, "agents", None) and hasattr(team_cfg.agents, "get")
                 else None
             )
-            # Resolve model: user override > role default > catalog default
+            # Resolve model: YAML override > env var override > role default > catalog default
+            yaml_model = (
+                override.model
+                if override and getattr(override, "model", "")
+                else ""
+            )
+            env_model = env_agent_models.get(role_id, "")
+            user_model = yaml_model or env_model or role_def.default_llm_model
             model = resolve_model_for_role(
                 role_id=role_id,
-                user_model=(
-                    override.model
-                    if override and getattr(override, "model", "")
-                    else role_def.default_llm_model
-                ),
+                user_model=user_model,
             )
             tools = (
                 list(override.tools)

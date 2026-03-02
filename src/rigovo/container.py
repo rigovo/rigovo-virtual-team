@@ -151,8 +151,28 @@ class Container:
         return self._get_llm_factory().get(model)
 
     def get_master_llm(self) -> LLMProvider:
-        """Get the LLM provider used by the Master Agent."""
-        return self._get_llm_factory().get(self.config.llm.model)
+        """Get the LLM provider used by the Master Agent.
+
+        Uses LLM_MASTER_MODEL if set (allows faster/cheaper model for
+        classification), otherwise falls back to the main model.
+        """
+        model = self.config.llm.master_model or self.config.llm.model
+        return self._get_llm_factory().get(model)
+
+    def get_agent_model(self, role: str) -> str:
+        """Get the resolved model for an agent role.
+
+        Priority: LLM_AGENT_MODELS env var > ROLE_DEFAULT_MODELS > LLM_MODEL
+        """
+        env_overrides = self.config.llm.agent_model_overrides
+        if role in env_overrides:
+            return env_overrides[role]
+        try:
+            from rigovo.infrastructure.llm.model_catalog import ROLE_DEFAULT_MODELS
+
+            return ROLE_DEFAULT_MODELS.get(role, self.config.llm.model)
+        except ImportError:
+            return self.config.llm.model
 
     def llm_factory(self, model: str) -> LLMProvider:
         """Factory function for creating LLM providers (passed to graph)."""
@@ -206,7 +226,7 @@ class Container:
 
         workspace_id = UUID(self.config.workspace_id) if self.config.workspace_id else UUID(int=0)
 
-        return RunTaskCommand(
+        cmd = RunTaskCommand(
             workspace_id=workspace_id,
             project_root=self.config.project_root,
             master_llm=self.get_master_llm(),
@@ -256,6 +276,9 @@ class Container:
             enable_parallel=enable_parallel,
             auto_approve=auto_approve,
         )
+        # Inject per-agent model overrides from LLM_AGENT_MODELS env var
+        cmd._agent_model_overrides = self.config.llm.agent_model_overrides
+        return cmd
 
     def get_plugin_registry(self):
         """Get or create the local plugin registry."""
@@ -268,6 +291,44 @@ class Container:
                 enabled_plugins=self.config.yml.plugins.enabled_plugins,
             )
         return self._plugin_registry
+
+    def reload_config(self) -> None:
+        """Hot-reload rigovo.yml into the running container.
+
+        Called after POST /v1/settings saves changes so the next task
+        picks up new orchestration, team, and agent settings without
+        restarting the engine process.
+
+        Safe to call while no task is running.  Does NOT touch the
+        database connections or settings repo (those are stable across
+        reloads).
+        """
+        from rigovo.config_schema import load_rigovo_yml
+
+        yml = load_rigovo_yml(self.config.project_root)
+        self.config.yml = yml
+
+        # Re-merge YAML orchestration into AppConfig
+        self.config.max_retries = yml.orchestration.max_retries
+        self.config.max_agents_per_task = yml.orchestration.max_agents_per_task
+        self.config.db_backend = yml.database.backend
+        self.config.local_db_path = yml.database.local_path
+        self.config.approval.after_planning = yml.approval.after_planning
+        self.config.approval.after_coding = yml.approval.after_coding
+        self.config.approval.after_review = yml.approval.after_review
+        self.config.approval.before_commit = yml.approval.before_commit
+        self.config.cloud.enabled = yml.cloud.enabled
+        self.config.identity.provider = yml.identity.provider or self.config.identity.provider
+        self.config.identity.auth_mode = yml.identity.auth_mode
+        if yml.identity.workos_organization_id:
+            self.config.identity.workos_organization_id = yml.identity.workos_organization_id
+
+        # Reset lazy caches that depend on config — they'll rebuild on next use
+        self._llm_factory = None
+        self._quality_gates = []
+        self._gate_builder = QualityGateBuilder(self.config, self.domains)
+
+        logger.info("Hot-reloaded rigovo.yml — next task will use updated settings")
 
     def close(self) -> None:
         """Clean up resources."""

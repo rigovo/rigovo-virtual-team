@@ -85,6 +85,11 @@ class TaskState(TypedDict, total=False):
     # This is the FLOOR — the LLM can upgrade but NEVER downgrade.
     deterministic_classification: dict[str, Any]
 
+    # --- Intent profile (set by intent_gate node AFTER classify) ---
+    # Shapes the entire pipeline: team size, token budget, file read limits.
+    # brainstorm=50K tokens, research=150K, fix=300K, build=500K.
+    intent_profile: dict[str, Any]
+
     # --- Staffing plan (set by classify node — Master Agent SME analysis) ---
     # Contains per-instance agent assignments, dependency DAG, risks, acceptance
     # criteria, domain analysis. This is the Master Agent's full output.

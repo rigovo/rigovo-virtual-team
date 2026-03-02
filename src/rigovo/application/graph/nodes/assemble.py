@@ -11,12 +11,15 @@ static TASK_PIPELINES lookup.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from rigovo.application.graph.state import TaskState
 from rigovo.domain.entities.agent import Agent
 from rigovo.domain.entities.task import TaskComplexity, TaskType
 from rigovo.domain.services.team_assembler import TeamAssemblerService
+
+logger = logging.getLogger(__name__)
 
 
 async def assemble_node(
@@ -34,6 +37,21 @@ async def assemble_node(
     assembler = assembler or TeamAssemblerService()
     classification = state.get("classification", {})
     staffing_plan = state.get("staffing_plan")
+
+    # ── Intent-aware agent cap ────────────────────────────────────────
+    # If the intent gate detected a brainstorm/research task, trim the
+    # staffing plan to avoid spawning 12 agents for a thinking task.
+    intent_profile = state.get("intent_profile") or {}
+    max_agents = int(intent_profile.get("max_agents", 0))
+    if max_agents > 0 and staffing_plan and isinstance(staffing_plan, dict):
+        plan_agents = staffing_plan.get("agents", [])
+        if len(plan_agents) > max_agents:
+            logger.info(
+                "Intent cap: trimming team from %d to %d agents (intent=%s)",
+                len(plan_agents), max_agents, intent_profile.get("intent", ""),
+            )
+            # Keep the first N agents by pipeline priority (planner first)
+            staffing_plan = {**staffing_plan, "agents": plan_agents[:max_agents]}
 
     # ── Primary path: StaffingPlan-driven assembly ────────────────────
     if staffing_plan and isinstance(staffing_plan, dict) and staffing_plan.get("agents"):

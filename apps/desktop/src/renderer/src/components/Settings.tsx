@@ -318,13 +318,13 @@ export default function Settings({ onBack }: SettingsProps) {
   };
   const saveAgentModels = () => void save(
     { default_model: defaultModel, agent_models: agentModels },
-    "Agent models saved. Restart the engine for changes to take effect.",
+    "Agent models saved. Changes apply to the next task.",
   );
   const parseCsvList = (v: string): string[] => v.split(",").map((x) => x.trim()).filter(Boolean);
   const saveCapabilities = () => {
     if (pluginPolicy) void save(
       { agent_tools: agentTools, plugin_policy: pluginPolicy },
-      "Capability policy saved. Restart the engine for changes to take effect.",
+      "Capability policy saved. Changes apply to the next task.",
     );
   };
   const saveEndpoints = () => {
@@ -402,11 +402,10 @@ export default function Settings({ onBack }: SettingsProps) {
     yml = patchYmlInBlock(yml, "quality", "rigour_enabled", orchSettings.qualityGateEnabled);
 
     setYmlRaw(yml);
-    /* The engine reads rigovo.yml once at startup — a restart is required
-       for orchestration changes to take effect in the running engine. */
+    /* Settings are hot-reloaded by the backend — changes apply to the next task. */
     void save(
       { yml_raw: yml },
-      "Orchestration saved. Restart the engine for changes to take effect.",
+      "Orchestration saved. Changes apply to the next task.",
     );
   };
 
