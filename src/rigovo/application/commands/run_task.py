@@ -39,8 +39,6 @@ from rigovo.domain.interfaces.quality_gate import QualityGate
 from rigovo.domain.interfaces.repositories import MemoryRepository
 from rigovo.domain.services.cost_calculator import CostCalculator
 from rigovo.domain.services.history_state import (
-    CheckpointTimeline,
-    CheckpointType,
     HistoryStateManager,
 )
 from rigovo.domain.services.team_assembler import TeamAssemblerService
@@ -72,7 +70,7 @@ def _write_failure_log(
         log_path = log_dir / f"pipeline_failure_{task_id[:8]}.log"
 
         lines = [
-            f"=== Pipeline Failure Report ===",
+            "=== Pipeline Failure Report ===",
             f"Task ID: {task_id}",
             f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
             f"Failure reason: {failure_reason or 'unknown'}",
@@ -93,7 +91,9 @@ def _write_failure_log(
             lines.append(f"Score: {gate_results.get('score', 'N/A')}")
             for v in gate_results.get("violations", []):
                 if isinstance(v, dict):
-                    lines.append(f"  VIOLATION: [{v.get('gate', '?')}] {v.get('message', '?')} (severity: {v.get('severity', '?')})")
+                    lines.append(
+                        f"  VIOLATION: [{v.get('gate', '?')}] {v.get('message', '?')} (severity: {v.get('severity', '?')})"
+                    )
             lines.append("")
 
         # Gate history
@@ -103,7 +103,9 @@ def _write_failure_log(
             for entry in gate_history:
                 if isinstance(entry, dict):
                     status = "PASS" if entry.get("passed") else "FAIL"
-                    lines.append(f"  [{status}] {entry.get('role', '?')}: {entry.get('message', '')}")
+                    lines.append(
+                        f"  [{status}] {entry.get('role', '?')}: {entry.get('message', '')}"
+                    )
             lines.append("")
 
         # Agent outputs (summaries only)
@@ -125,7 +127,9 @@ def _write_failure_log(
             lines.append("--- Recent Events (last 20) ---")
             for ev in events[-20:]:
                 if isinstance(ev, dict):
-                    lines.append(f"  [{ev.get('type', '?')}] {ev.get('message', ev.get('detail', ''))}")
+                    lines.append(
+                        f"  [{ev.get('type', '?')}] {ev.get('message', ev.get('detail', ''))}"
+                    )
             lines.append("")
 
         # Error field
@@ -394,8 +398,7 @@ class RunTaskCommand:
                 "accumulated_cost": resume_ctx.accumulated_cost,
             }
             logger.info(
-                "Resume context injected: %d agents already completed, "
-                "resuming from %s",
+                "Resume context injected: %d agents already completed, resuming from %s",
                 len(resume_ctx.completed_agents),
                 resume_ctx.resumed_from_checkpoint,
             )
@@ -462,7 +465,7 @@ class RunTaskCommand:
             logger.exception("Task execution failed: %s", error_msg)
 
             # Write failure log even for exceptions
-            _write_failure_log(project_root, str(task_id), error_msg, initial_state)
+            _write_failure_log(str(self._project_root), str(task_id), error_msg, initial_state)
 
             task.fail(error_msg)
             if self._task_repo:
@@ -497,10 +500,13 @@ class RunTaskCommand:
                 # Check events for pipeline_failed_dependency / dag_blocked
                 for ev in reversed(final_state.get("events", [])):
                     if isinstance(ev, dict) and ev.get("type") in (
-                        "dag_blocked", "pipeline_failed_dependency",
+                        "dag_blocked",
+                        "pipeline_failed_dependency",
                     ):
                         remaining = ev.get("remaining_instances", [])
-                        failure_reason = f"Pipeline stalled: unresolved dependencies for {', '.join(remaining)}"
+                        failure_reason = (
+                            f"Pipeline stalled: unresolved dependencies for {', '.join(remaining)}"
+                        )
                         break
 
             if not failure_reason:
@@ -516,7 +522,9 @@ class RunTaskCommand:
                         )
                         failure_reason = f"Quality gate failed: {viol_summary}"
                     else:
-                        failure_reason = f"Quality gate failed (score: {gate_results.get('score', 'N/A')})"
+                        failure_reason = (
+                            f"Quality gate failed (score: {gate_results.get('score', 'N/A')})"
+                        )
 
             if not failure_reason:
                 # Check gate_history for the last failure
@@ -535,7 +543,7 @@ class RunTaskCommand:
                     failure_reason = f"Max retries ({max_retries}) exhausted for agent '{role}'"
 
             # Write detailed failure log for debugging
-            _write_failure_log(project_root, str(task_id), failure_reason, final_state)
+            _write_failure_log(str(self._project_root), str(task_id), failure_reason, final_state)
 
             task.fail(failure_reason)
 
@@ -599,20 +607,24 @@ class RunTaskCommand:
                     elif reason == "no_files_produced":
                         gate_name = "no-files"
 
-                    gate_violations.append({
-                        "gate": gate_name,
-                        "passed": passed,
-                        "message": reason if reason else (
-                            f"{gates_run} gate{'s' if gates_run != 1 else ''} passed"
-                            if passed
-                            else f"{violation_count} violation{'s' if violation_count != 1 else ''}"
-                        ),
-                        "severity": "info" if passed else "error",
-                        "violation_count": violation_count,
-                        "gates_run": gates_run,
-                        "deep": gh.get("deep", False),
-                        "pro": gh.get("pro", False),
-                    })
+                    gate_violations.append(
+                        {
+                            "gate": gate_name,
+                            "passed": passed,
+                            "message": reason
+                            if reason
+                            else (
+                                f"{gates_run} gate{'s' if gates_run != 1 else ''} passed"
+                                if passed
+                                else f"{violation_count} violation{'s' if violation_count != 1 else ''}"
+                            ),
+                            "severity": "info" if passed else "error",
+                            "violation_count": violation_count,
+                            "gates_run": gates_run,
+                            "deep": gh.get("deep", False),
+                            "pro": gh.get("pro", False),
+                        }
+                    )
 
                 # Derive gate_passed from structured data
                 gate_passed = output.get("gate_passed")
@@ -620,10 +632,7 @@ class RunTaskCommand:
                     gate_passed = all(gv.get("passed", True) for gv in gate_violations)
 
                 # Humanize instance agent names: "backend-engineer-1" → "Backend Engineer 1"
-                _agent_name = (
-                    role.replace("-", " ").replace("_", " ")
-                    .title()
-                )
+                _agent_name = role.replace("-", " ").replace("_", " ").title()
                 step = PipelineStep(
                     agent_id=uuid5(NAMESPACE_DNS, f"{task_id}:{role}"),
                     agent_role=role,

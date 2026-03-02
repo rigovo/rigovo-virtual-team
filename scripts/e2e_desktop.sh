@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DESKTOP_DIR="${ROOT_DIR}/apps/desktop"
 API_HOST="${RIGOVO_API_HOST:-127.0.0.1}"
 API_PORT="8787"  # Fixed — must match WorkOS redirect URI
 API_URL="http://${API_HOST}:${API_PORT}"
@@ -11,7 +12,7 @@ API_PID=""
 E2E_INSTALL="${RIGOVO_E2E_INSTALL:-auto}" # auto|always|never
 
 cleanup() {
-  echo "[rigovo-e2e] cleaning up..."
+  echo "[rigovo] cleaning up..."
   if [[ -n "${API_PID}" ]] && kill -0 "${API_PID}" >/dev/null 2>&1; then
     kill "${API_PID}" >/dev/null 2>&1 || true
     wait "${API_PID}" >/dev/null 2>&1 || true
@@ -36,22 +37,15 @@ kill_port() {
   local pids
   pids="$(lsof -ti :"${port}" 2>/dev/null || true)"
   if [[ -n "${pids}" ]]; then
-    echo "[rigovo-e2e] killing stale process(es) on port ${port}: ${pids}"
+    echo "[rigovo] killing stale process(es) on port ${port}: ${pids}"
     echo "${pids}" | xargs kill -9 2>/dev/null || true
     sleep 0.5
   fi
 }
 
-check_env_var() {
-  local var_name="$1"
-  local env_file="${ROOT_DIR}/.env"
-  grep -q "^${var_name}=" "${env_file}" 2>/dev/null && return 0
-  return 1
-}
-
 start_api() {
   API_URL="http://${API_HOST}:${API_PORT}"
-  echo "[rigovo-e2e] starting control-plane API at ${API_URL}"
+  echo "[rigovo] starting control-plane API at ${API_URL}"
 (
   cd "${ROOT_DIR}"
   PYTHONPATH="${ROOT_DIR}/src:${PYTHONPATH:-}" \
@@ -62,75 +56,122 @@ API_PID=$!
 
   sleep 0.5
   if ! kill -0 "${API_PID}" >/dev/null 2>&1; then
-    echo "[rigovo-e2e] API process died immediately. Log output:"
+    echo "[rigovo] API process died immediately. Log output:"
     tail -n 40 "${API_LOG}" 2>/dev/null || true
     exit 1
   fi
 }
 
-echo "[rigovo-e2e] project root: ${ROOT_DIR}"
+echo "[rigovo] project root: ${ROOT_DIR}"
 
 # ── Prerequisites ──
-for cmd in python3 pnpm node curl; do
+for cmd in python3 node npm curl; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "[rigovo-e2e] missing required command: $cmd"
+    echo "[rigovo] missing required command: $cmd"
     exit 1
   fi
 done
 
-# Create .env if it doesn't exist (optional — for dev overrides only)
+# Create .env if it doesn't exist (non-secret config only)
 if [[ ! -f "${ROOT_DIR}/.env" ]]; then
   touch "${ROOT_DIR}/.env"
 fi
 
-# WorkOS Client ID is embedded in the app (public, safe to ship).
-# API key is optional — only needed for org/role admin features.
-if check_env_var "WORKOS_API_KEY"; then
-  echo "[rigovo-e2e] WORKOS_API_KEY found — org/role admin features enabled"
-else
-  echo "[rigovo-e2e] WORKOS_API_KEY not set — auth works via PKCE, admin features disabled"
+echo "[rigovo] WorkOS client ID: embedded in config.py (public)"
+echo "[rigovo] API keys: stored encrypted in .rigovo/local.db (set via Settings UI)"
+
+# ── Install Python dependencies ──
+# IMPORTANT: use python3 -m pip (not bare pip) to guarantee packages go into
+# the SAME Python that will run the API server.
+echo "[rigovo] installing Python dependencies (python3 -m pip)..."
+python3 -m pip install -e "${ROOT_DIR}[dev]" --quiet 2>&1 | tail -5 || {
+  echo "[rigovo] WARNING: pip install failed, trying without --quiet..."
+  python3 -m pip install -e "${ROOT_DIR}[dev]" 2>&1 | tail -20
+}
+
+# Verify critical dependency: psycopg (required for PostgreSQL backend)
+if ! python3 -c "import psycopg" 2>/dev/null; then
+  echo "[rigovo] psycopg not found after install — installing directly..."
+  python3 -m pip install "psycopg[binary]>=3.2" 2>&1 | tail -5
+  if ! python3 -c "import psycopg" 2>/dev/null; then
+    echo "[rigovo] ERROR: psycopg still not importable. PostgreSQL features will not work."
+    echo "[rigovo] Try manually: python3 -m pip install 'psycopg[binary]'"
+  fi
+fi
+python3 -c "import psycopg; print(f'[rigovo] psycopg {psycopg.__version__} OK')" 2>/dev/null || true
+
+# ── Install desktop deps if needed ──
+if [[ "${E2E_INSTALL}" == "always" ]] || [[ "${E2E_INSTALL}" == "auto" && ! -d "${DESKTOP_DIR}/node_modules" ]]; then
+  echo "[rigovo] installing desktop dependencies..."
+  cd "${DESKTOP_DIR}" && npm install
+  cd "${ROOT_DIR}"
+elif [[ "${E2E_INSTALL}" == "never" ]]; then
+  echo "[rigovo] skipping install (RIGOVO_E2E_INSTALL=never)"
 fi
 
-# ── Install deps if needed ──
-if [[ "${E2E_INSTALL}" == "always" ]] || [[ "${E2E_INSTALL}" == "auto" && ! -d "${ROOT_DIR}/apps/desktop/node_modules" ]]; then
-  echo "[rigovo-e2e] installing desktop dependencies"
-  pnpm -C "${ROOT_DIR}/apps/desktop" install --no-frozen-lockfile --prefer-offline
-elif [[ "${E2E_INSTALL}" == "never" ]]; then
-  echo "[rigovo-e2e] skipping install (RIGOVO_E2E_INSTALL=never)"
+# ── Ensure Electron binary is present ──
+ELECTRON_BIN="${DESKTOP_DIR}/node_modules/.bin/electron"
+if [[ ! -x "${ELECTRON_BIN}" ]]; then
+  echo "[rigovo] Electron binary missing — installing..."
+  cd "${DESKTOP_DIR}" && npm install electron --no-save
+  cd "${ROOT_DIR}"
 fi
 
 mkdir -p "${ROOT_DIR}/.rigovo"
 
 trap cleanup EXIT INT TERM
 
-# ── Start API — always on port 8787 (must match WorkOS redirect URI) ──
-if curl -fsS "${API_URL}/health" >/dev/null 2>&1; then
-  echo "[rigovo-e2e] reusing existing healthy API at ${API_URL}"
-else
-  # Free port 8787 if occupied by a stale process from a previous run
-  kill_port "${API_PORT}"
-  start_api
+# ── Clean and rebuild desktop app (ensures latest source is compiled) ──
+echo "[rigovo] rebuilding desktop app (main + preload + renderer)..."
+rm -rf "${DESKTOP_DIR}/out"
+cd "${DESKTOP_DIR}" && npx electron-vite build
+cd "${ROOT_DIR}"
+echo "[rigovo] build complete"
 
-  if ! wait_for_health; then
-    echo "[rigovo-e2e] API failed health check after 30s. tailing logs:"
-    tail -n 120 "${API_LOG}" || true
-    exit 1
+# ── Patch Electron dock name for dev mode (macOS only) ──
+# In dev mode the dock tooltip comes from the Electron binary's Info.plist,
+# which defaults to "Electron".  We patch it to show "Rigovo Virtual Team".
+if [[ "$(uname)" == "Darwin" ]]; then
+  ELECTRON_APP=$(find "${DESKTOP_DIR}/node_modules/electron/dist" -name "Electron.app" -maxdepth 1 2>/dev/null || true)
+  if [[ -n "${ELECTRON_APP}" ]]; then
+    PLIST="${ELECTRON_APP}/Contents/Info.plist"
+    if [[ -f "${PLIST}" ]]; then
+      # Only patch if not already patched
+      if ! /usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "${PLIST}" 2>/dev/null | grep -q "Rigovo"; then
+        /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 'Rigovo Virtual Team'" "${PLIST}" 2>/dev/null || true
+        /usr/libexec/PlistBuddy -c "Set :CFBundleName 'Rigovo Virtual Team'" "${PLIST}" 2>/dev/null || true
+        echo "[rigovo] patched Electron.app Info.plist → 'Rigovo Virtual Team'"
+      fi
+    fi
   fi
-
-  echo "[rigovo-e2e] API healthy at ${API_URL}"
-  echo "[rigovo-e2e] logs: ${API_LOG}"
 fi
+
+# ── Start API — always fresh on port 8787 (must match WorkOS redirect URI) ──
+# Always kill and restart to ensure latest Python code is running.
+kill_port "${API_PORT}"
+start_api
+
+if ! wait_for_health; then
+  echo "[rigovo] API failed health check after 30s. tailing logs:"
+  tail -n 120 "${API_LOG}" || true
+  exit 1
+fi
+
+echo "[rigovo] API healthy at ${API_URL}"
+echo "[rigovo] logs: ${API_LOG}"
 
 # ── Launch Electron desktop app ──
 echo ""
 echo "  ┌──────────────────────────────────────────────────────────┐"
-echo "  │  Rigovo Desktop — Local Development                      │"
+echo "  │  Rigovo Virtual Team                                     │"
 echo "  │                                                          │"
 echo "  │  API:      ${API_URL}                                    │"
 echo "  │  Callback: ${CALLBACK_URI}                               │"
 echo "  │                                                          │"
-echo "  │  WorkOS redirect URI must be:                            │"
+echo "  │  WorkOS redirect URI:                                    │"
 echo "  │  http://127.0.0.1:8787/v1/auth/callback                 │"
+echo "  │                                                          │"
+echo "  │  API keys → Settings UI (encrypted in SQLite)            │"
 echo "  └──────────────────────────────────────────────────────────┘"
 echo ""
-VITE_RIGOVO_API="${API_URL}" RIGOVO_API_PORT="${API_PORT}" pnpm -C "${ROOT_DIR}/apps/desktop" run dev
+cd "${DESKTOP_DIR}" && VITE_RIGOVO_API="${API_URL}" RIGOVO_API_PORT="${API_PORT}" npx electron-vite dev

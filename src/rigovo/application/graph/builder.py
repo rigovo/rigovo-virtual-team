@@ -41,14 +41,13 @@ from rigovo.application.graph.nodes.execute_agent import (
 )
 from rigovo.application.graph.nodes.finalize import finalize_node
 from rigovo.application.graph.nodes.quality_check import quality_check_node
-from rigovo.application.graph.nodes.verify_execution import verify_execution_node
 from rigovo.application.graph.nodes.reclassify import reclassify_node
 from rigovo.application.graph.nodes.replan import replan_node
 from rigovo.application.graph.nodes.route_team import route_team_node
 from rigovo.application.graph.nodes.scan_project import scan_project_node
 from rigovo.application.graph.nodes.store_memory import store_memory_node
+from rigovo.application.graph.nodes.verify_execution import verify_execution_node
 from rigovo.application.graph.state import TaskState
-from rigovo.domain.services.history_state import CheckpointType, HistoryStateManager
 from rigovo.application.master.classifier import TaskClassifier
 from rigovo.application.master.enricher import ContextEnricher
 from rigovo.application.master.evaluator import AgentEvaluator
@@ -59,6 +58,7 @@ from rigovo.domain.interfaces.llm_provider import LLMProvider
 from rigovo.domain.interfaces.quality_gate import QualityGate
 from rigovo.domain.interfaces.repositories import MemoryRepository
 from rigovo.domain.services.cost_calculator import CostCalculator
+from rigovo.domain.services.history_state import CheckpointType
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +252,8 @@ class GraphBuilder:
 
         async def _reclassify(state: TaskState) -> dict:
             return await reclassify_node(
-                state, master_llm,
+                state,
+                master_llm,
                 classifier=classifier,
                 embedding_provider=embedding_provider,
             )
@@ -280,7 +281,7 @@ class GraphBuilder:
                 remaining_instances = list(ready_roles)
             else:
                 current_index = state.get("current_agent_index", 0)
-                remaining_instances = pipeline_order[current_index + 1:]
+                remaining_instances = pipeline_order[current_index + 1 :]
 
             # Emit parallel_started event
             events = list(state.get("events", []))
@@ -316,17 +317,14 @@ class GraphBuilder:
                 # Merge verification events and history
                 result_events_so_far = list(result.get("events", []))
                 result_events_so_far.extend(
-                    e for e in verify_result.get("events", [])
-                    if e not in result_events_so_far
+                    e for e in verify_result.get("events", []) if e not in result_events_so_far
                 )
                 result["events"] = result_events_so_far
                 all_verification_history = list(
                     verify_result.get("verification_history", all_verification_history)
                 )
                 # Keep the last instance's verification result (for quality_check)
-                result["execution_verification"] = verify_result.get(
-                    "execution_verification", {}
-                )
+                result["execution_verification"] = verify_result.get("execution_verification", {})
             result["verification_history"] = all_verification_history
 
             # Add parallel_complete event and advance index to end of pipeline
@@ -649,7 +647,8 @@ class GraphBuilder:
             if state.get("reclassify_requested") and int(state.get("reclassify_count", 0) or 0) < 1:
                 logger.info("Sequential path: RECLASSIFY triggered — re-running classification")
                 update = await reclassify_node(
-                    state, self._master_llm,
+                    state,
+                    self._master_llm,
                     classifier=self._classifier,
                     embedding_provider=self._embedding_provider,
                 )
@@ -746,9 +745,7 @@ def _record_sequential_checkpoint(
     import time as _time
 
     gate_passed = gate_results.get("passed", True) if isinstance(gate_results, dict) else True
-    checkpoint_type = (
-        CheckpointType.GATE_PASSED if gate_passed else CheckpointType.GATE_FAILED
-    )
+    checkpoint_type = CheckpointType.GATE_PASSED if gate_passed else CheckpointType.GATE_FAILED
 
     # Build lightweight checkpoint record
     agent_outputs = state.get("agent_outputs", {})
@@ -759,7 +756,7 @@ def _record_sequential_checkpoint(
                 agent_summaries[role] = str(output.get("summary", ""))[:200]
 
     record = {
-        "checkpoint_id": f"seq-{len(state.get('checkpoint_timeline', []))+1:03d}",
+        "checkpoint_id": f"seq-{len(state.get('checkpoint_timeline', [])) + 1:03d}",
         "checkpoint_type": checkpoint_type,
         "checkpoint_name": f"{instance_id} completed",
         "timestamp": _time.time(),

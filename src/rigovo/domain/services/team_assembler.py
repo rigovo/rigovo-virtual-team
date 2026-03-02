@@ -23,7 +23,7 @@ import logging
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import uuid5, NAMESPACE_DNS
+from uuid import NAMESPACE_DNS, uuid5
 
 from rigovo.domain.entities.agent import Agent, AgentStats, EnrichmentContext
 from rigovo.domain.entities.task import TaskComplexity, TaskType
@@ -77,8 +77,12 @@ class PipelineConfig:
 
     # Per-instance metadata from the staffing plan
     instance_assignments: dict[str, str] = field(default_factory=dict)  # instance_id → assignment
-    instance_verifications: dict[str, str] = field(default_factory=dict)  # instance_id → verification
-    instance_specialisations: dict[str, str] = field(default_factory=dict)  # instance_id → specialisation
+    instance_verifications: dict[str, str] = field(
+        default_factory=dict
+    )  # instance_id → verification
+    instance_specialisations: dict[str, str] = field(
+        default_factory=dict
+    )  # instance_id → specialisation
 
     @property
     def agent_count(self) -> int:
@@ -100,15 +104,15 @@ CODE_PRODUCING_ROLES = {"coder", "devops", "sre", "qa"}
 # Lower number = runs earlier. Agents MUST follow this ordering.
 # The LLM can decide WHICH agents to include, but it CANNOT override the order.
 ROLE_PRIORITY: dict[str, int] = {
-    "planner":  10,   # ALWAYS first — creates the plan
-    "coder":    20,   # Implements the plan
-    "reviewer": 30,   # Reviews code produced by coders
-    "security": 40,   # Security audit after code review
-    "qa":       50,   # Tests after code is reviewed and secure
-    "devops":   60,   # Infrastructure after quality checks
-    "sre":      70,   # Reliability after infra
-    "docs":     80,   # Documentation after everything
-    "lead":     90,   # Tech Lead LAST — final architectural review of ALL work
+    "planner": 10,  # ALWAYS first — creates the plan
+    "coder": 20,  # Implements the plan
+    "reviewer": 30,  # Reviews code produced by coders
+    "security": 40,  # Security audit after code review
+    "qa": 50,  # Tests after code is reviewed and secure
+    "devops": 60,  # Infrastructure after quality checks
+    "sre": 70,  # Reliability after infra
+    "docs": 80,  # Documentation after everything
+    "lead": 90,  # Tech Lead LAST — final architectural review of ALL work
 }
 
 
@@ -139,9 +143,7 @@ class TeamAssemblerService:
         - The execution DAG comes from the staffing plan, not hardcoded
         - Quality gates fire after any code-producing agent
         """
-        agent_by_role: dict[str, Agent] = {
-            a.role: a for a in available_agents if a.is_active
-        }
+        agent_by_role: dict[str, Agent] = {a.role: a for a in available_agents if a.is_active}
 
         plan_agents = staffing_plan.get("agents", [])
         if not plan_agents:
@@ -193,7 +195,11 @@ class TeamAssemblerService:
 
             # Clone the template for this specific instance
             agent = self._clone_agent_for_instance(
-                template, instance_id, specialisation, assignment, verification,
+                template,
+                instance_id,
+                specialisation,
+                assignment,
+                verification,
                 slot.get("tools_required", []),
             )
             pipeline_agents.append(agent)
@@ -227,10 +233,7 @@ class TeamAssemblerService:
         )
 
         # Quality gates after code-producing agents
-        gates_after = [
-            a.instance_id for a in pipeline_agents
-            if a.role in CODE_PRODUCING_ROLES
-        ]
+        gates_after = [a.instance_id for a in pipeline_agents if a.role in CODE_PRODUCING_ROLES]
 
         return PipelineConfig(
             agents=pipeline_agents,
@@ -253,6 +256,7 @@ class TeamAssemblerService:
         Within the same role (e.g. multiple coders), we preserve the LLM's
         original order since it may have intentional specialisation sequencing.
         """
+
         def sort_key(agent: Agent) -> tuple[int, int]:
             role = agent.role
             priority = ROLE_PRIORITY.get(role, 55)  # Unknown roles go between qa and devops
@@ -429,10 +433,7 @@ you tried and what the outcome was. "Assuming it works" is NOT acceptable.
         groups: list[list[str]] = []
 
         while remaining:
-            ready = [
-                iid for iid in remaining
-                if all(d in completed for d in dag.get(iid, []))
-            ]
+            ready = [iid for iid in remaining if all(d in completed for d in dag.get(iid, []))]
             if not ready:
                 # Deadlock — break by taking first remaining
                 ready = [sorted(remaining)[0]]

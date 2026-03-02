@@ -30,14 +30,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from rigovo.application.master.deterministic_brain import (
-    DeterministicClassification,
     _COMPILED_RULES,
+    DeterministicClassification,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # 1. INTENT SIGNATURES — golden examples per task type
 # ═══════════════════════════════════════════════════════════════════════
+
 
 @dataclass
 class IntentSignature:
@@ -208,10 +208,7 @@ def _build_signatures() -> dict[str, IntentSignature]:
     """Build IntentSignature objects from raw config.  Compiles regexes."""
     result: dict[str, IntentSignature] = {}
     for task_type, cfg in _RAW_SIGNATURES.items():
-        compiled = [
-            re.compile(p, re.IGNORECASE)
-            for p in cfg.get("patterns", [])
-        ]
+        compiled = [re.compile(p, re.IGNORECASE) for p in cfg.get("patterns", [])]
         result[task_type] = IntentSignature(
             task_type=task_type,
             complexity_hint=cfg.get("complexity_hint", "medium"),
@@ -228,19 +225,20 @@ INTENT_SIGNATURES: dict[str, IntentSignature] = _build_signatures()
 # 2. SEMANTIC CLASSIFIER — two-pass classification
 # ═══════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class SemanticClassification:
     """Result of the two-pass semantic classification."""
 
     task_type: str
     complexity: str
-    confidence: float        # 0.0–1.0
-    source: str              # "regex", "semantic", "default"
-    matched_pattern: str     # what matched (regex pattern or anchor text)
-    best_similarity: float   # highest cosine similarity (Pass 2)
-    runner_up_type: str      # second-best task type
+    confidence: float  # 0.0–1.0
+    source: str  # "regex", "semantic", "default"
+    matched_pattern: str  # what matched (regex pattern or anchor text)
+    best_similarity: float  # highest cosine similarity (Pass 2)
+    runner_up_type: str  # second-best task type
     runner_up_similarity: float  # second-best similarity
-    is_ambiguous: bool       # True if gap between best and runner-up < 0.15
+    is_ambiguous: bool  # True if gap between best and runner-up < 0.15
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -288,9 +286,7 @@ class SemanticClassifier:
 
         for sig in INTENT_SIGNATURES.values():
             if sig.semantic_anchors and not sig.anchor_embeddings:
-                embeddings = await self._embedding_provider.embed_batch(
-                    sig.semantic_anchors
-                )
+                embeddings = await self._embedding_provider.embed_batch(sig.semantic_anchors)
                 sig.anchor_embeddings = embeddings
 
         self._initialized = True
@@ -433,6 +429,7 @@ class SemanticClassifier:
 # ═══════════════════════════════════════════════════════════════════════
 # 3. CONVENIENCE — convert SemanticClassification to DeterministicClassification
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def semantic_to_deterministic(sc: SemanticClassification) -> DeterministicClassification:
     """Convert a SemanticClassification to the existing DeterministicClassification format.

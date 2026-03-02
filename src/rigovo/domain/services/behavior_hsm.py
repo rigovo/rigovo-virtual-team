@@ -244,6 +244,7 @@ _INFRA_IMPACT_PHASE = BehaviorPhase(
 
 # ── State hierarchy definition ──────────────────────────────────────────
 
+
 def _build_default_hierarchy() -> dict[str, BehaviorState]:
     """Build the default behavioral state hierarchy.
 

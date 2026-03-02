@@ -12,12 +12,10 @@ instance_ids are involved.
 
 from __future__ import annotations
 
-from typing import Any
-
 from rigovo.application.graph.state import TaskState
 
-
 # ── Helpers ─────────────────────────────────────────────────────────────
+
 
 def _get_role_for_instance(state: TaskState, instance_id: str) -> str:
     """Resolve the base role (coder, reviewer, qa, …) for an instance_id."""
@@ -29,13 +27,11 @@ def _get_role_for_instance(state: TaskState, instance_id: str) -> str:
 def _get_instances_by_role(state: TaskState, role: str) -> list[str]:
     """Return all instance_ids that map to a given role."""
     agents = state.get("team_config", {}).get("agents", {})
-    return [
-        iid for iid, cfg in agents.items()
-        if cfg.get("role") == role
-    ]
+    return [iid for iid, cfg in agents.items() if cfg.get("role") == role]
 
 
 # ── Reclassification check ──────────────────────────────────────────────
+
 
 def check_reclassify_needed(state: TaskState) -> str:
     """Route after verify_execution — check if agent requested reclassification.
@@ -60,6 +56,7 @@ def check_reclassify_needed(state: TaskState) -> str:
 
 # ── Approval ────────────────────────────────────────────────────────────
 
+
 def check_approval(state: TaskState) -> str:
     """Route based on user approval status."""
     status = state.get("approval_status", "pending")
@@ -69,6 +66,7 @@ def check_approval(state: TaskState) -> str:
 
 
 # ── Quality gate routing ────────────────────────────────────────────────
+
 
 def check_gates_and_route(state: TaskState) -> str:
     """
@@ -168,8 +166,7 @@ def check_pipeline_complete(state: TaskState) -> str:
         # Check if all ready instances are parallelizable by role
         if len(ready_roles) >= 2:
             all_parallelizable = all(
-                _get_role_for_instance(state, iid) in _PARALLELIZABLE_ROLES
-                for iid in ready_roles
+                _get_role_for_instance(state, iid) in _PARALLELIZABLE_ROLES for iid in ready_roles
             )
             if all_parallelizable:
                 return "parallel_fan_out"
@@ -182,10 +179,9 @@ def check_pipeline_complete(state: TaskState) -> str:
     current_index = state.get("current_agent_index", 0)
     if current_index + 1 >= len(pipeline_order):
         return "pipeline_done"
-    remaining = pipeline_order[current_index + 1:]
+    remaining = pipeline_order[current_index + 1 :]
     if len(remaining) >= 2 and all(
-        _get_role_for_instance(state, iid) in _PARALLELIZABLE_ROLES
-        for iid in remaining
+        _get_role_for_instance(state, iid) in _PARALLELIZABLE_ROLES for iid in remaining
     ):
         return "parallel_fan_out"
 
@@ -209,6 +205,7 @@ def check_parallel_postprocess(state: TaskState) -> str:
 
 # ── DAG helpers ─────────────────────────────────────────────────────────
 
+
 def _compute_blocked_roles(
     execution_dag: dict[str, list[str]],
     completed: set[str],
@@ -229,6 +226,7 @@ def _compute_blocked_roles(
 
 
 # ── Advance pipeline ────────────────────────────────────────────────────
+
 
 def advance_to_next_agent(state: TaskState) -> dict:
     """
@@ -316,14 +314,12 @@ def advance_to_next_agent(state: TaskState) -> dict:
     status = "routing_next_agent"
     error = ""
     remaining = [
-        iid for iid in pipeline_order
-        if iid not in completed_roles and iid not in blocked_roles
+        iid for iid in pipeline_order if iid not in completed_roles and iid not in blocked_roles
     ]
     if remaining and not ready_roles:
         status = "pipeline_failed_dependency"
-        error = (
-            "No executable DAG nodes remain; unresolved dependencies for: "
-            + ", ".join(remaining)
+        error = "No executable DAG nodes remain; unresolved dependencies for: " + ", ".join(
+            remaining
         )
         events.append(
             {
@@ -348,9 +344,7 @@ def advance_to_next_agent(state: TaskState) -> dict:
         "ready_roles": ready_roles,
         "completed_roles": sorted(completed_roles),
         "blocked_roles": sorted(blocked_roles),
-        "debate_target_role": (
-            "" if current_instance == debate_target else debate_target
-        ),
+        "debate_target_role": ("" if current_instance == debate_target else debate_target),
         "fix_packets": [],
         "retry_count": 0,
         "status": status,
@@ -511,8 +505,7 @@ def check_debate_needed(state: TaskState) -> str:
     for source_instance, source_role, _ in all_sources:
         # Count how many rounds this specific source has already triggered
         rounds_for_source = sum(
-            1 for fl in feedback_loops
-            if fl.get("source_instance") == source_instance
+            1 for fl in feedback_loops if fl.get("source_instance") == source_instance
         )
         role_max = _DEFAULT_MAX_ROUNDS_BY_ROLE.get(source_role, DEFAULT_MAX_DEBATE_ROUNDS)
         if rounds_for_source < role_max:
@@ -547,8 +540,7 @@ def prepare_debate_round(state: TaskState) -> dict:
     active_sources: list[tuple[str, str, str]] = []
     for src_instance, src_role, summary in all_sources:
         rounds_for_source = sum(
-            1 for fl in feedback_loops
-            if fl.get("source_instance") == src_instance
+            1 for fl in feedback_loops if fl.get("source_instance") == src_instance
         )
         role_max = _DEFAULT_MAX_ROUNDS_BY_ROLE.get(src_role, DEFAULT_MAX_DEBATE_ROUNDS)
         if rounds_for_source < role_max:
@@ -566,7 +558,9 @@ def prepare_debate_round(state: TaskState) -> dict:
         return {
             "debate_round": debate_round,
             "events": list(state.get("events", []))
-            + [{"type": "feedback_loop", "round": debate_round, "status": "no_actionable_feedback"}],
+            + [
+                {"type": "feedback_loop", "round": debate_round, "status": "no_actionable_feedback"}
+            ],
         }
 
     primary_instance, primary_role, primary_summary = active_sources[0]
@@ -583,7 +577,8 @@ def prepare_debate_round(state: TaskState) -> dict:
     # Remove ALL feedback sources from completed so they re-run after coder
     source_instances = {src[0] for src in active_sources}
     completed_roles = [
-        r for r in state.get("completed_roles", [])
+        r
+        for r in state.get("completed_roles", [])
         if r not in source_instances and r != target_coder
     ]
 
@@ -595,21 +590,25 @@ def prepare_debate_round(state: TaskState) -> dict:
     # Record each feedback loop in history
     events = list(state.get("events", []))
     for src_instance, src_role, summary in active_sources:
-        feedback_loops.append({
-            "round": debate_round,
-            "source_instance": src_instance,
-            "source_role": src_role,
-            "target_coder": target_coder,
-            "feedback": summary[:500],
-        })
-        events.append({
-            "type": "feedback_loop",
-            "round": debate_round,
-            "source_instance": src_instance,
-            "source_role": src_role,
-            "target_coder": target_coder,
-            "feedback_preview": summary[:200],
-        })
+        feedback_loops.append(
+            {
+                "round": debate_round,
+                "source_instance": src_instance,
+                "source_role": src_role,
+                "target_coder": target_coder,
+                "feedback": summary[:500],
+            }
+        )
+        events.append(
+            {
+                "type": "feedback_loop",
+                "round": debate_round,
+                "source_instance": src_instance,
+                "source_role": src_role,
+                "target_coder": target_coder,
+                "feedback_preview": summary[:200],
+            }
+        )
 
     # Build combined fix packet with all feedback.
     # Truncate each summary to prevent token waste (2000 chars max per source).
@@ -645,9 +644,7 @@ def prepare_debate_round(state: TaskState) -> dict:
             "source_role": primary_role,
             "target_coder": target_coder,
             "round": debate_round,
-            "all_sources": [
-                {"instance": s[0], "role": s[1]} for s in active_sources
-            ],
+            "all_sources": [{"instance": s[0], "role": s[1]} for s in active_sources],
         },
         # Inject ALL feedback as fix packets so coder sees everything
         "fix_packets": fix_packet_parts,

@@ -204,8 +204,10 @@ class ConsultationSchema(BaseModel):
     enabled: bool = True
     max_question_chars: int = 1200
     max_response_chars: int = 1200
-    max_consults_per_agent: int = 3   # Total consultations an agent can make per execution
-    max_consults_per_target: int = 2  # Max consultations to the same target (1 initial + 1 follow-up)
+    max_consults_per_agent: int = 3  # Total consultations an agent can make per execution
+    max_consults_per_target: int = (
+        2  # Max consultations to the same target (1 initial + 1 follow-up)
+    )
     allowed_targets: dict[str, list[str]] = Field(
         default_factory=lambda: {
             "planner": ["lead"],

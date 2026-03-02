@@ -97,13 +97,15 @@ async def assemble_node(
     agent_summaries = []
     for iid in pipeline_order:
         cfg = agent_configs[iid]
-        agent_summaries.append({
-            "instance_id": iid,
-            "role": cfg["role"],
-            "name": cfg["name"],
-            "specialisation": cfg.get("specialisation", ""),
-            "assignment": (cfg.get("assignment", "") or "")[:200],
-        })
+        agent_summaries.append(
+            {
+                "instance_id": iid,
+                "role": cfg["role"],
+                "name": cfg["name"],
+                "specialisation": cfg.get("specialisation", ""),
+                "assignment": (cfg.get("assignment", "") or "")[:200],
+            }
+        )
 
     return {
         "team_config": team_config,
@@ -129,8 +131,7 @@ async def assemble_node(
                 "gates_after": pipeline.gates_after,
                 "parallel_groups": pipeline.parallel_groups if pipeline.parallel_groups else [],
                 "agent_models": {
-                    iid: config.get("llm_model", "unknown")
-                    for iid, config in agent_configs.items()
+                    iid: config.get("llm_model", "unknown") for iid, config in agent_configs.items()
                 },
                 "agent_summaries": agent_summaries,
             },

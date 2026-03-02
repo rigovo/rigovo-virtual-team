@@ -1,7 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
-import { join, relative } from "node:path";
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
+import { join, resolve, relative } from "node:path";
 import { ChildProcess, execSync, spawn } from "node:child_process";
-import { readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 
 /* ------------------------------------------------------------------ */
 /*  Engine lifecycle – same semantics as the old Tauri Rust backend   */
@@ -341,17 +341,55 @@ function createWindow(): void {
   const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
 
   // Resolve icon path — works in both dev (source tree) and production (resources)
+  // On macOS, BrowserWindow `icon` is ignored for the dock — must use app.dock.setIcon()
+  // IMPORTANT: .icns files often fail with nativeImage.createFromPath() (returns empty),
+  // so we always prefer .png for the dock icon on macOS. .icns is only used as a last resort.
   const iconPath = (() => {
-    const candidates = [
-      join(__dirname, "../../resources/icon.png"),   // dev: out/main/ → resources/
-      join(__dirname, "../../../resources/icon.png"), // fallback
-      join(app.getAppPath(), "resources/icon.png"),   // production bundle
+    // Prefer .png on macOS (nativeImage reads it reliably); .icns often loads as empty.
+    // On Windows use .ico, on Linux use .png.
+    const baseDirs = [
+      join(__dirname, "../../resources"),
+      join(app.getAppPath(), "resources"),
+      resolve(process.cwd(), "resources"),
     ];
-    for (const c of candidates) {
-      try { if (statSync(c).isFile()) return c; } catch { /* skip */ }
+    const candidates: string[] = [];
+    for (const dir of baseDirs) {
+      // Always try .png first — it works reliably on all platforms with nativeImage
+      candidates.push(join(dir, "icon.png"));
+      if (process.platform === "win32") {
+        candidates.push(join(dir, "icon.ico"));
+      }
+      // .icns as last resort (electron-builder uses it for DMG, but nativeImage often can't read it)
+      if (process.platform === "darwin") {
+        candidates.push(join(dir, "icon.icns"));
+      }
     }
+    for (const c of candidates) {
+      try {
+        if (existsSync(c) && statSync(c).isFile()) {
+          console.log("[rigovo] icon found:", c);
+          return c;
+        }
+      } catch { /* skip */ }
+    }
+    console.warn("[rigovo] no icon found. tried:", candidates);
     return undefined;
   })();
+
+  // macOS dock icon — must be set explicitly (BrowserWindow icon doesn't affect dock)
+  if (iconPath && process.platform === "darwin" && app.dock) {
+    try {
+      const img = nativeImage.createFromPath(iconPath);
+      if (!img.isEmpty()) {
+        app.dock.setIcon(img);
+        console.log("[rigovo] dock icon set from:", iconPath);
+      } else {
+        console.warn("[rigovo] dock icon image is empty:", iconPath);
+      }
+    } catch (e) {
+      console.warn("[rigovo] dock icon failed:", e);
+    }
+  }
 
   const mainWindow = new BrowserWindow({
     width: 1480,
@@ -420,6 +458,11 @@ async function bootstrapDesktop(): Promise<void> {
   if (!isDev) {
     killPort(8787);
   }
+
+  // Set app name before anything else — this controls the macOS dock tooltip
+  // and the app menu title.  In production electron-builder sets it from
+  // package.json productName, but in dev mode Electron defaults to "Electron".
+  app.setName("Rigovo Virtual Team");
 
   await app.whenReady();
   registerIpc();

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-
 from uuid import UUID
 
 from rigovo.domain.entities.agent import Agent, EnrichmentContext
@@ -162,47 +161,55 @@ class ContextEnricher:
 
         # Convert gate learnings to memories
         for learning in update.gate_learnings:
-            memories.append(Memory(
-                workspace_id=workspace_id,
-                content=learning,
-                memory_type=MemoryType.GATE_LEARNING,
-                source_project_id=source_project_id,
-                source_task_id=source_task_id,
-                source_agent_id=source_agent_id,
-            ))
+            memories.append(
+                Memory(
+                    workspace_id=workspace_id,
+                    content=learning,
+                    memory_type=MemoryType.GATE_LEARNING,
+                    source_project_id=source_project_id,
+                    source_task_id=source_task_id,
+                    source_agent_id=source_agent_id,
+                )
+            )
 
         # Convert team performance insights to memories
         for insight in update.team_performance:
-            memories.append(Memory(
-                workspace_id=workspace_id,
-                content=insight,
-                memory_type=MemoryType.TEAM_PERFORMANCE,
-                source_project_id=source_project_id,
-                source_task_id=source_task_id,
-                source_agent_id=source_agent_id,
-            ))
+            memories.append(
+                Memory(
+                    workspace_id=workspace_id,
+                    content=insight,
+                    memory_type=MemoryType.TEAM_PERFORMANCE,
+                    source_project_id=source_project_id,
+                    source_task_id=source_task_id,
+                    source_agent_id=source_agent_id,
+                )
+            )
 
         # Convert architecture insights to memories
         for insight in update.architecture_insights:
-            memories.append(Memory(
-                workspace_id=workspace_id,
-                content=insight,
-                memory_type=MemoryType.ARCHITECTURE,
-                source_project_id=source_project_id,
-                source_task_id=source_task_id,
-                source_agent_id=source_agent_id,
-            ))
+            memories.append(
+                Memory(
+                    workspace_id=workspace_id,
+                    content=insight,
+                    memory_type=MemoryType.ARCHITECTURE,
+                    source_project_id=source_project_id,
+                    source_task_id=source_task_id,
+                    source_agent_id=source_agent_id,
+                )
+            )
 
         # Also convert standard enrichment updates to appropriate memory types
         for outcome in update.domain_knowledge:
-            memories.append(Memory(
-                workspace_id=workspace_id,
-                content=outcome,
-                memory_type=MemoryType.DOMAIN_KNOWLEDGE,
-                source_project_id=source_project_id,
-                source_task_id=source_task_id,
-                source_agent_id=source_agent_id,
-            ))
+            memories.append(
+                Memory(
+                    workspace_id=workspace_id,
+                    content=outcome,
+                    memory_type=MemoryType.DOMAIN_KNOWLEDGE,
+                    source_project_id=source_project_id,
+                    source_task_id=source_task_id,
+                    source_agent_id=source_agent_id,
+                )
+            )
 
         logger.info(
             "Extracted %d memories from enrichment update "

@@ -344,6 +344,11 @@ export default function App(): JSX.Element {
       if (!active) return;
       setAuthSession(auth.signed_in ? auth : null);
       setControlState(controlStatePayload || null);
+      // Apply saved governance tier — so new tasks default to what the user configured
+      const savedTier = controlStatePayload?.policy?.defaultTier;
+      if (savedTier === "auto" || savedTier === "notify" || savedTier === "approve") {
+        setTaskTier(savedTier);
+      }
       setWorkspaceMeta({
         org: auth.organization_name || auth.workspace?.name || controlStatePayload?.workspace?.workspaceName || controlStatePayload?.workspace?.workspaceSlug || "",
         users: Array.isArray(controlStatePayload?.personas) ? controlStatePayload.personas.length : 0,
@@ -471,10 +476,10 @@ export default function App(): JSX.Element {
   }, [stopAuthPolling]);
   useEffect(() => () => stopAuthPolling(), [stopAuthPolling]);
 
-  const onSignIn = async (hint: "sign-in" | "sign-up" = "sign-in") => {
+  const onSignIn = async () => {
     const ok = await isApiHealthy(API_BASE); setApiReachable(ok);
     if (!ok) { setOnboardingMsg(`Cannot reach API at ${API_BASE}.`); return; }
-    const res = await readJson<{ url: string }>(`${API_BASE}/v1/auth/url?screen_hint=${hint}`);
+    const res = await readJson<{ url: string }>(`${API_BASE}/v1/auth/url`);
     if (!res?.url) { setOnboardingMsg("Failed to start auth."); return; }
     if (electronAPI?.openExternal) await electronAPI.openExternal(res.url); else window.open(res.url, "_blank");
     setOnboardingMsg(""); startAuthPolling();
@@ -708,8 +713,7 @@ export default function App(): JSX.Element {
   if (route === "auth") {
     return (
       <AuthScreen
-        onSignIn={() => void onSignIn("sign-in")}
-        onSignUp={() => void onSignIn("sign-up")}
+        onSignIn={() => void onSignIn()}
         waiting={authWaiting}
         onCancel={stopAuthPolling}
         message={onboardingMsg}

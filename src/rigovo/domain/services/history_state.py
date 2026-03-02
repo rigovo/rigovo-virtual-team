@@ -35,6 +35,7 @@ MAX_CHECKPOINT_SNAPSHOTS = 50  # Don't keep more than 50 checkpoints per task
 
 # --- Checkpoint types ---
 
+
 class CheckpointType:
     """Types of checkpoints that can be recorded."""
 
@@ -240,12 +241,14 @@ class CheckpointTimeline:
 
         # Cost accumulator
         cost_acc = state.get("cost_accumulator", {})
-        total_tokens = sum(
-            v.get("tokens", 0) for v in cost_acc.values()
-        ) if isinstance(cost_acc, dict) else 0
-        total_cost = round(sum(
-            v.get("cost", 0.0) for v in cost_acc.values()
-        ), 6) if isinstance(cost_acc, dict) else 0.0
+        total_tokens = (
+            sum(v.get("tokens", 0) for v in cost_acc.values()) if isinstance(cost_acc, dict) else 0
+        )
+        total_cost = (
+            round(sum(v.get("cost", 0.0) for v in cost_acc.values()), 6)
+            if isinstance(cost_acc, dict)
+            else 0.0
+        )
 
         record = CheckpointRecord(
             checkpoint_id=checkpoint_id,
@@ -317,9 +320,7 @@ class ResumeContext:
             parts.append(f"Resumed from: {self.resumed_from_checkpoint}")
 
         if self.completed_agents:
-            parts.append(
-                f"Already completed agents: {', '.join(self.completed_agents)}"
-            )
+            parts.append(f"Already completed agents: {', '.join(self.completed_agents)}")
 
         if self.previous_agent_summaries:
             parts.append("\nPrevious agent outputs (before interruption):")
@@ -328,9 +329,7 @@ class ResumeContext:
                     parts.append(f"  [{role}]: {summary[:150]}")
 
         if self.files_already_changed:
-            parts.append(
-                f"\nFiles already modified: {', '.join(self.files_already_changed[:20])}"
-            )
+            parts.append(f"\nFiles already modified: {', '.join(self.files_already_changed[:20])}")
 
         parts.append(
             "\nIMPORTANT: Do NOT repeat work already completed by previous agents. "
@@ -436,9 +435,7 @@ class HistoryStateManager:
             completed_agents=timeline.completed_agents,
             last_successful_phase=timeline.last_successful_phase,
             files_already_changed=timeline.all_files_changed,
-            previous_agent_summaries=(
-                last.agent_outputs_summary if last else {}
-            ),
+            previous_agent_summaries=(last.agent_outputs_summary if last else {}),
             accumulated_tokens=last.total_tokens if last else 0,
             accumulated_cost=last.total_cost_usd if last else 0.0,
         )
@@ -451,11 +448,7 @@ class HistoryStateManager:
 
     def get_stale_tasks(self) -> list[str]:
         """Return task IDs that appear to be interrupted (stale heartbeat)."""
-        return [
-            task_id
-            for task_id, tracker in self._heartbeats.items()
-            if tracker.is_stale
-        ]
+        return [task_id for task_id, tracker in self._heartbeats.items() if tracker.is_stale]
 
     def clear_task(self, task_id: str) -> None:
         """Clean up tracking for a completed/failed task."""

@@ -1,5 +1,6 @@
 /* ------------------------------------------------------------------ */
-/*  AuthScreen — Rigovo sign-in/sign-up, Warm Ink theme               */
+/*  AuthScreen — Rigovo sign-in, Warm Ink theme                       */
+/*  Account creation is handled by WorkOS AuthKit (hosted UI).        */
 /* ------------------------------------------------------------------ */
 
 /** Rigovo brand mark — target/crosshair with checkmark, dark navy bg.
@@ -64,7 +65,6 @@ function RigovoLogo({ size = 64 }: { size?: number }): JSX.Element {
 
 interface AuthScreenProps {
   onSignIn: () => void;
-  onSignUp: () => void;
   waiting: boolean;
   onCancel: () => void;
   message: string;
@@ -73,7 +73,6 @@ interface AuthScreenProps {
 
 export default function AuthScreen({
   onSignIn,
-  onSignUp,
   waiting,
   onCancel,
   message,
@@ -140,17 +139,6 @@ export default function AuthScreen({
                 <path d="M11 8H3" />
               </svg>
               Sign in
-            </button>
-
-            <div className="auth-divider">or</div>
-
-            <button
-              type="button"
-              className="auth-secondary-btn"
-              onClick={onSignUp}
-              aria-label="Create a Rigovo account"
-            >
-              Create account
             </button>
           </div>
         )}

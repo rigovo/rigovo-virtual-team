@@ -18,9 +18,8 @@ Four components:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # 1. KEYWORD CLASSIFIER — instant task_type from text patterns
@@ -30,37 +29,64 @@ from typing import Any
 # Patterns are case-insensitive.  Each tuple is (pattern, task_type, complexity_hint).
 _KEYWORD_RULES: list[tuple[str, str, str]] = [
     # New project — highest priority (explicit creation language)
-    (r"\b(?:create\s+(?:new\s+)?(?:repo|project|app|application|service))\b", "new_project", "high"),
-    (r"\b(?:build\s+(?:a\s+|an\s+)?(?:new\s+)?(?:app|application|service|platform|system|saas|tool))\b", "new_project", "high"),
+    (
+        r"\b(?:create\s+(?:new\s+)?(?:repo|project|app|application|service))\b",
+        "new_project",
+        "high",
+    ),
+    (
+        r"\b(?:build\s+(?:a\s+|an\s+)?(?:new\s+)?(?:app|application|service|platform|system|saas|tool))\b",
+        "new_project",
+        "high",
+    ),
     (r"\b(?:init(?:ialize)?|scaffold|bootstrap|start\s+(?:a\s+)?new)\b", "new_project", "medium"),
     (r"\b(?:new\s+repo(?:sitory)?|from\s+scratch|brand\s*new)\b", "new_project", "high"),
     (r"\b(?:set\s*up\s+(?:a\s+)?(?:project|repo|codebase))\b", "new_project", "medium"),
-
     # Security
-    (r"\b(?:security\s+audit|vulnerability|cve|penetration|auth(?:entication|orization)\s+fix)\b", "security", "high"),
-
+    (
+        r"\b(?:security\s+audit|vulnerability|cve|penetration|auth(?:entication|orization)\s+fix)\b",
+        "security",
+        "high",
+    ),
     # Infrastructure
-    (r"\b(?:deploy|docker|kubernetes|k8s|ci\s*/?\s*cd|terraform|infra(?:structure)?|helm)\b", "infra", "medium"),
-
+    (
+        r"\b(?:deploy|docker|kubernetes|k8s|ci\s*/?\s*cd|terraform|infra(?:structure)?|helm)\b",
+        "infra",
+        "medium",
+    ),
     # Bug fix
-    (r"\b(?:fix\s+(?:\w+\s+)*bug|broken|crash(?:es|ing)?|error|regression|hotfix)\b", "bug", "medium"),
+    (
+        r"\b(?:fix\s+(?:\w+\s+)*bug|broken|crash(?:es|ing)?|error|regression|hotfix)\b",
+        "bug",
+        "medium",
+    ),
     (r"\b(?:doesn'?t\s+work|not\s+working|fails?\s+(?:to|when)|issue\s+with)\b", "bug", "medium"),
-
     # Refactor
-    (r"\b(?:refactor|clean\s*up|reorgani[sz]e|restructure|simplify|modernize)\b", "refactor", "medium"),
-
+    (
+        r"\b(?:refactor|clean\s*up|reorgani[sz]e|restructure|simplify|modernize)\b",
+        "refactor",
+        "medium",
+    ),
     # Tests
-    (r"\b(?:write\s+(?:\w+\s+)?tests?|add\s+(?:\w+\s+)?tests?|test\s+coverage|unit\s+test|integration\s+test|e2e)\b", "test", "medium"),
-
+    (
+        r"\b(?:write\s+(?:\w+\s+)?tests?|add\s+(?:\w+\s+)?tests?|test\s+coverage|unit\s+test|integration\s+test|e2e)\b",
+        "test",
+        "medium",
+    ),
     # Documentation
     (r"\b(?:document(?:ation)?|write\s+docs?|readme|api\s+docs?|jsdoc|docstring)\b", "docs", "low"),
-
     # Performance
-    (r"\b(?:performance|optimi[sz]e|slow|latency|speed\s*up|profil(?:e|ing)|benchmark)\b", "performance", "medium"),
-
+    (
+        r"\b(?:performance|optimi[sz]e|slow|latency|speed\s*up|profil(?:e|ing)|benchmark)\b",
+        "performance",
+        "medium",
+    ),
     # Investigation
-    (r"\b(?:investigate|debug|trace|diagnose|understand|figure\s+out|look\s+into)\b", "investigation", "medium"),
-
+    (
+        r"\b(?:investigate|debug|trace|diagnose|understand|figure\s+out|look\s+into)\b",
+        "investigation",
+        "medium",
+    ),
     # Feature (broad catch — must be LAST)
     (r"\b(?:add|implement|build|create|develop|integrate|enable|support)\b", "feature", "medium"),
 ]
@@ -76,11 +102,11 @@ _COMPILED_RULES = [
 class DeterministicClassification:
     """Result of the keyword-based pre-classification."""
 
-    task_type: str           # feature, bug, new_project, etc.
-    complexity: str          # low, medium, high, critical
-    confidence: float        # 0.0-1.0 — how sure we are
-    matched_pattern: str     # which regex matched (for debugging)
-    is_deterministic: bool   # True = keyword match; False = default
+    task_type: str  # feature, bug, new_project, etc.
+    complexity: str  # low, medium, high, critical
+    confidence: float  # 0.0-1.0 — how sure we are
+    matched_pattern: str  # which regex matched (for debugging)
+    is_deterministic: bool  # True = keyword match; False = default
 
 
 def classify_by_keywords(description: str) -> DeterministicClassification:
@@ -131,15 +157,15 @@ def classify_by_keywords(description: str) -> DeterministicClassification:
 # Every task type has a floor team that guarantees basic competence.
 
 MINIMUM_TEAM: dict[str, list[str]] = {
-    "new_project":   ["planner", "coder", "reviewer"],
-    "feature":       ["planner", "coder", "reviewer"],
-    "bug":           ["coder", "reviewer"],
-    "refactor":      ["coder", "reviewer"],
-    "test":          ["coder", "qa"],
-    "docs":          ["planner", "coder"],
-    "infra":         ["planner", "devops", "reviewer"],
-    "security":      ["planner", "security", "coder", "reviewer"],
-    "performance":   ["coder", "reviewer"],
+    "new_project": ["planner", "coder", "reviewer"],
+    "feature": ["planner", "coder", "reviewer"],
+    "bug": ["coder", "reviewer"],
+    "refactor": ["coder", "reviewer"],
+    "test": ["coder", "qa"],
+    "docs": ["planner", "coder"],
+    "infra": ["planner", "devops", "reviewer"],
+    "security": ["planner", "security", "coder", "reviewer"],
+    "performance": ["coder", "reviewer"],
     "investigation": ["planner", "coder"],
 }
 
@@ -152,7 +178,7 @@ class MinimumTeamSpec:
     """The non-negotiable minimum team for a task type."""
 
     task_type: str
-    required_roles: list[str]       # Roles that MUST be present
+    required_roles: list[str]  # Roles that MUST be present
     default_assignments: dict[str, str]  # role → default assignment text
 
 
@@ -216,8 +242,12 @@ def _default_assignment(role: str, task_type: str, description: str) -> str:
         },
     }
 
-    role_templates = _TEMPLATES.get(role, {"_default": f"Complete your role's responsibilities for: {description}."})
-    return role_templates.get(task_type, role_templates.get("_default", f"Handle {role} tasks for: {description}."))
+    role_templates = _TEMPLATES.get(
+        role, {"_default": f"Complete your role's responsibilities for: {description}."}
+    )
+    return role_templates.get(
+        task_type, role_templates.get("_default", f"Handle {role} tasks for: {description}.")
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -271,6 +301,7 @@ def check_role_eligible(
 # 4. ENFORCE MINIMUM TEAM on LLM staffing plan
 # ═══════════════════════════════════════════════════════════════════════
 
+
 def enforce_minimum_team(
     llm_agents: list[dict[str, Any]],
     task_type: str,
@@ -305,15 +336,17 @@ def enforce_minimum_team(
                 counter += 1
                 instance_id = f"{role}-{counter}"
 
-            augmented.append({
-                "instance_id": instance_id,
-                "role": role,
-                "specialisation": "general",
-                "assignment": minimum.default_assignments.get(role, ""),
-                "depends_on": [],
-                "tools_required": [],
-                "verification": f"Verify {role} output meets acceptance criteria.",
-            })
+            augmented.append(
+                {
+                    "instance_id": instance_id,
+                    "role": role,
+                    "specialisation": "general",
+                    "assignment": minimum.default_assignments.get(role, ""),
+                    "depends_on": [],
+                    "tools_required": [],
+                    "verification": f"Verify {role} output meets acceptance criteria.",
+                }
+            )
 
     return augmented
 
@@ -321,6 +354,7 @@ def enforce_minimum_team(
 # ═══════════════════════════════════════════════════════════════════════
 # 5. SEMANTIC CLASSIFICATION — upgraded two-pass entry point
 # ═══════════════════════════════════════════════════════════════════════
+
 
 async def classify_semantic(
     description: str,

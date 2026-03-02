@@ -93,19 +93,23 @@ async def classify_node(
     }
 
     # Emit deterministic event IMMEDIATELY (UI shows instant classification)
-    events.append({
-        "type": "deterministic_classified",
-        "task_type": det_result.task_type,
-        "complexity": det_result.complexity,
-        "confidence": det_result.confidence,
-        "source": "regex" if det_result.is_deterministic else "semantic",
-        "matched_pattern": det_result.matched_pattern,
-    })
+    events.append(
+        {
+            "type": "deterministic_classified",
+            "task_type": det_result.task_type,
+            "complexity": det_result.complexity,
+            "confidence": det_result.confidence,
+            "source": "regex" if det_result.is_deterministic else "semantic",
+            "matched_pattern": det_result.matched_pattern,
+        }
+    )
 
     logger.info(
         "Deterministic Brain: type=%s complexity=%s confidence=%.2f pattern=%r",
-        det_result.task_type, det_result.complexity,
-        det_result.confidence, det_result.matched_pattern,
+        det_result.task_type,
+        det_result.complexity,
+        det_result.confidence,
+        det_result.matched_pattern,
     )
 
     # ══════════════════════════════════════════════════════════════════
@@ -143,7 +147,9 @@ async def classify_node(
         if _COMPLEXITY_ORDER.get(llm_complexity, 1) < _COMPLEXITY_ORDER.get(det_complexity, 1):
             logger.info(
                 "Enforcing complexity floor: LLM=%s < deterministic=%s → using %s",
-                llm_complexity, det_complexity, det_complexity,
+                llm_complexity,
+                det_complexity,
+                det_complexity,
             )
             llm_complexity = det_complexity
 
@@ -158,10 +164,14 @@ async def classify_node(
         # Override task_type with deterministic if LLM returned something weaker
         # (e.g., LLM said "feature" when keywords clearly said "new_project")
         if det_result.is_deterministic and det_result.confidence >= 0.85:
-            if det_result.task_type == "new_project" and classification["task_type"] != "new_project":
+            if (
+                det_result.task_type == "new_project"
+                and classification["task_type"] != "new_project"
+            ):
                 logger.info(
                     "Enforcing task_type floor: LLM=%s but deterministic=%s → using new_project",
-                    classification["task_type"], det_result.task_type,
+                    classification["task_type"],
+                    det_result.task_type,
                 )
                 classification["task_type"] = "new_project"
 
@@ -170,28 +180,30 @@ async def classify_node(
         plan_dict["agents"] = enforced_agents
         plan_dict["complexity"] = llm_complexity
 
-        events.append({
-            "type": "task_classified",
-            "task_type": classification["task_type"],
-            "complexity": classification["complexity"],
-            "workspace_type": classification["workspace_type"],
-            "reasoning": classification["reasoning"],
-            "domain_analysis": plan.domain_analysis,
-            "agent_count": len(enforced_agents),
-            "agent_instances": [
-                {
-                    "instance_id": a.get("instance_id", ""),
-                    "role": a.get("role", ""),
-                    "specialisation": a.get("specialisation", ""),
-                    "assignment": (a.get("assignment", "") or "")[:200],
-                }
-                for a in enforced_agents
-            ],
-            "risks": plan.risks[:5],
-            "acceptance_criteria": plan.acceptance_criteria[:5],
-            "deterministic_hint_used": True,
-            "minimum_team_enforced": len(enforced_agents) > len(plan.agents),
-        })
+        events.append(
+            {
+                "type": "task_classified",
+                "task_type": classification["task_type"],
+                "complexity": classification["complexity"],
+                "workspace_type": classification["workspace_type"],
+                "reasoning": classification["reasoning"],
+                "domain_analysis": plan.domain_analysis,
+                "agent_count": len(enforced_agents),
+                "agent_instances": [
+                    {
+                        "instance_id": a.get("instance_id", ""),
+                        "role": a.get("role", ""),
+                        "specialisation": a.get("specialisation", ""),
+                        "assignment": (a.get("assignment", "") or "")[:200],
+                    }
+                    for a in enforced_agents
+                ],
+                "risks": plan.risks[:5],
+                "acceptance_criteria": plan.acceptance_criteria[:5],
+                "deterministic_hint_used": True,
+                "minimum_team_enforced": len(enforced_agents) > len(plan.agents),
+            }
+        )
 
         return {
             "classification": classification,
@@ -242,18 +254,22 @@ async def classify_node(
     # Apply deterministic floor to fallback classification too
     if det_result.is_deterministic and det_result.confidence >= 0.85:
         _COMPLEXITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
-        if _COMPLEXITY_ORDER.get(classification.get("complexity", "medium"), 1) < _COMPLEXITY_ORDER.get(det_result.complexity, 1):
+        if _COMPLEXITY_ORDER.get(
+            classification.get("complexity", "medium"), 1
+        ) < _COMPLEXITY_ORDER.get(det_result.complexity, 1):
             classification["complexity"] = det_result.complexity
         if det_result.task_type == "new_project":
             classification["task_type"] = "new_project"
 
-    events.append({
-        "type": "task_classified",
-        "task_type": classification.get("task_type"),
-        "complexity": classification.get("complexity"),
-        "workspace_type": classification.get("workspace_type"),
-        "reasoning": classification.get("reasoning"),
-    })
+    events.append(
+        {
+            "type": "task_classified",
+            "task_type": classification.get("task_type"),
+            "complexity": classification.get("complexity"),
+            "workspace_type": classification.get("workspace_type"),
+            "reasoning": classification.get("reasoning"),
+        }
+    )
 
     return {
         "classification": classification,

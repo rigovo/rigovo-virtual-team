@@ -157,9 +157,7 @@ class AgentEvaluator:
             # Combine with existing violations and count
             all_violations = profile.common_violations + violations
             violation_counts = Counter(all_violations)
-            profile.common_violations = [
-                v for v, _ in violation_counts.most_common(3)
-            ]
+            profile.common_violations = [v for v, _ in violation_counts.most_common(3)]
 
         return profile
 

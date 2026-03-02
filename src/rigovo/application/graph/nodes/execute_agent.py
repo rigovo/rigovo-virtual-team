@@ -129,8 +129,8 @@ SUBAGENT_MAX_ROUNDS = 10
 #
 # All other roles may consult within their natural scope.
 CONSULT_ALLOWED_TARGETS: dict[str, set[str]] = {
-    "planner": {"lead"},                                   # NOT security/devops — no code yet
-    "coder": {"reviewer", "security", "qa", "devops"},   # After writing — check correctness
+    "planner": {"lead"},  # NOT security/devops — no code yet
+    "coder": {"reviewer", "security", "qa", "devops"},  # After writing — check correctness
     "reviewer": {"planner", "coder", "lead", "security"},
     "security": {"coder", "reviewer", "lead", "devops"},
     "qa": {"coder", "reviewer", "security"},
@@ -163,7 +163,14 @@ def _resolve_consult_policy(
     max_per_target = MAX_CONSULTS_PER_TARGET
 
     if not state:
-        return enabled, max_question_chars, max_response_chars, allowed_targets, max_per_agent, max_per_target
+        return (
+            enabled,
+            max_question_chars,
+            max_response_chars,
+            allowed_targets,
+            max_per_agent,
+            max_per_target,
+        )
 
     raw_policy = state.get("consultation_policy", {}) or {}
     if isinstance(raw_policy, dict):
@@ -192,7 +199,14 @@ def _resolve_consult_policy(
             if parsed:
                 allowed_targets = parsed
 
-    return enabled, max_question_chars, max_response_chars, allowed_targets, max_per_agent, max_per_target
+    return (
+        enabled,
+        max_question_chars,
+        max_response_chars,
+        allowed_targets,
+        max_per_agent,
+        max_per_target,
+    )
 
 
 def _resolve_subagent_policy(state: TaskState | None) -> tuple[bool, int, int]:
@@ -342,12 +356,18 @@ def _build_expert_context_block(
         if role_violations:
             # Take top 2 unique violations
             unique_violations = list(set(role_violations))[:2]
-            violation_text = ", ".join(v.split("]")[0] + "]" if "[" in v else v for v in unique_violations)
+            violation_text = ", ".join(
+                v.split("]")[0] + "]" if "[" in v else v for v in unique_violations
+            )
             parts.append(f"WATCH OUT: You previously failed {violation_text}. Avoid this.")
 
     # Add role-specific workspace conventions
     if workspace_conventions:
-        role_conventions = [c for c in workspace_conventions if current_role.lower() in c.lower() or "all" in c.lower()]
+        role_conventions = [
+            c
+            for c in workspace_conventions
+            if current_role.lower() in c.lower() or "all" in c.lower()
+        ]
         if role_conventions:
             parts.append(f"CONVENTIONS: {role_conventions[0][:80]}")
 
@@ -643,8 +663,12 @@ def _handle_consult_agent(
       in its context and auto-fulfill when it completes.
     """
     (
-        enabled, max_question_chars, max_response_chars,
-        policy_targets, max_per_agent, max_per_target,
+        enabled,
+        max_question_chars,
+        max_response_chars,
+        policy_targets,
+        max_per_agent,
+        max_per_target,
     ) = _resolve_consult_policy(state)
     if not enabled:
         return json.dumps({"status": "error", "error": "Consultation is disabled by policy"})
@@ -753,8 +777,11 @@ def _handle_consult_agent(
     thread_id = str(tool_input.get("thread_id", "")).strip()
     if thread_id:
         linked = next(
-            (m for m in agent_messages
-             if m.get("id") == thread_id and m.get("type") == "consult_request"),
+            (
+                m
+                for m in agent_messages
+                if m.get("id") == thread_id and m.get("type") == "consult_request"
+            ),
             None,
         )
         if not linked:
@@ -1166,11 +1193,13 @@ async def _run_agentic_loop(
                         summary = cmd_result.get("stdout", "")[:200]
                         if cmd_result.get("stderr"):
                             summary = cmd_result.get("stderr", "")[:200]
-                        execution_log.append({
-                            "command": str(tc["input"].get("command", "")).strip()[:100],
-                            "exit_code": exit_code,
-                            "summary": summary,
-                        })
+                        execution_log.append(
+                            {
+                                "command": str(tc["input"].get("command", "")).strip()[:100],
+                                "exit_code": exit_code,
+                                "summary": summary,
+                            }
+                        )
                     except (json.JSONDecodeError, AttributeError):
                         pass  # Not JSON — keep going
 
@@ -1328,10 +1357,7 @@ async def execute_agent_node(
     agents = team_config.get("agents", {})
 
     # Instance-ID aware: prefer current_instance_id, fall back to current_agent_role
-    current_instance = (
-        state.get("current_instance_id", "")
-        or state.get("current_agent_role", "")
-    )
+    current_instance = state.get("current_instance_id", "") or state.get("current_agent_role", "")
     # The agent config is keyed by instance_id in the new system
     if current_instance not in agents:
         # Backward compat: try current_agent_role
@@ -1538,9 +1564,7 @@ async def execute_agent_node(
 
     # Add execution verification status (Phase 14)
     # True if this role executed commands and should have verification results
-    execution_verified = (
-        current_role in {"coder", "qa", "devops", "sre"} and len(execution_log) > 0
-    )
+    execution_verified = current_role in {"coder", "qa", "devops", "sre"} and len(execution_log) > 0
 
     agent_output: AgentOutput = {
         "summary": final_text,
@@ -1588,7 +1612,8 @@ async def execute_agent_node(
 
     # ── Detect RECLASSIFY signal in agent output ──────────────────
     reclassify_detected, reclassify_type, reclassify_reason = _detect_reclassify_signal(
-        final_text, current_role,
+        final_text,
+        current_role,
     )
     reclassify_fields: dict[str, Any] = {}
     if reclassify_detected:
@@ -1596,24 +1621,29 @@ async def execute_agent_node(
         if reclassify_count < 1:  # Budget check
             logger.info(
                 "RECLASSIFY signal detected from %s: type=%s reason=%r",
-                current_instance, reclassify_type, reclassify_reason[:200],
+                current_instance,
+                reclassify_type,
+                reclassify_reason[:200],
             )
             reclassify_fields = {
                 "reclassify_requested": True,
                 "reclassify_reason": reclassify_reason[:500],
                 "reclassify_suggested_type": reclassify_type,
             }
-            events.append({
-                "type": "reclassify_signal",
-                "source_instance": current_instance,
-                "source_role": current_role,
-                "suggested_type": reclassify_type,
-                "reason": reclassify_reason[:200],
-            })
+            events.append(
+                {
+                    "type": "reclassify_signal",
+                    "source_instance": current_instance,
+                    "source_role": current_role,
+                    "suggested_type": reclassify_type,
+                    "reason": reclassify_reason[:200],
+                }
+            )
         else:
             logger.warning(
                 "RECLASSIFY signal from %s ignored — budget exhausted (%d)",
-                current_instance, reclassify_count,
+                current_instance,
+                reclassify_count,
             )
 
     return {
@@ -1765,7 +1795,10 @@ async def execute_agents_parallel(
                 {
                     "type": "agent_timeout",
                     "instance_id": iid,
-                    "role": state.get("team_config", {}).get("agents", {}).get(iid, {}).get("role", iid),
+                    "role": state.get("team_config", {})
+                    .get("agents", {})
+                    .get(iid, {})
+                    .get("role", iid),
                     "error": str(result),
                 }
             )

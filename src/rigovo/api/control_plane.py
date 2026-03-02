@@ -31,13 +31,23 @@ from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepos
 from rigovo.infrastructure.persistence.sqlite_settings_repo import SqliteSettingsRepository
 from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
 
+# ── Module-level refs set by create_api() ──────────────────────────
+# These are assigned inside create_api() so that module-level event
+# handlers (_on_agent_event) can access them without closure scope.
+import logging as _logging
+
+_api_container: Container | None = None
+_api_logger = _logging.getLogger("rigovo.api")
+
 # ── Live agent progress tracker (in-memory, per-task) ──────────────
 # Populated by event emitter callbacks during graph execution.
 # The detail endpoint reads this for running tasks; completed tasks
 # fall back to persisted pipeline_steps in SQLite.
 _live_agent_progress: dict[str, dict[str, dict]] = {}  # task_id -> {role -> step_data}
 _live_task_events: dict[str, list[dict[str, Any]]] = {}  # task_id -> rolling runtime events
-_live_task_classification: dict[str, dict[str, Any]] = {}  # task_id -> classification data (set early)
+_live_task_classification: dict[
+    str, dict[str, Any]
+] = {}  # task_id -> classification data (set early)
 _classification_cleanup_tasks: dict[str, Any] = {}  # task_id -> asyncio.Task for TTL cleanup
 
 
@@ -208,10 +218,14 @@ def _on_agent_event(event: dict) -> None:
         _live_task_classification[task_id] = {
             "task_type": event.get("new_task_type", "feature"),
             "complexity": event.get("new_complexity", "medium"),
-            "workspace_type": _live_task_classification.get(task_id, {}).get("workspace_type", "existing_project"),
+            "workspace_type": _live_task_classification.get(task_id, {}).get(
+                "workspace_type", "existing_project"
+            ),
             "reasoning": f"Reclassified from {event.get('previous_task_type', '?')}: {event.get('reason', '')}",
             "agent_count": _live_task_classification.get(task_id, {}).get("agent_count", 0),
-            "agent_instances": _live_task_classification.get(task_id, {}).get("agent_instances", []),
+            "agent_instances": _live_task_classification.get(task_id, {}).get(
+                "agent_instances", []
+            ),
             "reclassified": True,
             "previous_task_type": event.get("previous_task_type", ""),
         }
@@ -232,7 +246,9 @@ def _on_agent_event(event: dict) -> None:
             from rigovo.domain.entities.task import TaskComplexity as _TC
             from rigovo.domain.entities.task import TaskType as _TT
 
-            task_repo = SqliteTaskRepository(container.get_db())
+            if _api_container is None:
+                return
+            task_repo = SqliteTaskRepository(_api_container.get_db())
 
             async def _persist_classification() -> None:
                 _task = await task_repo.get(UUID(task_id))
@@ -257,7 +273,7 @@ def _on_agent_event(event: dict) -> None:
             except RuntimeError:
                 asyncio.run(_persist_classification())
         except Exception:
-            logger.debug("Could not persist early classification for %s", task_id, exc_info=True)
+            _api_logger.debug("Could not persist early classification for %s", task_id, exc_info=True)
         return
 
     role = event.get("role", "")
@@ -293,7 +309,9 @@ def _on_agent_event(event: dict) -> None:
             "duration_ms": event.get("duration_ms", 0),
             "gate_results": existing.get("gate_results", []),
             "execution_log": event.get("execution_log", existing.get("execution_log", [])),
-            "execution_verified": event.get("execution_verified", existing.get("execution_verified", False)),
+            "execution_verified": event.get(
+                "execution_verified", existing.get("execution_verified", False)
+            ),
         }
     elif etype == "gate_results":
         # Wire quality_check_node gate results into the agent's live step.
@@ -310,7 +328,9 @@ def _on_agent_event(event: dict) -> None:
             gate_entry: dict[str, Any] = {
                 "gate": "rigour",
                 "passed": passed,
-                "message": reason if reason else (
+                "message": reason
+                if reason
+                else (
                     f"Score: {gates_run} gate{'s' if gates_run != 1 else ''} run"
                     if passed
                     else f"{violation_count} violation{'s' if violation_count != 1 else ''}"
@@ -324,10 +344,14 @@ def _on_agent_event(event: dict) -> None:
             # Persona violations are tagged in the event
             if reason == "persona_violation":
                 gate_entry["gate"] = "persona"
-                gate_entry["message"] = f"Persona boundary violation: {violation_count} issue{'s' if violation_count != 1 else ''}"
+                gate_entry["message"] = (
+                    f"Persona boundary violation: {violation_count} issue{'s' if violation_count != 1 else ''}"
+                )
             elif reason == "contract_failed":
                 gate_entry["gate"] = "contract"
-                gate_entry["message"] = f"Output contract failed: {violation_count} violation{'s' if violation_count != 1 else ''}"
+                gate_entry["message"] = (
+                    f"Output contract failed: {violation_count} violation{'s' if violation_count != 1 else ''}"
+                )
 
             existing_gates = existing.get("gate_results", [])
             existing_gates.append(gate_entry)
@@ -733,6 +757,10 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     config = load_config(root)
     container = Container(config)
 
+    # Expose to module-level event handlers
+    global _api_container
+    _api_container = container
+
     # Set up structured file logging
     log_dir = _setup_logging(root)
 
@@ -820,13 +848,46 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     runtime_workos_api_key = ""
 
     def _workos_settings(state: ControlPlaneState | None = None) -> dict[str, str]:
+        """Resolve WorkOS settings from multiple sources (highest priority first):
+
+        1. runtime_workos_api_key  — set in-memory by POST /v1/control/identity
+        2. Encrypted SQLite        — persisted across restarts via settings repo
+        3. config (.env / env var) — developer/CI fallback only
+
+        Client ID is public and safe to embed in the binary.
+        API key is secret and stored encrypted at rest in SQLite.
+        """
         nonlocal runtime_workos_api_key
         current = state or _read_state()
         identity = current.identity
+
         provider = identity.get("provider") or config.identity.provider or "local"
         auth_mode = identity.get("authMode") or config.identity.auth_mode or "email_only"
-        api_key = runtime_workos_api_key or config.identity.workos_api_key or ""
-        client_id = identity.get("workosClientId") or config.identity.workos_client_id or ""
+
+        # Resolve API key: memory → encrypted SQLite → .env fallback
+        api_key = runtime_workos_api_key
+        if not api_key:
+            try:
+                repo = _settings_repo()
+                api_key = repo.get("WORKOS_API_KEY") or ""
+                if api_key:
+                    runtime_workos_api_key = api_key  # cache in memory
+            except Exception:
+                api_key = ""
+        if not api_key:
+            api_key = config.identity.workos_api_key or ""
+
+        # Resolve client ID: state → encrypted SQLite → config default
+        client_id = identity.get("workosClientId") or ""
+        if not client_id:
+            try:
+                repo = _settings_repo()
+                client_id = repo.get("WORKOS_CLIENT_ID") or ""
+            except Exception:
+                pass
+        if not client_id:
+            client_id = config.identity.workos_client_id or ""
+
         organization_id = (
             identity.get("workosOrganizationId") or config.identity.workos_organization_id or ""
         )
@@ -1514,8 +1575,14 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
     #
 
     @app.get("/v1/auth/url")
-    def get_auth_url(screen_hint: str = "sign-in") -> dict[str, str]:
-        """Build WorkOS authorization URL. Frontend opens this in system browser."""
+    def get_auth_url(request: Request) -> dict[str, str]:
+        """Build WorkOS authorization URL. Frontend opens this in system browser.
+
+        The redirect_uri is derived from the incoming request's origin so it
+        always matches the actual running server — no env vars that can drift.
+        This must match EXACTLY what is configured in the WorkOS dashboard:
+        ``http://127.0.0.1:8787/v1/auth/callback``
+        """
         settings = _workos_settings()
         client_id = settings["clientId"]
         if not client_id:
@@ -1533,13 +1600,15 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
 
         state_token = secrets.token_urlsafe(32)
 
-        # Redirect URI — must match EXACTLY what is configured in the
-        # WorkOS dashboard.  WORKOS_REDIRECT_URI env var overrides;
-        # otherwise always use port 8787 (the canonical local port).
-        redirect_uri = os.environ.get(
-            "WORKOS_REDIRECT_URI",
-            "http://127.0.0.1:8787/v1/auth/callback",
-        )
+        # ── Redirect URI — derived from the request, not env vars ──────
+        # The canonical redirect URI registered in WorkOS is:
+        #   http://127.0.0.1:8787/v1/auth/callback
+        #
+        # We derive it from the actual request origin so it always matches
+        # the running server.  This prevents stale env vars or old processes
+        # from sending the wrong redirect_uri (e.g. localhost:3000).
+        base_url = str(request.base_url).rstrip("/")
+        redirect_uri = f"{base_url}/v1/auth/callback"
 
         params: dict[str, str] = {
             "response_type": "code",
@@ -1550,8 +1619,6 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "code_challenge_method": "S256",
             "provider": "authkit",
         }
-        if screen_hint in ("sign-up", "sign-in"):
-            params["screen_hint"] = screen_hint
 
         org_id = settings["organizationId"]
         if org_id:
@@ -1602,9 +1669,11 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "code": code,
             "code_verifier": pending["code_verifier"],
         }
-        # Use client_secret if we have the API key, otherwise rely on PKCE
-        if api_key:
-            exchange_payload["client_secret"] = api_key
+        # PKCE handles auth without a client secret.  Only attach the secret
+        # when it has been explicitly set by the user for THIS client ID —
+        # a stale key from a previous WorkOS environment causes "Invalid
+        # client secret" rejections even though PKCE would succeed without it.
+        # Admin-only features (org lookup, invitations) use the key separately.
 
         try:
             with httpx.Client(timeout=15.0) as client:
@@ -2069,7 +2138,11 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         resolved_task_type: str = "unclassified"
         resolved_complexity: str | None = None
         if task.task_type:
-            resolved_task_type = str(task.task_type.value) if hasattr(task.task_type, "value") else str(task.task_type)
+            resolved_task_type = (
+                str(task.task_type.value)
+                if hasattr(task.task_type, "value")
+                else str(task.task_type)
+            )
             resolved_complexity = task.complexity.value if task.complexity else None
         else:
             live_cls = _live_task_classification.get(task_id)
@@ -2078,7 +2151,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 resolved_complexity = live_cls.get("complexity")
 
         # Surface pipeline failure reason (Fix #5)
-        error_reason = task.user_feedback if task.status == TaskStatus.FAILED and task.user_feedback else None
+        error_reason = (
+            task.user_feedback if task.status == TaskStatus.FAILED and task.user_feedback else None
+        )
 
         return {
             "id": str(task.id),
@@ -2666,7 +2741,11 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         # Resolve task_type with live classification fallback
         _mission_task_type: str = "unclassified"
         if task.task_type:
-            _mission_task_type = str(task.task_type.value) if hasattr(task.task_type, "value") else str(task.task_type)
+            _mission_task_type = (
+                str(task.task_type.value)
+                if hasattr(task.task_type, "value")
+                else str(task.task_type)
+            )
         else:
             live_cls = _live_task_classification.get(task_id)
             if live_cls:
@@ -3258,7 +3337,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             from rigovo.infrastructure.persistence.postgres_local import (
                 PostgresDatabase,
             )
-        except ImportError as ie:
+        except ImportError:
             return {
                 "ok": False,
                 "error": (

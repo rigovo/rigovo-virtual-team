@@ -62,8 +62,13 @@ CODE_PRODUCING_ROLES: set[str] = {"coder", "qa", "devops", "sre"}
 
 # Canonical severity ordering (string-based, matching Rigour CLI output)
 SEVERITY_ORDER: dict[str, int] = {
-    "critical": 0, "high": 1, "error": 1, "medium": 2,
-    "warning": 2, "low": 3, "info": 4,
+    "critical": 0,
+    "high": 1,
+    "error": 1,
+    "medium": 2,
+    "warning": 2,
+    "low": 3,
+    "info": 4,
 }
 
 # ---------------------------------------------------------------------------
@@ -95,6 +100,7 @@ KNOWN_GATE_CATEGORIES: set[str] = {"security", "correctness", "complexity", "sty
 # produce. This catches agents drifting outside their scope — e.g., a reviewer
 # writing code, or a coder creating test files (that's QA's job).
 
+
 @dataclass
 class PersonaBoundary:
     """Defines what a role is allowed and not allowed to produce."""
@@ -107,22 +113,57 @@ class PersonaBoundary:
 
 PERSONA_BOUNDARIES: dict[str, PersonaBoundary] = {
     "coder": PersonaBoundary(
-        allowed_file_patterns=["src/**", "lib/**", "app/**", "pkg/**", "*.py", "*.ts", "*.js", "*.go", "*.rs"],
-        forbidden_file_patterns=["test*/**", "tests/**", "*_test.*", "*_spec.*", "*.test.*", "*.spec.*"],
+        allowed_file_patterns=[
+            "src/**",
+            "lib/**",
+            "app/**",
+            "pkg/**",
+            "*.py",
+            "*.ts",
+            "*.js",
+            "*.go",
+            "*.rs",
+        ],
+        forbidden_file_patterns=[
+            "test*/**",
+            "tests/**",
+            "*_test.*",
+            "*_spec.*",
+            "*.test.*",
+            "*.spec.*",
+        ],
         must_produce_files=True,
         expected_output_markers=[],
     ),
     "qa": PersonaBoundary(
-        allowed_file_patterns=["test*/**", "tests/**", "*_test.*", "*_spec.*", "*.test.*", "*.spec.*", "conftest.*"],
+        allowed_file_patterns=[
+            "test*/**",
+            "tests/**",
+            "*_test.*",
+            "*_spec.*",
+            "*.test.*",
+            "*.spec.*",
+            "conftest.*",
+        ],
         forbidden_file_patterns=[],  # QA can read anything but should write test files
         must_produce_files=True,
         expected_output_markers=[],
     ),
     "devops": PersonaBoundary(
         allowed_file_patterns=[
-            "Dockerfile*", "docker-compose*", ".github/**", ".gitlab-ci*",
-            "Makefile", "*.yml", "*.yaml", "terraform/**", "*.tf",
-            "infra/**", "deploy/**", "ci/**", "scripts/**",
+            "Dockerfile*",
+            "docker-compose*",
+            ".github/**",
+            ".gitlab-ci*",
+            "Makefile",
+            "*.yml",
+            "*.yaml",
+            "terraform/**",
+            "*.tf",
+            "infra/**",
+            "deploy/**",
+            "ci/**",
+            "scripts/**",
         ],
         forbidden_file_patterns=[],
         must_produce_files=True,
@@ -130,8 +171,17 @@ PERSONA_BOUNDARIES: dict[str, PersonaBoundary] = {
     ),
     "sre": PersonaBoundary(
         allowed_file_patterns=[
-            "src/**", "lib/**", "app/**", "*.py", "*.ts", "*.go",
-            "runbook*", "docs/**", "monitoring/**", "*.yml", "*.yaml",
+            "src/**",
+            "lib/**",
+            "app/**",
+            "*.py",
+            "*.ts",
+            "*.go",
+            "runbook*",
+            "docs/**",
+            "monitoring/**",
+            "*.yml",
+            "*.yaml",
         ],
         forbidden_file_patterns=[],
         must_produce_files=True,
@@ -393,22 +443,26 @@ class RigourSupervisor:
             for file_path in files_changed:
                 for pattern in boundary.forbidden_file_patterns:
                     if _glob_match(file_path, pattern):
-                        violations.append(PersonaViolation(
-                            role=role,
-                            violation_type="forbidden_file",
-                            message=(
-                                f"Agent '{role}' wrote to '{file_path}' which matches "
-                                f"forbidden pattern '{pattern}'. This is outside the "
-                                f"'{role}' role's scope. Do not create or modify "
-                                f"files — only produce text output."
-                            ) if not boundary.must_produce_files else (
-                                f"Agent '{role}' wrote to '{file_path}' which matches "
-                                f"forbidden pattern '{pattern}'. This file type belongs "
-                                f"to a different role's scope."
-                            ),
-                            severity="high",
-                            file_path=file_path,
-                        ))
+                        violations.append(
+                            PersonaViolation(
+                                role=role,
+                                violation_type="forbidden_file",
+                                message=(
+                                    f"Agent '{role}' wrote to '{file_path}' which matches "
+                                    f"forbidden pattern '{pattern}'. This is outside the "
+                                    f"'{role}' role's scope. Do not create or modify "
+                                    f"files — only produce text output."
+                                )
+                                if not boundary.must_produce_files
+                                else (
+                                    f"Agent '{role}' wrote to '{file_path}' which matches "
+                                    f"forbidden pattern '{pattern}'. This file type belongs "
+                                    f"to a different role's scope."
+                                ),
+                                severity="high",
+                                file_path=file_path,
+                            )
+                        )
                         break  # One match per file is enough
 
         # Check output contract markers (for non-code-producing roles)
@@ -416,16 +470,18 @@ class RigourSupervisor:
         if contract_patterns and output_summary:
             for pattern in contract_patterns:
                 if not re.search(pattern, output_summary):
-                    violations.append(PersonaViolation(
-                        role=role,
-                        violation_type="missing_output_marker",
-                        message=(
-                            f"Agent '{role}' output is missing expected structural "
-                            f"marker matching '{pattern}'. Ensure your output includes "
-                            f"the required sections for the '{role}' role."
-                        ),
-                        severity="medium",
-                    ))
+                    violations.append(
+                        PersonaViolation(
+                            role=role,
+                            violation_type="missing_output_marker",
+                            message=(
+                                f"Agent '{role}' output is missing expected structural "
+                                f"marker matching '{pattern}'. Ensure your output includes "
+                                f"the required sections for the '{role}' role."
+                            ),
+                            severity="medium",
+                        )
+                    )
 
         return violations
 
@@ -481,30 +537,34 @@ class RigourSupervisor:
                         escalated_str, 5
                     ) < SEVERITY_ORDER.get(v.severity.value, 5):
                         new_severity = escalated_sev
-                filtered.append(Violation(
-                    gate_id=v.gate_id,
-                    message=v.message,
-                    severity=new_severity,
-                    file_path=v.file_path,
-                    line=v.line,
-                    column=v.column,
-                    category=v.category,
-                    suggestion=v.suggestion,
-                ))
+                filtered.append(
+                    Violation(
+                        gate_id=v.gate_id,
+                        message=v.message,
+                        severity=new_severity,
+                        file_path=v.file_path,
+                        line=v.line,
+                        column=v.column,
+                        category=v.category,
+                        suggestion=v.suggestion,
+                    )
+                )
                 continue
 
             # If role has a gate profile and this category isn't in it, downgrade
             if role_profile and category and category not in role_profile:
-                filtered.append(Violation(
-                    gate_id=v.gate_id,
-                    message=v.message,
-                    severity=ViolationSeverity.INFO,
-                    file_path=v.file_path,
-                    line=v.line,
-                    column=v.column,
-                    category=v.category,
-                    suggestion=v.suggestion,
-                ))
+                filtered.append(
+                    Violation(
+                        gate_id=v.gate_id,
+                        message=v.message,
+                        severity=ViolationSeverity.INFO,
+                        file_path=v.file_path,
+                        line=v.line,
+                        column=v.column,
+                        category=v.category,
+                        suggestion=v.suggestion,
+                    )
+                )
                 continue
 
             # Category is in the role's profile — keep at full severity

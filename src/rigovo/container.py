@@ -54,41 +54,72 @@ class Container:
 
         # Lazy infrastructure
         self._quality_gates: list[QualityGate] = []
-        self._db = None
+        self._local_db = None  # Always local SQLite — settings/secrets
+        self._app_db = None  # Application database — sqlite or postgres
         self._settings_repo = None
         self._event_emitter: EventEmitter | None = None
         self._sync_client = None
         self._plugin_registry = None
 
+    def _get_local_db(self):
+        """Local SQLite (always `.rigovo/local.db`).
+
+        Used for encrypted settings (API keys, DSN, secrets).
+        Bootstrap-safe: readable before postgres is available.
+        """
+        if self._local_db is None:
+            from rigovo.infrastructure.persistence.sqlite_local import LocalDatabase
+
+            db_path = self.config.local_db_full_path
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._local_db = LocalDatabase(str(db_path))
+        return self._local_db
+
     def get_db(self):
-        """Get or create the local SQLite database."""
-        if self._db is None:
+        """Application database (sqlite or postgres based on config).
+
+        Used for tasks, audit logs, memories, cost tracking.
+        Settings/secrets always use local SQLite via get_settings_repo().
+        """
+        if self._app_db is None:
             backend = str(self.config.db_backend).strip().lower()
 
             if backend == "postgres":
+                # Read DSN from encrypted local SQLite (bootstrap-safe)
+                dsn = self.config.db_url
+                if not dsn:
+                    try:
+                        repo = self.get_settings_repo()
+                        dsn = repo.get("RIGOVO_DB_URL", "")
+                    except Exception:
+                        pass
+                if not dsn:
+                    logger.warning(
+                        "Postgres configured but no DSN found — falling back to SQLite"
+                    )
+                    return self._get_local_db()
+
                 from rigovo.infrastructure.persistence.postgres_local import (
                     PostgresDatabase,
                 )
 
-                self._db = PostgresDatabase(self.config.db_url)
+                self._app_db = PostgresDatabase(dsn)
             else:
-                from rigovo.infrastructure.persistence.sqlite_local import (
-                    LocalDatabase,
-                )
-
-                db_path = self.config.local_db_full_path
-                db_path.parent.mkdir(parents=True, exist_ok=True)
-                self._db = LocalDatabase(str(db_path))
-        return self._db
+                self._app_db = self._get_local_db()
+        return self._app_db
 
     def get_settings_repo(self):
-        """Get or create the encrypted settings repository."""
+        """Encrypted settings repository — ALWAYS local SQLite.
+
+        Never postgres.  Avoids chicken-and-egg: the DSN needed to connect
+        to postgres is itself a secret stored in this repo.
+        """
         if self._settings_repo is None:
             from rigovo.infrastructure.persistence.sqlite_settings_repo import (
                 SqliteSettingsRepository,
             )
 
-            self._settings_repo = SqliteSettingsRepository(self.get_db())
+            self._settings_repo = SqliteSettingsRepository(self._get_local_db())
         return self._settings_repo
 
     def _get_llm_factory(self) -> LLMProviderFactory:
@@ -240,5 +271,7 @@ class Container:
 
     def close(self) -> None:
         """Clean up resources."""
-        if self._db:
-            self._db.close()
+        if self._app_db:
+            self._app_db.close()
+        if self._local_db and self._local_db is not self._app_db:
+            self._local_db.close()

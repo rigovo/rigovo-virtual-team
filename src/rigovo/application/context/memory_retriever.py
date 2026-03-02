@@ -28,7 +28,13 @@ MIN_RELEVANCE_SCORE = 0.3  # Don't inject low-relevance memories
 
 # How memory types map to agent roles (which memories are most useful)
 ROLE_MEMORY_PREFERENCES: dict[str, list[MemoryType]] = {
-    "planner": [MemoryType.DOMAIN_KNOWLEDGE, MemoryType.ERROR_FIX, MemoryType.TASK_OUTCOME, MemoryType.PATTERN, MemoryType.CONVENTION],
+    "planner": [
+        MemoryType.DOMAIN_KNOWLEDGE,
+        MemoryType.ERROR_FIX,
+        MemoryType.TASK_OUTCOME,
+        MemoryType.PATTERN,
+        MemoryType.CONVENTION,
+    ],
     "coder": [MemoryType.ERROR_FIX, MemoryType.PATTERN, MemoryType.CONVENTION],
     "reviewer": [MemoryType.PATTERN, MemoryType.CONVENTION, MemoryType.TASK_OUTCOME],
     "security": [MemoryType.ERROR_FIX, MemoryType.DOMAIN_KNOWLEDGE],

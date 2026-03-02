@@ -11,8 +11,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "strict": true,
-    "types": ["electron-vite/node"]
+    "strict": true
   },
   "include": ["src/renderer/src"],
   "references": [

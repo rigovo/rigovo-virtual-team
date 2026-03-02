@@ -88,16 +88,15 @@ dev = [
     "ruff>=0.9",
     "mypy>=1.14",
 ]
+postgres = [
+    "psycopg[binary]>=3.2,<4.0",
+]
 embeddings = [
     "sentence-transformers>=3.0,<4.0",
 ]
 groq = [
     "langchain-groq>=0.2,<1.0",
 ]
-postgres = [
-    "psycopg[binary]>=3.2,<4.0",
-]
-
 [project.urls]
 Homepage = "https://rigovo.com"
 Documentation = "https://docs.rigovo.com"

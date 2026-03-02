@@ -416,7 +416,7 @@ def migrate_sqlite_to_postgres(sqlite_path: str, postgres_dsn: str) -> dict[str,
     for table in _MIGRATION_TABLES:
         try:
             # Read all rows from SQLite
-            rows = sqlite_conn.execute(f"SELECT * FROM {table}").fetchall()  # noqa: S608
+            rows = sqlite_conn.execute(f"SELECT * FROM {table}").fetchall()
             if not rows:
                 result["tables"][table] = 0
                 continue

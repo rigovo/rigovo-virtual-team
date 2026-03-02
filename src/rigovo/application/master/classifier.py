@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 # ── Data structures ────────────────────────────────────────────────────
 
+
 @dataclass
 class AgentAssignment:
     """A single agent slot in the staffing plan."""
@@ -93,10 +94,7 @@ class StaffingPlan:
 
         while remaining:
             # Find all agents whose dependencies are satisfied
-            ready = [
-                aid for aid in remaining
-                if all(d in completed for d in dag.get(aid, []))
-            ]
+            ready = [aid for aid in remaining if all(d in completed for d in dag.get(aid, []))]
             if not ready:
                 # Deadlock — break by taking first remaining
                 ready = [sorted(remaining)[0]]
@@ -240,6 +238,7 @@ Respond with ONLY valid JSON (no markdown fences):
 
 # ── The Master Agent ───────────────────────────────────────────────────
 
+
 class TaskClassifier:
     """
     The Master Agent — Distinguished Engineer.
@@ -264,7 +263,9 @@ class TaskClassifier:
         self._llm = llm
         self._memory_retriever = memory_retriever
 
-    async def classify(self, description: str, project_snapshot: Any = None) -> ClassificationResult:
+    async def classify(
+        self, description: str, project_snapshot: Any = None
+    ) -> ClassificationResult:
         """Legacy classification — extracts type/complexity from full analysis.
 
         If a project_snapshot is available, the full SME analysis runs and
@@ -355,7 +356,9 @@ class TaskClassifier:
         if deterministic_section:
             message_parts.append(deterministic_section)
 
-        message_parts.append("\nAnalyze this task as a Distinguished Engineer. Produce the staffing plan.")
+        message_parts.append(
+            "\nAnalyze this task as a Distinguished Engineer. Produce the staffing plan."
+        )
 
         user_message = "\n".join(message_parts)
 
@@ -365,7 +368,7 @@ class TaskClassifier:
                 {"role": "user", "content": user_message},
             ],
             temperature=0.1,  # Slight creativity for team composition
-            max_tokens=4096,  # Staffing plans can be detailed
+            max_tokens=8192,  # Staffing plans can be large (4096 caused truncation)
         )
 
         return self._parse_staffing_plan(response.content, description)
@@ -446,36 +449,43 @@ class TaskClassifier:
         for agent_data in data.get("agents", []):
             if not isinstance(agent_data, dict):
                 continue
-            agents.append(AgentAssignment(
-                instance_id=str(agent_data.get("instance_id", f"agent-{len(agents)}")),
-                role=str(agent_data.get("role", "coder")),
-                specialisation=str(agent_data.get("specialisation", "general")),
-                assignment=str(agent_data.get("assignment", "")),
-                depends_on=list(agent_data.get("depends_on", [])),
-                tools_required=list(agent_data.get("tools_required", [])),
-                verification=str(agent_data.get("verification", "")),
-            ))
+            agents.append(
+                AgentAssignment(
+                    instance_id=str(agent_data.get("instance_id", f"agent-{len(agents)}")),
+                    role=str(agent_data.get("role", "coder")),
+                    specialisation=str(agent_data.get("specialisation", "general")),
+                    assignment=str(agent_data.get("assignment", "")),
+                    depends_on=list(agent_data.get("depends_on", [])),
+                    tools_required=list(agent_data.get("tools_required", [])),
+                    verification=str(agent_data.get("verification", "")),
+                )
+            )
 
         # Ensure at least a planner and coder exist
         roles_present = {a.role for a in agents}
         if "planner" not in roles_present:
-            agents.insert(0, AgentAssignment(
-                instance_id="planner-1",
-                role="planner",
-                specialisation="requirements",
-                assignment="Analyze requirements and create technical plan",
-                depends_on=[],
-                verification="Plan is complete with file paths and steps",
-            ))
+            agents.insert(
+                0,
+                AgentAssignment(
+                    instance_id="planner-1",
+                    role="planner",
+                    specialisation="requirements",
+                    assignment="Analyze requirements and create technical plan",
+                    depends_on=[],
+                    verification="Plan is complete with file paths and steps",
+                ),
+            )
         if "coder" not in roles_present:
-            agents.append(AgentAssignment(
-                instance_id="coder-1",
-                role="coder",
-                specialisation="fullstack",
-                assignment="Implement the planned changes",
-                depends_on=["planner-1"],
-                verification="Code compiles and tests pass",
-            ))
+            agents.append(
+                AgentAssignment(
+                    instance_id="coder-1",
+                    role="coder",
+                    specialisation="fullstack",
+                    assignment="Implement the planned changes",
+                    depends_on=["planner-1"],
+                    verification="Code compiles and tests pass",
+                )
+            )
 
         return StaffingPlan(
             task_type=task_type,
@@ -526,7 +536,11 @@ class TaskClassifier:
                 ),
             ],
             risks=["Fallback plan — Master Agent analysis failed, may miss domain-specific needs."],
-            acceptance_criteria=["All files compile", "No lint errors", "Existing tests still pass"],
+            acceptance_criteria=[
+                "All files compile",
+                "No lint errors",
+                "Existing tests still pass",
+            ],
             reasoning=f"Fallback plan due to parse failure: {error}",
         )
 

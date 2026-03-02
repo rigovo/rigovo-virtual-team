@@ -139,12 +139,11 @@ const TIER_LABEL: Record<string, string> = {
   local: "local",
 };
 
-type TabId = "keys" | "agents" | "capabilities" | "storage" | "config" | "logs";
+type TabId = "keys" | "agents" | "capabilities" | "config" | "logs";
 const TAB_LABELS: Record<TabId, string> = {
   keys: "API Keys",
   agents: "Agents",
   capabilities: "Capabilities",
-  storage: "Storage",
   config: "Config",
   logs: "Logs",
 };
@@ -174,9 +173,6 @@ export default function Settings({ onBack }: SettingsProps) {
   const [integrationsView, setIntegrationsView] = useState<IntegrationsPolicyResponse | null>(null);
   const [customBaseUrl, setCustomBaseUrl] = useState("");
   const [ollamaUrl, setOllamaUrl] = useState("");
-  const [dbBackend, setDbBackend] = useState<"sqlite" | "postgres">("sqlite");
-  const [dbLocalPath, setDbLocalPath] = useState(".rigovo/local.db");
-  const [dbUrl, setDbUrl] = useState("");
   const [ymlRaw, setYmlRaw] = useState("");
   const [ymlView, setYmlView] = useState<"friendly" | "raw">("friendly");
   const ymlRef = useRef<HTMLTextAreaElement>(null);
@@ -211,9 +207,6 @@ export default function Settings({ onBack }: SettingsProps) {
       setPluginPolicy({ ...res.plugins_policy });
       setCustomBaseUrl(res.custom_base_url || "");
       setOllamaUrl(res.ollama_url || "http://localhost:11434");
-      setDbBackend(res.database?.backend || "sqlite");
-      setDbLocalPath(res.database?.local_db_path || ".rigovo/local.db");
-      setDbUrl("");
       setYmlRaw(res.yml_raw || "");
     }
     setLoading(false);
@@ -340,12 +333,6 @@ export default function Settings({ onBack }: SettingsProps) {
     if (ollamaUrl !== (data?.ollama_url || "")) payload.ollama_url = ollamaUrl;
     if (Object.keys(payload).length) void save(payload);
     else showToast("No endpoint changes to save.", "success");
-  };
-  const saveDatabase = () => {
-    const payload: Record<string, unknown> = { db_backend: dbBackend, local_db_path: dbLocalPath };
-    if (dbBackend === "postgres") payload.db_url = dbUrl; else payload.db_url = "";
-    void save(payload);
-    if (dbBackend === "postgres") setDbUrl("");
   };
   const saveYml = () => void save({ yml_raw: ymlRaw });
 
@@ -795,165 +782,6 @@ export default function Settings({ onBack }: SettingsProps) {
         </div>
       )}
 
-      {/* ──────────── Storage ──────────── */}
-      {tab === "storage" && (
-        <div className="space-y-4">
-          <p className="text-sm" style={{ color: "var(--ui-text-muted)" }}>
-            Configure where task history, audit logs, and memory artifacts are stored.
-            Storage changes require an engine restart to take effect.
-          </p>
-
-          {/* Backend selector */}
-          <div className="rounded-xl border bg-[var(--canvas)] p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>Database backend</p>
-                <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>
-                  SQLite for local dev — zero setup, single file.
-                  PostgreSQL for teams / production — shared state, concurrent agents.
-                </p>
-              </div>
-              <select value={dbBackend} onChange={(e) => setDbBackend(e.target.value === "postgres" ? "postgres" : "sqlite")}
-                className="rounded-lg border bg-[var(--canvas)] px-3 py-2 text-sm outline-none cursor-pointer min-w-[180px]"
-                style={{ borderColor: "var(--ui-border)", color: "var(--ui-text-secondary)" }}>
-                <option value="sqlite">SQLite (local file)</option>
-                <option value="postgres">PostgreSQL (DSN)</option>
-              </select>
-            </div>
-            <div className="rounded-lg px-3 py-2 text-xs flex items-center gap-2" style={{ background: "rgba(0,0,0,0.02)", color: "var(--ui-text-muted)" }}>
-              <span style={{ width: 6, height: 6, borderRadius: "50%", background: data.database.backend === "postgres" ? "#8b5cf6" : "#22c55e", display: "inline-block", flexShrink: 0 }} />
-              Currently active: <span style={{ color: "var(--ui-text)", fontWeight: 600, marginLeft: 4 }}>{data.database.backend}</span>
-              {dbBackend !== data.database.backend && (
-                <span style={{ marginLeft: "auto", color: "#b45309", fontWeight: 600 }}>⚠ Restart required to switch</span>
-              )}
-            </div>
-          </div>
-
-          {/* SQLite path */}
-          {dbBackend === "sqlite" ? (
-            <div className="rounded-xl border bg-[var(--canvas)] p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
-              <div>
-                <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>SQLite file path</p>
-                <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
-                  Path relative to project root. Created automatically on first run.
-                </p>
-              </div>
-              <input type="text" value={dbLocalPath} onChange={(e) => setDbLocalPath(e.target.value)}
-                placeholder=".rigovo/local.db" className={INPUT_CLS} style={inputBorder} />
-            </div>
-          ) : (
-            <div className="rounded-xl border bg-[var(--canvas)] p-4 space-y-3" style={{ borderColor: "var(--ui-border)" }}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium" style={{ color: "var(--ui-text)" }}>PostgreSQL connection string</p>
-                  <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
-                    Saved to <code className="rounded px-1 py-0.5 text-[11px]" style={{ background: "rgba(0,0,0,0.04)" }}>.env</code> as{" "}
-                    <code className="rounded px-1 py-0.5 text-[11px]" style={{ background: "rgba(0,0,0,0.04)" }}>RIGOVO_DB_URL</code>.
-                    Existing SQLite data is not migrated automatically.
-                  </p>
-                </div>
-                <span className="text-[10px] font-medium px-2 py-0.5 rounded ml-3 flex-shrink-0"
-                  style={{ background: "rgba(139,92,246,0.08)", color: "#6d28d9" }}>
-                  fully wired ✓
-                </span>
-              </div>
-              <input type="password" value={dbUrl} onChange={(e) => setDbUrl(e.target.value)}
-                placeholder="postgresql://user:pass@host:5432/dbname" className={INPUT_CLS} style={inputBorder} />
-              <p className="text-xs" style={{ color: "var(--ui-text-subtle)" }}>
-                Current DSN: {data.database.dsn_configured ? <strong>{data.database.dsn_masked}</strong> : "not configured"}
-              </p>
-              {/* Test connection + Migrate buttons */}
-              <div className="flex items-center gap-2">
-                <button type="button" disabled={saving || !dbUrl.trim()}
-                  onClick={async () => {
-                    setSaving(true);
-                    try {
-                      const res = await fetch(`${API_BASE}/v1/settings/test-db-connection`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ dsn: dbUrl }),
-                      });
-                      if (!res.ok) {
-                        // Non-200 HTTP status — FastAPI validation error, 404, etc.
-                        let detail = `HTTP ${res.status}`;
-                        try {
-                          const errBody = await res.json();
-                          detail = errBody.detail || errBody.error || detail;
-                        } catch { /* response wasn't JSON */ }
-                        showToast(`Connection failed: ${detail}`, "error");
-                        setSaving(false);
-                        return;
-                      }
-                      const d = await res.json();
-                      if (d.ok) {
-                        showToast(`Connection OK — ${d.database} (${String(d.version).slice(0, 40)})`, "success");
-                      } else {
-                        showToast(`Connection failed: ${d.error || d.detail || "Unknown error — check DSN format"}`, "error");
-                      }
-                    } catch (e) {
-                      showToast(`Test failed: ${e instanceof Error ? e.message : "Cannot reach Rigovo API"}`, "error");
-                    }
-                    setSaving(false);
-                  }}
-                  className="rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
-                  style={{ borderColor: "rgba(139,92,246,0.3)", color: "#6d28d9", background: "rgba(139,92,246,0.06)" }}>
-                  {saving ? "Testing..." : "Test connection"}
-                </button>
-                <button type="button" disabled={saving || !dbUrl.trim()}
-                  onClick={async () => {
-                    if (!confirm("Migrate all data from SQLite to PostgreSQL?\n\nThis copies tasks, audit logs, memories, and config caches. Existing PostgreSQL data is preserved (upsert).")) return;
-                    setSaving(true);
-                    try {
-                      const res = await fetch(`${API_BASE}/v1/settings/migrate-to-postgres`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ dsn: dbUrl }),
-                      });
-                      if (!res.ok) {
-                        let detail = `HTTP ${res.status}`;
-                        try {
-                          const errBody = await res.json();
-                          detail = errBody.detail || errBody.error || detail;
-                        } catch { /* response wasn't JSON */ }
-                        showToast(`Migration failed: ${detail}`, "error");
-                        setSaving(false);
-                        return;
-                      }
-                      const d = await res.json();
-                      if (d.ok) {
-                        const counts = Object.entries(d.tables || {}).map(([t, c]) => `${t}: ${c}`).join(", ");
-                        showToast(`Migration complete — ${counts}`, "success");
-                      } else {
-                        showToast(`Migration failed: ${d.error || d.detail || "Unknown error"}`, "error");
-                      }
-                    } catch (e) {
-                      showToast(`Migration error: ${e instanceof Error ? e.message : "Cannot reach Rigovo API"}`, "error");
-                    }
-                    setSaving(false);
-                  }}
-                  className="rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
-                  style={{ borderColor: "rgba(34,197,94,0.3)", color: "#15803d", background: "rgba(34,197,94,0.06)" }}>
-                  {saving ? "Migrating..." : "Migrate from SQLite →"}
-                </button>
-              </div>
-              {/* psycopg install hint */}
-              <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "rgba(139,92,246,0.04)", border: "1px solid rgba(139,92,246,0.15)", color: "var(--ui-text-muted)" }}>
-                Requires <code style={{ background: "rgba(0,0,0,0.06)", padding: "0 4px", borderRadius: 3 }}>psycopg[binary]</code> installed in the engine environment:{" "}
-                <code style={{ background: "rgba(0,0,0,0.06)", padding: "0 4px", borderRadius: 3 }}>pip install "psycopg[binary]"</code>
-              </div>
-            </div>
-          )}
-
-          <div className="flex items-center justify-between pt-1">
-            <p className="text-xs" style={{ color: "var(--ui-text-subtle)" }}>
-              ⚙ Engine restart required for storage changes to apply.
-            </p>
-            <button type="button" disabled={saving} onClick={saveDatabase} className="primary-btn">
-              {saving ? "Saving..." : "Save storage settings"}
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* ──────────── Config ──────────── */}
       {tab === "config" && (

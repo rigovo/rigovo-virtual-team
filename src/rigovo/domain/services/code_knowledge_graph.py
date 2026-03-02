@@ -40,15 +40,37 @@ MAX_FILE_SIZE_FOR_PARSE = 200_000  # 200KB — skip generated files
 
 # Directories to skip
 SKIP_DIRS = {
-    ".git", "__pycache__", "node_modules", ".venv", "venv",
-    "dist", "build", ".next", ".nuxt", "target", "vendor",
-    ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-    "coverage", "htmlcov", ".eggs", ".terraform", ".serverless",
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    "target",
+    "vendor",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "coverage",
+    "htmlcov",
+    ".eggs",
+    ".terraform",
+    ".serverless",
 }
 
 # Source file extensions we can parse for imports
 PARSEABLE_EXTENSIONS = {
-    ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs",
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".go",
+    ".rs",
 }
 
 # --- Import parsing patterns per language ---
@@ -213,9 +235,7 @@ class CodeKnowledgeGraph:
             "file": file_path,
             "symbols": node.symbols if node else [],
             "direct_dependents": levels.get(1, []),
-            "transitive_dependents": {
-                f"depth_{k}": v for k, v in levels.items() if k > 1
-            },
+            "transitive_dependents": {f"depth_{k}": v for k, v in levels.items() if k > 1},
             "depends_on": sorted(direct_deps),
             "total_affected": len(visited) - 1,  # Exclude self
         }
@@ -246,8 +266,7 @@ class CodeKnowledgeGraph:
 
             # Check symbols
             matching_syms = [
-                s for s in node.symbols
-                if any(part in s.lower() for part in query_parts)
+                s for s in node.symbols if any(part in s.lower() for part in query_parts)
             ]
             if matching_syms:
                 symbol_matches[path] = matching_syms
@@ -340,7 +359,8 @@ class KnowledgeGraphBuilder:
         if graph.node_count > MAX_GRAPH_NODES:
             logger.warning(
                 "Knowledge graph capped at %d nodes (found %d files)",
-                MAX_GRAPH_NODES, graph.node_count,
+                MAX_GRAPH_NODES,
+                graph.node_count,
             )
 
         # Phase 2: Resolve imports to file paths (create edges)
@@ -354,7 +374,9 @@ class KnowledgeGraphBuilder:
 
         logger.info(
             "Knowledge graph built: %d nodes, %d edges, %d clusters",
-            graph.node_count, graph.edge_count, len(graph.clusters),
+            graph.node_count,
+            graph.edge_count,
+            len(graph.clusters),
         )
 
         return graph
@@ -536,11 +558,13 @@ class KnowledgeGraphBuilder:
 
             target = self._resolve_import_to_path(root, source_path, imp, language, graph)
             if target and target != source_path and target in graph.nodes:
-                graph.edges.append(GraphEdge(
-                    source=source_path,
-                    target=target,
-                    import_string=imp,
-                ))
+                graph.edges.append(
+                    GraphEdge(
+                        source=source_path,
+                        target=target,
+                        import_string=imp,
+                    )
+                )
 
     def _resolve_import_to_path(
         self,
@@ -662,7 +686,10 @@ class KnowledgeGraphBuilder:
                 # Skip the src/ prefix, use the next meaningful directory
                 domain = parts[1] if len(parts) > 1 else "root"
                 # For deeper nesting like src/rigovo/domain/services, use 2nd level
-                if len(parts) > 2 and parts[1] in graph.nodes.get(path, GraphNode(path="", language="")).path:
+                if (
+                    len(parts) > 2
+                    and parts[1] in graph.nodes.get(path, GraphNode(path="", language="")).path
+                ):
                     domain = parts[1]
             elif parts[0] in ("tests", "test", "spec", "__tests__"):
                 domain = "tests"
@@ -693,10 +720,7 @@ class KnowledgeGraphBuilder:
     def _remove_node(self, graph: CodeKnowledgeGraph, file_path: str) -> None:
         """Remove a node and its edges from the graph."""
         graph.nodes.pop(file_path, None)
-        graph.edges = [
-            e for e in graph.edges
-            if e.source != file_path and e.target != file_path
-        ]
+        graph.edges = [e for e in graph.edges if e.source != file_path and e.target != file_path]
         self._build_indexes(graph)
 
     def _ext_to_language(self, ext: str) -> str | None:

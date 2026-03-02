@@ -40,6 +40,7 @@ MAX_VERIFICATION_OUTPUT = 10_000
 
 # ── Role resolution ──────────────────────────────────────────────────
 
+
 def _resolve_base_role(role: str, verifiable: set[str] = VERIFIABLE_ROLES) -> str:
     """Resolve an instance ID or compound role name to its base role.
 
@@ -61,6 +62,7 @@ def _resolve_base_role(role: str, verifiable: set[str] = VERIFIABLE_ROLES) -> st
 
 
 # ── Project type detection ────────────────────────────────────────────
+
 
 def _detect_project_type(project_root: Path) -> dict[str, Any]:
     """Detect the project type from marker files.
@@ -222,6 +224,7 @@ def _detect_config_validators(files_changed: list[str]) -> list[str]:
 
 # ── Verification runners ──────────────────────────────────────────────
 
+
 def _run_verification_command(
     runner: CommandRunner,
     command: str,
@@ -282,14 +285,25 @@ def _verify_qa(
 
     # Only match actual source/test files — ignore data files, configs, docs.
     _CODE_EXTENSIONS = {
-        ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java",
-        ".kt", ".cs", ".rb", ".swift", ".cpp", ".c", ".h",
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".go",
+        ".rs",
+        ".java",
+        ".kt",
+        ".cs",
+        ".rb",
+        ".swift",
+        ".cpp",
+        ".c",
+        ".h",
     }
 
     # Find test files the QA wrote (distinguishing runnable tests from test infra)
-    _TEST_FILE_PATTERN = re.compile(
-        r"(test_|_test\.|\.test\.|\.spec\.)", re.IGNORECASE
-    )
+    _TEST_FILE_PATTERN = re.compile(r"(test_|_test\.|\.test\.|\.spec\.)", re.IGNORECASE)
     # Test infrastructure files that are valid QA output but not runnable tests
     _TEST_INFRA_PATTERN = re.compile(
         r"(conftest\.py|fixtures\.py|factories\.py|__init__\.py|pytest\.ini|"
@@ -301,43 +315,43 @@ def _verify_qa(
         return Path(filepath).suffix.lower() in _CODE_EXTENSIONS
 
     runnable_test_files = [
-        f for f in files_changed
-        if _is_code_file(f) and _TEST_FILE_PATTERN.search(Path(f).name)
+        f for f in files_changed if _is_code_file(f) and _TEST_FILE_PATTERN.search(Path(f).name)
     ]
-    infra_files = [
-        f for f in files_changed
-        if _TEST_INFRA_PATTERN.search(Path(f).name)
-    ]
+    infra_files = [f for f in files_changed if _TEST_INFRA_PATTERN.search(Path(f).name)]
 
     if not runnable_test_files:
         if infra_files:
             # QA wrote conftest/fixtures only — valid output, soft pass
-            checks.append({
-                "label": "test_infra_only",
-                "command": "(check)",
-                "passed": True,
-                "exit_code": 0,
-                "stdout": f"QA wrote {len(infra_files)} test infrastructure file(s) "
-                          f"({', '.join(Path(f).name for f in infra_files[:3])}). "
-                          "No runnable test files to verify.",
-                "stderr": "",
-                "timed_out": False,
-                "error": "",
-            })
+            checks.append(
+                {
+                    "label": "test_infra_only",
+                    "command": "(check)",
+                    "passed": True,
+                    "exit_code": 0,
+                    "stdout": f"QA wrote {len(infra_files)} test infrastructure file(s) "
+                    f"({', '.join(Path(f).name for f in infra_files[:3])}). "
+                    "No runnable test files to verify.",
+                    "stderr": "",
+                    "timed_out": False,
+                    "error": "",
+                }
+            )
             return checks
         else:
             # QA wrote files but none are test files — verification failure
-            checks.append({
-                "label": "test_files_exist",
-                "command": "(check)",
-                "passed": False,
-                "exit_code": -1,
-                "stdout": "",
-                "stderr": f"QA agent wrote {len(files_changed)} file(s) but none are test files. "
-                          "QA must write test files (test_*.py, *.test.ts, etc.).",
-                "timed_out": False,
-                "error": "no_test_files_produced",
-            })
+            checks.append(
+                {
+                    "label": "test_files_exist",
+                    "command": "(check)",
+                    "passed": False,
+                    "exit_code": -1,
+                    "stdout": "",
+                    "stderr": f"QA agent wrote {len(files_changed)} file(s) but none are test files. "
+                    "QA must write test files (test_*.py, *.test.ts, etc.).",
+                    "timed_out": False,
+                    "error": "no_test_files_produced",
+                }
+            )
             return checks
 
     # Run each test file individually for precise feedback
@@ -352,15 +366,15 @@ def _verify_qa(
             test_dir = str(Path(test_file).parent)
             cmd = f"go test ./{test_dir}/..."
         elif lang == "rust":
-            cmd = f"cargo test --lib"
+            cmd = "cargo test --lib"
         elif lang == "java":
             cmd = f"mvn test -pl {test_file} -q"
         else:
             cmd = f"python -m pytest {test_file} --tb=short -q"
 
-        checks.append(_run_verification_command(
-            runner, cmd, f"run_test:{Path(test_file).name}", timeout=180
-        ))
+        checks.append(
+            _run_verification_command(runner, cmd, f"run_test:{Path(test_file).name}", timeout=180)
+        )
 
     return checks
 
@@ -381,10 +395,13 @@ def _verify_devops(
     yaml_files = [f for f in files_changed if f.lower().endswith((".yaml", ".yml"))]
     if yaml_files and not validators:
         for yf in yaml_files[:5]:  # Check up to 5 YAML files
-            checks.append(_run_verification_command(
-                runner, f"python -c \"import yaml; yaml.safe_load(open('{yf}'))\"",
-                f"yaml_syntax:{Path(yf).name}",
-            ))
+            checks.append(
+                _run_verification_command(
+                    runner,
+                    f"python -c \"import yaml; yaml.safe_load(open('{yf}'))\"",
+                    f"yaml_syntax:{Path(yf).name}",
+                )
+            )
 
     return checks
 
@@ -406,20 +423,24 @@ def _verify_sre(
 
     # Also run tests if SRE wrote test files
     test_files = [
-        f for f in files_changed
-        if re.search(r"(test_|_test\.|\.test\.|\.spec\.)", f.lower())
+        f for f in files_changed if re.search(r"(test_|_test\.|\.test\.|\.spec\.)", f.lower())
     ]
     if test_files and project_info.get("test_cmd"):
         for tf in test_files:
             if project_info["language"] == "python":
-                checks.append(_run_verification_command(
-                    runner, f"python -m pytest {tf} --tb=short -q", f"test:{Path(tf).name}",
-                ))
+                checks.append(
+                    _run_verification_command(
+                        runner,
+                        f"python -m pytest {tf} --tb=short -q",
+                        f"test:{Path(tf).name}",
+                    )
+                )
 
     return checks
 
 
 # ── Main node ─────────────────────────────────────────────────────────
+
 
 def _make_skip_result(
     current_instance: str,
@@ -467,11 +488,7 @@ async def verify_execution_node(
     """
     await asyncio.sleep(0)
 
-    current_instance = (
-        state.get("current_instance_id")
-        or state.get("current_agent_role")
-        or ""
-    )
+    current_instance = state.get("current_instance_id") or state.get("current_agent_role") or ""
     agents_cfg = (state.get("team_config") or {}).get("agents") or {}
     agent_config = agents_cfg.get(current_instance) or {}
     current_role = agent_config.get("role", current_instance)
@@ -535,35 +552,43 @@ async def verify_execution_node(
         # Filesystem issues — non-fatal, report as verification error
         logger.warning(
             "Filesystem error during verification for %s (%s): %s",
-            current_instance, current_role, exc,
+            current_instance,
+            current_role,
+            exc,
         )
-        checks = [{
-            "label": "verification_error",
-            "command": "(internal)",
-            "passed": False,
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": f"Filesystem error: {exc}",
-            "timed_out": False,
-            "error": str(exc),
-        }]
+        checks = [
+            {
+                "label": "verification_error",
+                "command": "(internal)",
+                "passed": False,
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f"Filesystem error: {exc}",
+                "timed_out": False,
+                "error": str(exc),
+            }
+        ]
     except Exception as exc:
         # Unexpected errors — log at error level but don't crash the pipeline
         logger.error(
             "Unexpected error in execution verification for %s (%s): %s",
-            current_instance, current_role, exc,
+            current_instance,
+            current_role,
+            exc,
             exc_info=True,
         )
-        checks = [{
-            "label": "verification_error",
-            "command": "(internal)",
-            "passed": False,
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": str(exc),
-            "timed_out": False,
-            "error": str(exc),
-        }]
+        checks = [
+            {
+                "label": "verification_error",
+                "command": "(internal)",
+                "passed": False,
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": str(exc),
+                "timed_out": False,
+                "error": str(exc),
+            }
+        ]
 
     # Aggregate results
     total_checks = len(checks)
@@ -610,23 +635,27 @@ async def verify_execution_node(
 
     # Update verification history
     verification_history = list(state.get("verification_history") or [])
-    verification_history.append({
-        "instance_id": current_instance,
-        "role": current_role,
-        **verification,
-    })
+    verification_history.append(
+        {
+            "instance_id": current_instance,
+            "role": current_role,
+            **verification,
+        }
+    )
 
     events = list(state.get("events") or [])
-    events.append({
-        "type": "execution_verification",
-        "instance_id": current_instance,
-        "role": current_role,
-        "status": verification["status"],
-        "total_checks": total_checks,
-        "passed_checks": passed_checks,
-        "passed": bool(verification.get("passed", True)),
-        "project_language": project_info.get("language", "unknown"),
-    })
+    events.append(
+        {
+            "type": "execution_verification",
+            "instance_id": current_instance,
+            "role": current_role,
+            "status": verification["status"],
+            "total_checks": total_checks,
+            "passed_checks": passed_checks,
+            "passed": bool(verification.get("passed", True)),
+            "project_language": project_info.get("language", "unknown"),
+        }
+    )
 
     return {
         "execution_verification": verification,

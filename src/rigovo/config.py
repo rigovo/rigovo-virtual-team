@@ -142,7 +142,7 @@ class IdentityConfig(BaseSettings):
     workos_api_key: str = Field(default="", alias="WORKOS_API_KEY")
     # Public client ID — safe to ship in the binary.  Override via env for dev.
     workos_client_id: str = Field(
-        default="client_01KECSP9SGAB8RYBZW08A3R9S7",
+        default="client_01KEGGCQW9SJDVVPV7FS8YRV5B",
         alias="WORKOS_CLIENT_ID",
     )
     workos_organization_id: str = Field(default="", alias="WORKOS_ORGANIZATION_ID")

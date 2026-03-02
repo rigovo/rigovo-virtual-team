@@ -63,14 +63,17 @@ async def reclassify_node(
     if reclassify_count >= MAX_RECLASSIFICATIONS:
         logger.warning(
             "Reclassification budget exhausted (%d/%d) — continuing with current classification",
-            reclassify_count, MAX_RECLASSIFICATIONS,
+            reclassify_count,
+            MAX_RECLASSIFICATIONS,
         )
-        events.append({
-            "type": "reclassify_rejected",
-            "reason": "budget_exhausted",
-            "reclassify_count": reclassify_count,
-            "max_reclassifications": MAX_RECLASSIFICATIONS,
-        })
+        events.append(
+            {
+                "type": "reclassify_rejected",
+                "reason": "budget_exhausted",
+                "reclassify_count": reclassify_count,
+                "max_reclassifications": MAX_RECLASSIFICATIONS,
+            }
+        )
         return {
             "reclassify_requested": False,
             "reclassify_count": reclassify_count,
@@ -84,7 +87,9 @@ async def reclassify_node(
 
     logger.info(
         "RECLASSIFY triggered: reason=%r suggested_type=%r original_type=%s",
-        reason, suggested_type, original_classification.get("task_type", "unknown"),
+        reason,
+        suggested_type,
+        original_classification.get("task_type", "unknown"),
     )
 
     # ── Build enriched description for re-classification ────────────
@@ -101,8 +106,16 @@ async def reclassify_node(
     # returned low confidence, bias toward the agent's suggestion.
     # The agent has seen the actual codebase; its opinion matters.
     _VALID_TYPES = {
-        "feature", "bug", "refactor", "test", "docs", "infra",
-        "security", "performance", "investigation", "new_project",
+        "feature",
+        "bug",
+        "refactor",
+        "test",
+        "docs",
+        "infra",
+        "security",
+        "performance",
+        "investigation",
+        "new_project",
     }
     if (
         suggested_type in _VALID_TYPES
@@ -111,7 +124,9 @@ async def reclassify_node(
     ):
         logger.info(
             "Agent suggestion %r overriding low-confidence deterministic %r (%.2f)",
-            suggested_type, det_result.task_type, det_result.confidence,
+            suggested_type,
+            det_result.task_type,
+            det_result.confidence,
         )
         # Create a synthetic deterministic result biased toward agent suggestion
         det_result = DeterministicClassification(
@@ -188,16 +203,18 @@ async def reclassify_node(
             logger.exception("LLM reclassification failed — using deterministic result only")
 
     # ── Emit reclassified event ─────────────────────────────────────
-    events.append({
-        "type": "reclassified",
-        "previous_task_type": original_classification.get("task_type", "unknown"),
-        "previous_complexity": original_classification.get("complexity", "unknown"),
-        "new_task_type": new_classification["task_type"],
-        "new_complexity": new_classification["complexity"],
-        "reason": reason,
-        "suggested_type": suggested_type,
-        "reclassify_count": reclassify_count + 1,
-    })
+    events.append(
+        {
+            "type": "reclassified",
+            "previous_task_type": original_classification.get("task_type", "unknown"),
+            "previous_complexity": original_classification.get("complexity", "unknown"),
+            "new_task_type": new_classification["task_type"],
+            "new_complexity": new_classification["complexity"],
+            "reason": reason,
+            "suggested_type": suggested_type,
+            "reclassify_count": reclassify_count + 1,
+        }
+    )
 
     result: dict[str, Any] = {
         "classification": new_classification,

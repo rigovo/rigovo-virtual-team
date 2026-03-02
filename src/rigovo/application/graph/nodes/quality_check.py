@@ -23,7 +23,6 @@ from typing import Any
 
 from rigovo.application.context.rigour_supervisor import (
     CODE_PRODUCING_ROLES,
-    PERSONA_BOUNDARIES,
     PersonaViolation,
     RigourSupervisor,
 )
@@ -156,14 +155,16 @@ def _persona_violations_to_gate_violations(
     }
     result: list[Violation] = []
     for pv in persona_violations:
-        result.append(Violation(
-            gate_id=f"persona-{pv.violation_type}",
-            message=pv.message,
-            severity=severity_map.get(pv.severity, ViolationSeverity.WARNING),
-            file_path=pv.file_path or None,
-            category="persona",
-            suggestion=f"Stay within the '{pv.role}' role scope.",
-        ))
+        result.append(
+            Violation(
+                gate_id=f"persona-{pv.violation_type}",
+                message=pv.message,
+                severity=severity_map.get(pv.severity, ViolationSeverity.WARNING),
+                file_path=pv.file_path or None,
+                category="persona",
+                suggestion=f"Stay within the '{pv.role}' role scope.",
+            )
+        )
     return result
 
 
@@ -190,13 +191,15 @@ async def _validate_master_agent_output(
 
     # Check 1: At least one agent
     if not agent_list:
-        violations.append(Violation(
-            gate_id="master-no-agents",
-            message="Staffing plan must include at least 1 agent",
-            severity=ViolationSeverity.ERROR,
-            suggestion="Master Agent must assign at least a planner and a coder",
-            category="structural",
-        ))
+        violations.append(
+            Violation(
+                gate_id="master-no-agents",
+                message="Staffing plan must include at least 1 agent",
+                severity=ViolationSeverity.ERROR,
+                suggestion="Master Agent must assign at least a planner and a coder",
+                category="structural",
+            )
+        )
 
     # Check 2: Validate all depends_on references exist
     instance_ids = {a.get("instance_id") for a in agent_list if isinstance(a, dict)}
@@ -207,14 +210,16 @@ async def _validate_master_agent_output(
         depends_on = agent.get("depends_on", [])
         for dep in depends_on:
             if dep not in instance_ids:
-                violations.append(Violation(
-                    gate_id="master-invalid-dependency",
-                    message=f"Agent '{instance_id}' depends on '{dep}' which does not exist",
-                    severity=ViolationSeverity.ERROR,
-                    suggestion=f"Ensure all dependencies reference existing agents in the plan",
-                    category="structural",
-                    file_path=None,
-                ))
+                violations.append(
+                    Violation(
+                        gate_id="master-invalid-dependency",
+                        message=f"Agent '{instance_id}' depends on '{dep}' which does not exist",
+                        severity=ViolationSeverity.ERROR,
+                        suggestion="Ensure all dependencies reference existing agents in the plan",
+                        category="structural",
+                        file_path=None,
+                    )
+                )
 
     # Check 3: Detect circular dependencies (simple cycle detection)
     if execution_dag:
@@ -239,33 +244,39 @@ async def _validate_master_agent_output(
         for agent_id in execution_dag:
             if agent_id not in visited:
                 if has_cycle(agent_id):
-                    violations.append(Violation(
-                        gate_id="master-circular-dependency",
-                        message=f"Circular dependency detected in pipeline involving '{agent_id}'",
-                        severity=ViolationSeverity.ERROR,
-                        suggestion="Fix the dependency graph so no agent waits (directly or indirectly) on its own work",
-                        category="structural",
-                    ))
+                    violations.append(
+                        Violation(
+                            gate_id="master-circular-dependency",
+                            message=f"Circular dependency detected in pipeline involving '{agent_id}'",
+                            severity=ViolationSeverity.ERROR,
+                            suggestion="Fix the dependency graph so no agent waits (directly or indirectly) on its own work",
+                            category="structural",
+                        )
+                    )
                     break
 
     # Check 4: Verify domain_analysis and architecture_notes exist
     if not staffing_plan.get("domain_analysis"):
-        violations.append(Violation(
-            gate_id="master-missing-analysis",
-            message="Staffing plan must include domain_analysis (2-3 sentences)",
-            severity=ViolationSeverity.WARNING,
-            suggestion="Add a brief analysis of the engineering domain and key constraints",
-            category="structural",
-        ))
+        violations.append(
+            Violation(
+                gate_id="master-missing-analysis",
+                message="Staffing plan must include domain_analysis (2-3 sentences)",
+                severity=ViolationSeverity.WARNING,
+                suggestion="Add a brief analysis of the engineering domain and key constraints",
+                category="structural",
+            )
+        )
 
     if not staffing_plan.get("architecture_notes"):
-        violations.append(Violation(
-            gate_id="master-missing-architecture",
-            message="Staffing plan should include architecture_notes (key architectural decisions)",
-            severity=ViolationSeverity.WARNING,
-            suggestion="Add architectural guidance for the team",
-            category="structural",
-        ))
+        violations.append(
+            Violation(
+                gate_id="master-missing-architecture",
+                message="Staffing plan should include architecture_notes (key architectural decisions)",
+                severity=ViolationSeverity.WARNING,
+                suggestion="Add architectural guidance for the team",
+                category="structural",
+            )
+        )
 
     # Build gate result
     all_passed = not any(v.severity == ViolationSeverity.ERROR for v in violations)
@@ -286,14 +297,16 @@ async def _validate_master_agent_output(
     gate_history.append({"role": current_role, **gate_summary})
 
     events = state.get("events", [])
-    events.append({
-        "type": "gate_results",
-        "role": current_role,
-        "passed": all_passed,
-        "gates_run": 4,
-        "violations": len(violations),
-        "reason": "gates_passed" if all_passed else "gates_failed",
-    })
+    events.append(
+        {
+            "type": "gate_results",
+            "role": current_role,
+            "passed": all_passed,
+            "gates_run": 4,
+            "violations": len(violations),
+            "reason": "gates_passed" if all_passed else "gates_failed",
+        }
+    )
 
     update: dict[str, Any] = {
         "gate_results": gate_summary,
@@ -409,7 +422,10 @@ async def quality_check_node(
         output_summary = agent_output.get("summary", "")
         files_changed = agent_output.get("files_changed", [])
         persona_violations = _check_persona_boundaries(
-            current_role, base_role, files_changed, output_summary,
+            current_role,
+            base_role,
+            files_changed,
+            output_summary,
         )
 
         # Separate hard violations (forbidden_file) from soft (missing_output_marker)
@@ -431,14 +447,16 @@ async def quality_check_node(
                 "violation_count": len(hard_violations),
                 "violations": structured_violations,
             }
-            events.append({
-                "type": "gate_results",
-                "role": current_role,
-                "passed": False,
-                "gates_run": 1,
-                "violations": len(hard_violations),
-                "reason": "persona_violation",
-            })
+            events.append(
+                {
+                    "type": "gate_results",
+                    "role": current_role,
+                    "passed": False,
+                    "gates_run": 1,
+                    "violations": len(hard_violations),
+                    "reason": "persona_violation",
+                }
+            )
             gate_history = list(state.get("gate_history", []))
             gate_history.append({"role": current_role, **gate_summary})
 
@@ -480,27 +498,31 @@ async def quality_check_node(
             }
         )
         if soft_violations:
-            events.append({
-                "type": "persona_check",
-                "role": current_role,
-                "violations": len(soft_violations),
-                "details": [pv.message for pv in soft_violations[:5]],
-            })
+            events.append(
+                {
+                    "type": "persona_check",
+                    "role": current_role,
+                    "violations": len(soft_violations),
+                    "details": [pv.message for pv in soft_violations[:5]],
+                }
+            )
 
         # Record the skip in gate_history for audit completeness
         gate_history = list(state.get("gate_history", []))
-        gate_history.append({
-            "role": current_role,
-            "status": GateStatus.SKIPPED,
-            "passed": True,
-            "reason": "gates_skipped",
-            "gates_run": 0,
-            "gates_passed": 0,
-            "violation_count": 0,
-            "violations": [],
-            "deep": False,
-            "pro": False,
-        })
+        gate_history.append(
+            {
+                "role": current_role,
+                "status": GateStatus.SKIPPED,
+                "passed": True,
+                "reason": "gates_skipped",
+                "gates_run": 0,
+                "gates_passed": 0,
+                "violation_count": 0,
+                "violations": [],
+                "deep": False,
+                "pro": False,
+            }
+        )
         return {
             "gate_results": {"status": "skipped", "passed": True},
             "gate_history": gate_history,
@@ -598,7 +620,10 @@ async def quality_check_node(
     # Phase 7: Check persona boundaries
     output_summary = agent_output.get("summary", "")
     persona_violations = _check_persona_boundaries(
-        current_role, base_role, files_changed, output_summary,
+        current_role,
+        base_role,
+        files_changed,
+        output_summary,
     )
     persona_gate_violations = _persona_violations_to_gate_violations(persona_violations)
     if persona_gate_violations:
