@@ -137,18 +137,27 @@ async def replan_node(
 
 
 def _derive_trigger_reason(state: TaskState, policy: dict[str, Any]) -> str:
-    """Derive deterministic reason for a replan trigger from state + policy."""
+    """Derive deterministic reason for why this replan was triggered.
+
+    Since the architectural change (Phase 9), replan only fires AFTER
+    an agent has exhausted its full retry budget.  This function provides
+    a diagnostic label for logging and UI display — it does NOT control
+    whether replan fires (that's enforced by check_gates_and_route).
+    """
     gate_results = state.get("gate_results", {}) or {}
+
+    # Contract failure is the most specific diagnosis
     if bool(policy.get("trigger_contract_failures", True)):
         if gate_results.get("reason") == "contract_failed" or bool(state.get("contract_stage")):
             return "contract_failure"
-    retry_threshold = int(policy.get("trigger_retry_count", 3) or 3)
-    if int(state.get("retry_count", 0) or 0) >= retry_threshold:
-        return "retry_threshold"
-    violation_threshold = int(policy.get("trigger_gate_violation_count", 5) or 5)
-    if int(gate_results.get("violation_count", 0) or 0) >= violation_threshold:
+
+    # High violation count — agent couldn't reduce violations within retries
+    violation_count = int(gate_results.get("violation_count", 0) or 0)
+    if violation_count >= int(policy.get("trigger_gate_violation_count", 10) or 10):
         return "gate_violation_threshold"
-    return "policy_replan"
+
+    # Default: agent exhausted retries without passing gates
+    return "retry_budget_exhausted"
 
 
 def _deterministic_replan(state: TaskState, trigger_reason: str) -> dict[str, Any]:

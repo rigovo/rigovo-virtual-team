@@ -45,7 +45,7 @@ class TestReplanNode(unittest.IsolatedAsyncioTestCase):
         assert "REPLAN REQUIRED #1" in result["fix_packets"][-1]
         trigger = next(e for e in result["events"] if e.get("type") == "replan_triggered")
         assert trigger["strategy"] == "deterministic"
-        assert trigger["trigger_reason"] == "policy_replan"
+        assert trigger["trigger_reason"] == "retry_budget_exhausted"
         llm.invoke.assert_not_called()
 
     async def test_replan_node_fails_when_budget_exhausted(self):

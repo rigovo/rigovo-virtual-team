@@ -37,6 +37,7 @@ from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskReposit
 # fall back to persisted pipeline_steps in SQLite.
 _live_agent_progress: dict[str, dict[str, dict]] = {}  # task_id -> {role -> step_data}
 _live_task_events: dict[str, list[dict[str, Any]]] = {}  # task_id -> rolling runtime events
+_live_task_classification: dict[str, dict[str, Any]] = {}  # task_id -> classification data (set early)
 
 # ── Human-in-the-loop approval synchronization ─────────────────────
 # When tier="approve" the graph pauses at each checkpoint and calls the
@@ -152,10 +153,55 @@ def _on_agent_event(event: dict) -> None:
     - agent_started: Agent begins execution
     - agent_complete: Agent finished producing output
     - gate_results: Quality gates ran for the agent (from quality_check_node)
+    - task_classified: Master Agent finished classification (persist early)
     - task_finalized / task_failed: Cleanup live state
     """
     etype = event.get("type", "")
     task_id = event.get("task_id", "")
+
+    # task_classified has no 'role' — handle it before the role guard
+    if etype == "task_classified" and task_id:
+        _live_task_classification[task_id] = {
+            "task_type": event.get("task_type", "feature"),
+            "complexity": event.get("complexity", "medium"),
+            "workspace_type": event.get("workspace_type", "existing_project"),
+            "reasoning": event.get("reasoning", ""),
+            "agent_count": event.get("agent_count", 0),
+            "agent_instances": event.get("agent_instances", []),
+        }
+        # Also persist to Task entity in DB so it survives across restarts
+        try:
+            from rigovo.domain.entities.task import TaskComplexity as _TC
+            from rigovo.domain.entities.task import TaskType as _TT
+
+            task_repo = SqliteTaskRepository(container.get_db())
+
+            async def _persist_classification() -> None:
+                _task = await task_repo.get(UUID(task_id))
+                if _task and _task.task_type is None:
+                    raw_type = event.get("task_type", "")
+                    if raw_type:
+                        try:
+                            _task.task_type = _TT(raw_type)
+                        except ValueError:
+                            _task.task_type = _TT.FEATURE
+                    raw_cx = event.get("complexity", "")
+                    if raw_cx:
+                        try:
+                            _task.complexity = _TC(raw_cx)
+                        except ValueError:
+                            _task.complexity = _TC.MEDIUM
+                    await task_repo.save(_task)
+
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_persist_classification())
+            except RuntimeError:
+                asyncio.run(_persist_classification())
+        except Exception:
+            logger.debug("Could not persist early classification for %s", task_id, exc_info=True)
+        return
+
     role = event.get("role", "")
     if not task_id or not role:
         return
@@ -232,6 +278,7 @@ def _on_agent_event(event: dict) -> None:
         # Clean up live state once task is done
         _live_agent_progress.pop(task_id, None)
         _live_task_events.pop(task_id, None)
+        _live_task_classification.pop(task_id, None)
 
 
 def _on_runtime_event(event: dict) -> None:
@@ -686,6 +733,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         emitter.on("gate_results", _on_agent_event)
         emitter.on("task_finalized", _on_agent_event)
         emitter.on("task_failed", _on_agent_event)
+        emitter.on("task_classified", _on_agent_event)
         for evt_name in [
             "agent_consult_requested",
             "agent_consult_completed",
@@ -1956,12 +2004,27 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         # Compute confidence score from pipeline steps
         confidence_score = _compute_confidence_score(task.pipeline_steps or [])
 
+        # Resolve task_type: DB first, then live classification cache, then "unclassified"
+        resolved_task_type: str = "unclassified"
+        resolved_complexity: str | None = None
+        if task.task_type:
+            resolved_task_type = str(task.task_type.value) if hasattr(task.task_type, "value") else str(task.task_type)
+            resolved_complexity = task.complexity.value if task.complexity else None
+        else:
+            live_cls = _live_task_classification.get(task_id)
+            if live_cls:
+                resolved_task_type = live_cls.get("task_type", "unclassified")
+                resolved_complexity = live_cls.get("complexity")
+
+        # Surface pipeline failure reason (Fix #5)
+        error_reason = task.user_feedback if task.status == TaskStatus.FAILED and task.user_feedback else None
+
         return {
             "id": str(task.id),
             "description": task.description,
             "status": task.status.value,
-            "task_type": task.task_type or "unclassified",
-            "complexity": task.complexity.value if task.complexity else None,
+            "task_type": resolved_task_type,
+            "complexity": resolved_complexity,
             "tier": _tier_from_task(task),
             "team": str(task.team_id)[:8] if task.team_id else "unassigned",
             "created_at": task.created_at.isoformat() if task.created_at else None,
@@ -1971,6 +2034,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "cost": cost,
             "approval_data": task.approval_data or {},
             "confidence_score": confidence_score,
+            "error": error_reason,
         }
 
     @app.post("/v1/tasks")
@@ -2538,10 +2602,19 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 if role:
                     team_roles.append(role)
 
+        # Resolve task_type with live classification fallback
+        _mission_task_type: str = "unclassified"
+        if task.task_type:
+            _mission_task_type = str(task.task_type.value) if hasattr(task.task_type, "value") else str(task.task_type)
+        else:
+            live_cls = _live_task_classification.get(task_id)
+            if live_cls:
+                _mission_task_type = live_cls.get("task_type", "unclassified")
+
         return {
             "task_id": task_id,
             "task_status": task.status.value if hasattr(task.status, "value") else str(task.status),
-            "task_type": task.task_type or "unclassified",
+            "task_type": _mission_task_type,
             "risk": {"level": risk_level, "points": risk_points},
             "cost": cost_data,
             "team": {"size": len(set(team_roles)), "roles": sorted(set(team_roles))},

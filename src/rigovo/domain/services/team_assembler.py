@@ -61,6 +61,21 @@ class PipelineConfig:
 # Roles that produce code → quality gates should run after them
 CODE_PRODUCING_ROLES = {"coder", "devops", "sre", "qa"}
 
+# ── Canonical flow order — enforced programmatically, NOT by LLM prompt ──
+# Lower number = runs earlier. Agents MUST follow this ordering.
+# The LLM can decide WHICH agents to include, but it CANNOT override the order.
+ROLE_PRIORITY: dict[str, int] = {
+    "planner":  10,   # ALWAYS first — creates the plan
+    "coder":    20,   # Implements the plan
+    "reviewer": 30,   # Reviews code produced by coders
+    "security": 40,   # Security audit after code review
+    "qa":       50,   # Tests after code is reviewed and secure
+    "devops":   60,   # Infrastructure after quality checks
+    "sre":      70,   # Reliability after infra
+    "docs":     80,   # Documentation after everything
+    "lead":     90,   # Tech Lead LAST — final architectural review of ALL work
+}
+
 
 class TeamAssemblerService:
     """
@@ -149,25 +164,22 @@ class TeamAssemblerService:
                 TaskComplexity(staffing_plan.get("complexity", "medium")),
             )
 
-        # Build DAG from staffing plan
-        execution_dag = staffing_plan.get("execution_dag", {})
-        if not execution_dag:
-            # Build from per-agent depends_on
-            execution_dag = {}
-            valid_ids = {a.instance_id for a in pipeline_agents}
-            for slot in plan_agents:
-                iid = slot.get("instance_id", "")
-                if iid in valid_ids:
-                    deps = [d for d in slot.get("depends_on", []) if d in valid_ids]
-                    execution_dag[iid] = deps
+        # ─────────────────────────────────────────────────────────────────
+        # ENFORCE CANONICAL ORDERING — sort agents by ROLE_PRIORITY
+        # The LLM decides WHICH agents to include, but we enforce ORDER.
+        # This prevents "lead first" or "qa before coder" mistakes.
+        # ─────────────────────────────────────────────────────────────────
+        pipeline_agents = self._enforce_canonical_order(pipeline_agents)
 
-        # Compute parallel groups
-        parallel_groups = staffing_plan.get("parallel_groups", [])
-        if not parallel_groups:
-            parallel_groups = self._compute_parallel_groups(
-                [a.instance_id for a in pipeline_agents],
-                execution_dag,
-            )
+        # Build DAG from the CORRECTED agent order — rebuild from scratch
+        # to ensure dependencies match the enforced order.
+        execution_dag = self._build_enforced_dag(pipeline_agents, plan_agents)
+
+        # Compute parallel groups from the corrected DAG
+        parallel_groups = self._compute_parallel_groups(
+            [a.instance_id for a in pipeline_agents],
+            execution_dag,
+        )
 
         # Quality gates after code-producing agents
         gates_after = [
@@ -184,6 +196,77 @@ class TeamAssemblerService:
             instance_verifications=instance_verifications,
             instance_specialisations=instance_specialisations,
         )
+
+    @staticmethod
+    def _enforce_canonical_order(agents: list[Agent]) -> list[Agent]:
+        """Sort agents by ROLE_PRIORITY to enforce canonical pipeline order.
+
+        This is the KEY architectural enforcement. The LLM decides which
+        agents to staff, but we ALWAYS enforce:
+            planner → coder(s) → reviewer → security → qa → devops → sre → lead
+
+        Within the same role (e.g. multiple coders), we preserve the LLM's
+        original order since it may have intentional specialisation sequencing.
+        """
+        def sort_key(agent: Agent) -> tuple[int, int]:
+            role = agent.role
+            priority = ROLE_PRIORITY.get(role, 55)  # Unknown roles go between qa and devops
+            # Preserve original order within same role by using enumerate index
+            return (priority, 0)
+
+        # Stable sort: agents with same priority keep their relative order
+        sorted_agents = sorted(agents, key=sort_key)
+
+        if [a.instance_id for a in sorted_agents] != [a.instance_id for a in agents]:
+            original = [f"{a.role}({a.instance_id})" for a in agents]
+            corrected = [f"{a.role}({a.instance_id})" for a in sorted_agents]
+            logger.info(
+                "Enforced canonical ordering. LLM proposed: %s → Corrected to: %s",
+                " → ".join(original),
+                " → ".join(corrected),
+            )
+
+        return sorted_agents
+
+    @staticmethod
+    def _build_enforced_dag(
+        pipeline_agents: list[Agent],
+        plan_agents: list[dict[str, Any]],
+    ) -> dict[str, list[str]]:
+        """Build a dependency DAG that respects canonical role ordering.
+
+        Strategy:
+        - Group agents by ROLE_PRIORITY tier
+        - Each tier depends on ALL agents in the previous tier
+        - Within the same tier, agents can run in parallel (no inter-dependency)
+        - This guarantees: all planners finish → all coders start →
+          all coders finish → all reviewers start → etc.
+        """
+        valid_ids = {a.instance_id for a in pipeline_agents}
+
+        # Group agents by priority tier
+        tiers: dict[int, list[str]] = {}
+        for agent in pipeline_agents:
+            priority = ROLE_PRIORITY.get(agent.role, 55)
+            tiers.setdefault(priority, []).append(agent.instance_id)
+
+        sorted_priorities = sorted(tiers.keys())
+
+        dag: dict[str, list[str]] = {}
+        for tier_idx, priority in enumerate(sorted_priorities):
+            tier_agents = tiers[priority]
+            if tier_idx == 0:
+                # First tier has no dependencies
+                for iid in tier_agents:
+                    dag[iid] = []
+            else:
+                # This tier depends on ALL agents in the previous tier
+                prev_priority = sorted_priorities[tier_idx - 1]
+                prev_agents = tiers[prev_priority]
+                for iid in tier_agents:
+                    dag[iid] = list(prev_agents)
+
+        return dag
 
     def _clone_agent_for_instance(
         self,

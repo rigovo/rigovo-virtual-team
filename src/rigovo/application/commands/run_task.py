@@ -350,7 +350,18 @@ class RunTaskCommand:
         elif status == "rejected":
             task.reject(feedback=final_state.get("approval_feedback", ""))
         else:
-            task.fail()
+            # Capture the pipeline error reason so UI can display it
+            failure_reason = final_state.get("error", "")
+            if not failure_reason:
+                # Check events for pipeline_failed_dependency / dag_blocked
+                for ev in reversed(final_state.get("events", [])):
+                    if isinstance(ev, dict) and ev.get("type") in (
+                        "dag_blocked", "pipeline_failed_dependency",
+                    ):
+                        remaining = ev.get("remaining_instances", [])
+                        failure_reason = f"Pipeline stalled: unresolved dependencies for {', '.join(remaining)}"
+                        break
+            task.fail(failure_reason)
 
         # Persist classification from Master Agent (prevents "unclassified" in UI)
         classification = final_state.get("classification", {})

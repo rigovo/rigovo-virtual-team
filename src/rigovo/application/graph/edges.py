@@ -51,29 +51,46 @@ def check_gates_and_route(state: TaskState) -> str:
     """
     Route after quality gate check.
 
-    Three outcomes:
-    - pass: gates passed → move to next agent or finish
-    - fix_loop: gates failed, retries remaining → back to coder
-    - max_retries: gates failed, no retries left → fail
+    Priority order (architectural invariant):
+    1. Gates passed → advance to next agent
+    2. Retries remaining → let the agent self-correct first (fix loop)
+    3. Retries exhausted + replan available → escalate to replanner
+    4. Retries exhausted + no replan → hard fail
+
+    IMPORTANT: Replan is an ESCALATION after all retries are exhausted,
+    never an interruption of the agent's retry budget.  This prevents
+    the "replan triggered too early" problem where agents lose retries
+    3-4 because the old code checked replan BEFORE retry budget.
     """
     gate_results = state.get("gate_results", {})
     retry_count = state.get("retry_count", 0)
     max_retries = state.get("max_retries", 5)
 
+    # 1. Gates passed → move on
     if gate_results.get("passed", True) or gate_results.get("status") == "skipped":
         return "pass_next_agent"
 
-    if _should_trigger_replan(state):
-        return "trigger_replan"
-
+    # 2. Agent still has retries → let it self-correct
     if retry_count < max_retries:
         return "fail_fix_loop"
 
+    # 3. Retries exhausted → escalate to replan if available
+    if _should_trigger_replan(state):
+        return "trigger_replan"
+
+    # 4. No replan available → hard fail
     return "fail_max_retries"
 
 
 def _should_trigger_replan(state: TaskState) -> bool:
-    """Policy gate for when a failed step should trigger global replanning."""
+    """Policy gate: should this exhausted-retry step escalate to replanning?
+
+    IMPORTANT: This function is ONLY called after the agent has exhausted
+    its full retry budget (check_gates_and_route ensures this).  We no
+    longer need a retry-count threshold — if we got here, retries ARE
+    exhausted.  The policy now decides if the failure warrants a global
+    replan vs a hard abort.
+    """
     policy = state.get("replan_policy", {}) or {}
     if not isinstance(policy, dict) or not policy.get("enabled", False):
         return False
@@ -85,19 +102,14 @@ def _should_trigger_replan(state: TaskState) -> bool:
 
     gate_results = state.get("gate_results", {}) or {}
 
+    # Contract failures always warrant replan (structural mismatch)
     if bool(policy.get("trigger_contract_failures", True)):
         if gate_results.get("reason") == "contract_failed" or bool(state.get("contract_stage")):
             return True
 
-    retry_threshold = int(policy.get("trigger_retry_count", 3) or 3)
-    if int(state.get("retry_count", 0) or 0) >= retry_threshold:
-        return True
-
-    violation_threshold = int(policy.get("trigger_gate_violation_count", 5) or 5)
-    if int(gate_results.get("violation_count", 0) or 0) >= violation_threshold:
-        return True
-
-    return False
+    # Since we only get here when retries are exhausted, always allow
+    # replan as a recovery mechanism (the agent genuinely couldn't self-fix)
+    return True
 
 
 def check_replan_result(state: TaskState) -> str:

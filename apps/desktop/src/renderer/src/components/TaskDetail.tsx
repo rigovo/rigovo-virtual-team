@@ -2,7 +2,7 @@
 /*  TaskDetail — split control plane                                    */
 /*  Left: Map (graph) or Timeline toggle | Right: agent detail panel   */
 /* ------------------------------------------------------------------ */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { InboxTask, TaskDetail as TaskDetailType, TaskStep } from "../types";
 import { tierClass, statusClass } from "../defaults";
 import { API_BASE, readJson } from "../api";
@@ -120,6 +120,18 @@ function ProcessingState({ status }: { status: string }) {
   const isCompleted = st.includes("complete");
   const isTerminal  = isFailed || isCompleted;
 
+  /* Live elapsed timer */
+  const startRef = useRef(Date.now());
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (isTerminal) return;
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [isTerminal]);
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  const elapsedStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
   if (isTerminal) {
     return (
       <div className="animate-fadeup rounded-2xl border border-[var(--border)] bg-[rgba(0,0,0,0.02)] p-5">
@@ -146,8 +158,11 @@ function ProcessingState({ status }: { status: string }) {
         <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[rgba(0,0,0,0.04)] text-lg">
           {phase.icon}
         </div>
-        <div>
-          <p className="text-sm font-semibold" style={{ color: "var(--t1)" }}>Master Brain</p>
+        <div className="flex-1">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold" style={{ color: "var(--t1)" }}>Master Brain</p>
+            <span className="text-[11px] font-mono tabular-nums" style={{ color: "var(--t3)" }}>{elapsedStr}</span>
+          </div>
           <p className="text-[11px]" style={{ color: "var(--t3)" }}>Coordinating virtual team</p>
         </div>
       </div>
@@ -155,11 +170,28 @@ function ProcessingState({ status }: { status: string }) {
         <h3 className="text-sm font-semibold" style={{ color: "var(--t1)" }}>{phase.title}</h3>
         <p className="mt-1 text-[13px] leading-relaxed" style={{ color: "var(--t3)" }}>{phase.desc}</p>
       </div>
-      <div className="mt-3 flex items-center gap-2" style={{ color: "var(--t3)" }}>
+      {/* Progress steps — show which phases are done */}
+      <div className="mt-3 flex items-center gap-3">
+        {["classifying", "routing", "assembling"].map((p) => {
+          const done = st.includes(p) ? false : (
+            p === "classifying" ? (st.includes("routing") || st.includes("assembl") || st.includes("running")) :
+            p === "routing" ? (st.includes("assembl") || st.includes("running")) :
+            st.includes("running")
+          );
+          const active = st.includes(p);
+          return (
+            <div key={p} className="flex items-center gap-1.5">
+              <span className={`inline-block h-2 w-2 rounded-full ${done ? "bg-emerald-500" : active ? "bg-[var(--accent)] animate-pulse" : "bg-[rgba(0,0,0,0.1)]"}`} />
+              <span className="text-[10px] capitalize" style={{ color: done ? "var(--s-complete)" : active ? "var(--accent)" : "var(--t4)" }}>{p === "assembling" ? "setup" : p === "classifying" ? "analyze" : "staff"}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-2 flex items-center gap-2" style={{ color: "var(--t3)" }}>
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-typing-1" />
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-typing-2" />
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-typing-3" />
-        <span className="text-[11px] italic">Planning in progress…</span>
+        <span className="text-[11px] italic">{phase.desc.split("—")[0].trim()}…</span>
       </div>
     </div>
   );
@@ -404,36 +436,53 @@ function NowStrip({ steps }: { steps: TaskStep[] }) {
 /* ================================================================== */
 /*  FailureBar — prominent failure reason when task fails             */
 /* ================================================================== */
-function FailureBar({ steps, mission, onSelect }: {
+function FailureBar({ steps, mission, onSelect, pipelineError }: {
   steps: TaskStep[];
   mission: MissionData | null;
   onSelect: (agent: string) => void;
+  pipelineError?: string | null;
 }) {
   const failedStep = steps.find(s => s.status === "failed");
-  if (!failedStep) return null;
 
-  /* Build the most meaningful reason available */
-  let reason = "";
-  const failedGates = failedStep.gate_results.filter(g => !g.passed);
-  if (failedGates.length > 0) {
-    reason = failedGates.map(g => g.message || g.gate).join(" · ");
-  } else if (failedStep.output.trim()) {
-    const lines = failedStep.output.split("\n").filter(l => l.trim());
-    reason = lines[lines.length - 1] ?? "";
-  } else if (mission?.decision_trace.length) {
-    reason = mission.decision_trace[mission.decision_trace.length - 1]?.summary ?? "";
+  // Case 1: A specific agent step failed
+  if (failedStep) {
+    let reason = "";
+    const failedGates = failedStep.gate_results.filter(g => !g.passed);
+    if (failedGates.length > 0) {
+      reason = failedGates.map(g => g.message || g.gate).join(" · ");
+    } else if (failedStep.output.trim()) {
+      const lines = failedStep.output.split("\n").filter(l => l.trim());
+      reason = lines[lines.length - 1] ?? "";
+    } else if (mission?.decision_trace.length) {
+      reason = mission.decision_trace[mission.decision_trace.length - 1]?.summary ?? "";
+    }
+
+    return (
+      <button type="button" className="td-failure-bar" onClick={() => onSelect(failedStep.agent)}>
+        <span className="td-failure-icon">✕</span>
+        <div className="td-failure-body">
+          <span className="td-failure-who">{agentLabel(failedStep.agent)} failed</span>
+          {reason && <span className="td-failure-reason">{reason.slice(0, 160)}</span>}
+        </div>
+        <span className="td-failure-cta">Inspect →</span>
+      </button>
+    );
   }
 
-  return (
-    <button type="button" className="td-failure-bar" onClick={() => onSelect(failedStep.agent)}>
-      <span className="td-failure-icon">✕</span>
-      <div className="td-failure-body">
-        <span className="td-failure-who">{agentLabel(failedStep.agent)} failed</span>
-        {reason && <span className="td-failure-reason">{reason.slice(0, 160)}</span>}
+  // Case 2: Pipeline-level failure (no specific agent failed, e.g. DAG deadlock)
+  if (pipelineError) {
+    return (
+      <div className="td-failure-bar" style={{ cursor: "default" }}>
+        <span className="td-failure-icon">✕</span>
+        <div className="td-failure-body">
+          <span className="td-failure-who">Pipeline failed</span>
+          <span className="td-failure-reason">{pipelineError.slice(0, 200)}</span>
+        </div>
       </div>
-      <span className="td-failure-cta">Inspect →</span>
-    </button>
-  );
+    );
+  }
+
+  return null;
 }
 
 /* ================================================================== */
@@ -648,11 +697,12 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
       {isActive && hasSteps && <NowStrip steps={detail!.steps} />}
 
       {/* ── Failure reason bar ── */}
-      {isFailed && hasSteps && (
+      {isFailed && (
         <FailureBar
-          steps={detail!.steps}
+          steps={detail?.steps ?? []}
           mission={mission}
           onSelect={setSelectedAgent}
+          pipelineError={detail?.error}
         />
       )}
 

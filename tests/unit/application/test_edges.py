@@ -38,7 +38,12 @@ class TestCheckGatesAndRoute:
         state = {"gate_results": {"passed": False}, "retry_count": 1, "max_retries": 3}
         assert check_gates_and_route(state) == "fail_fix_loop"
 
-    def test_failed_triggers_replan_by_retry_policy(self):
+    def test_mid_retry_does_NOT_trigger_replan(self):
+        """Replan must never interrupt an agent's retry cycle.
+
+        Even when retry_count exceeds the old trigger_retry_count,
+        the agent keeps retrying until max_retries is exhausted.
+        """
         state = {
             "gate_results": {"passed": False, "violation_count": 1},
             "retry_count": 3,
@@ -52,9 +57,28 @@ class TestCheckGatesAndRoute:
                 "trigger_contract_failures": True,
             },
         }
+        # Agent still has retries 3 and 4 → fix_loop, NOT replan
+        assert check_gates_and_route(state) == "fail_fix_loop"
+
+    def test_replan_fires_after_retries_exhausted(self):
+        """Replan is an escalation AFTER all retries are exhausted."""
+        state = {
+            "gate_results": {"passed": False, "violation_count": 1},
+            "retry_count": 5,
+            "max_retries": 5,
+            "replan_count": 0,
+            "replan_policy": {
+                "enabled": True,
+                "max_replans_per_task": 2,
+                "trigger_retry_count": 5,
+                "trigger_gate_violation_count": 10,
+                "trigger_contract_failures": True,
+            },
+        }
         assert check_gates_and_route(state) == "trigger_replan"
 
-    def test_failed_triggers_replan_by_contract_failure(self):
+    def test_contract_failure_still_gets_retries_first(self):
+        """Even contract failures get retries before replan escalation."""
         state = {
             "gate_results": {"passed": False, "reason": "contract_failed"},
             "retry_count": 0,
@@ -66,6 +90,23 @@ class TestCheckGatesAndRoute:
                 "max_replans_per_task": 1,
                 "trigger_retry_count": 99,
                 "trigger_gate_violation_count": 99,
+                "trigger_contract_failures": True,
+            },
+        }
+        # Retries still available → fix_loop first
+        assert check_gates_and_route(state) == "fail_fix_loop"
+
+    def test_contract_failure_replan_after_retries_exhausted(self):
+        """Contract failure escalates to replan when retries are exhausted."""
+        state = {
+            "gate_results": {"passed": False, "reason": "contract_failed"},
+            "retry_count": 5,
+            "max_retries": 5,
+            "contract_stage": "output",
+            "replan_count": 0,
+            "replan_policy": {
+                "enabled": True,
+                "max_replans_per_task": 1,
                 "trigger_contract_failures": True,
             },
         }

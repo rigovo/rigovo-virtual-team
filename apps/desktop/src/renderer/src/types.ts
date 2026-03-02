@@ -205,6 +205,8 @@ export interface TaskDetail {
   approval_data: Record<string, string>;
   /** Confidence score computed from pipeline quality gates (0-100) */
   confidence_score?: number;
+  /** Pipeline failure reason (only present when status is "failed") */
+  error?: string | null;
 }
 
 /* ---------- Electron IPC bridge (exposed via preload) ---------- */

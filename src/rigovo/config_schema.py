@@ -156,12 +156,24 @@ class BudgetSchema(BaseModel):
 
 
 class ReplanSchema(BaseModel):
-    """Policy-driven mid-run replanning controls."""
+    """Policy-driven mid-run replanning controls.
+
+    ARCHITECTURE NOTE: Replan is a *last-resort escalation* that fires
+    ONLY after an agent has exhausted its full retry budget.  It is NOT
+    an interruption of the retry cycle.  The edge function
+    ``check_gates_and_route`` enforces this invariant by checking retries
+    BEFORE checking replan eligibility.
+
+    With this design, ``trigger_retry_count`` and
+    ``trigger_gate_violation_count`` are advisory thresholds used by
+    ``_derive_trigger_reason`` for diagnostics/logging — they do NOT
+    control whether replan fires (that's determined by retry exhaustion).
+    """
 
     enabled: bool = True  # ON by default — re-evaluate rather than abort on step failure
-    max_replans_per_task: int = 3  # raised from 1 to give agents a fair shot
-    trigger_retry_count: int = 3
-    trigger_gate_violation_count: int = 5
+    max_replans_per_task: int = 2  # Conservative: 2 replans max (was 3 — too aggressive)
+    trigger_retry_count: int = 5  # Advisory: matches max_retries (diagnostic only)
+    trigger_gate_violation_count: int = 10  # Advisory: raised from 5 (diagnostic only)
     trigger_contract_failures: bool = True
     strategy: str = "deterministic"  # deterministic|llm
 

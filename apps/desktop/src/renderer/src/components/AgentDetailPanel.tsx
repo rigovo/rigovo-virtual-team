@@ -148,7 +148,8 @@ function ConsultationList({ role, collab }: { role: string; collab: Collaboratio
           const isResponse = e.type === "agent_consult_completed";
           const isDebate   = e.type === "debate_round";
           const arrow      = isRequest ? "→" : isResponse ? "←" : "↔";
-          const other      = isRequest ? e.to_role : e.from_role;
+          const otherRaw   = isRequest ? e.to_role : e.from_role;
+          const otherLabel = roleMeta(otherRaw || "agent").label;
           const color      = isDebate ? "#fb923c" : "#60a5fa";
           const msg        = e.message_id ? msgMap[e.message_id] : null;
           const snippet    = msg?.content ?? (isDebate ? e.reviewer_feedback : null) ?? "";
@@ -157,7 +158,7 @@ function ConsultationList({ role, collab }: { role: string; collab: Collaboratio
               <div className="adp-consult-row">
                 <span className="adp-consult-arrow" style={{ color }}>{arrow}</span>
                 <span className="adp-consult-peer" style={{ color }}>
-                  {isDebate ? `Debate rd ${e.round ?? ""}` : (other ?? "agent")}
+                  {isDebate ? `Debate rd ${e.round ?? ""}` : otherLabel}
                 </span>
                 <span className="adp-consult-type">
                   {isDebate ? "debate" : isRequest ? "asked" : "replied"}
@@ -198,8 +199,8 @@ function TeamCommsPanel({ collab }: { collab: CollaborationData | null }) {
       <div className="adp-comms-list">
         {comms.map((e, i) => {
           const isDebate = e.type === "debate_round";
-          const from = e.from_role ?? "system";
-          const to   = e.to_role ?? "";
+          const fromLabel = roleMeta(e.from_role ?? "system").label;
+          const toLabel   = roleMeta(e.to_role ?? "agent").label;
           const msg  = e.message_id ? msgMap[e.message_id] : null;
           const text = msg?.content ?? (isDebate ? (e.reviewer_feedback ?? "") : "");
           return (
@@ -208,7 +209,7 @@ function TeamCommsPanel({ collab }: { collab: CollaborationData | null }) {
                 {isDebate ? (
                   <span className="adp-comms-badge debate">Debate rd {e.round ?? i + 1}</span>
                 ) : (
-                  <span className="adp-comms-badge consult">{from} → {to}</span>
+                  <span className="adp-comms-badge consult">{fromLabel} → {toLabel}</span>
                 )}
                 <span className="adp-comms-kind">
                   {e.type === "agent_consult_requested" ? "asked" : e.type === "agent_consult_completed" ? "replied" : "feedback"}

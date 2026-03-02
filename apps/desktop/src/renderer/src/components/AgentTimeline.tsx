@@ -80,6 +80,14 @@ function roleMeta(role: string): RoleMeta {
   };
 }
 
+/** Convert a raw role key or instance_id to a human-readable display name.
+ *  "planner" → "Project Manager", "security" → "Security Engineer",
+ *  "backend-engineer-1" → "Backend Engineer 1"
+ */
+function roleLabel(role: string): string {
+  return roleMeta(role).label;
+}
+
 function statusTone(status: TaskStep["status"]): string {
   if (status === "complete") return "role-text-emerald";
   if (status === "running")  return "role-text-sky";
@@ -240,13 +248,13 @@ function CollabRow({ event, messages, index }: {
     case "agent_consult_requested":
       icon = "💬";
       isQuestion = true;
-      routeText = `${event.from_role || "agent"} asks ${event.to_role || "agent"}`;
+      routeText = `${roleLabel(event.from_role || "agent")} asks ${roleLabel(event.to_role || "agent")}`;
       bodyText = msgContent ? String(msgContent).slice(0, 240) : "";
       break;
     case "agent_consult_completed":
       icon = "↩️";
       isReply = true;
-      routeText = `${event.to_role || "agent"} responds`;
+      routeText = `${roleLabel(event.to_role || "agent")} responds`;
       bodyText = msgContent ? String(msgContent).slice(0, 240) : "";
       break;
     case "debate_round":
@@ -256,12 +264,12 @@ function CollabRow({ event, messages, index }: {
       break;
     case "integration_invoked":
       icon = "🔗";
-      routeText = `${event.role || "agent"} used ${event.kind || "integration"}:${event.operation || "op"}`;
+      routeText = `${roleLabel(event.role || "agent")} used ${event.kind || "integration"}:${event.operation || "op"}`;
       bodyText = "";
       break;
     case "integration_blocked":
       icon = "🚫";
-      routeText = `${event.role || "agent"} blocked by policy`;
+      routeText = `${roleLabel(event.role || "agent")} blocked by policy`;
       bodyText = event.blocked_reason || "";
       break;
     default:
