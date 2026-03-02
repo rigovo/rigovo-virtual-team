@@ -59,8 +59,9 @@ class SqliteTaskRepository(TaskRepository):
              complexity, status, current_checkpoint, approval_data,
              pipeline_steps, total_tokens, total_cost_usd, duration_ms,
              retries, langgraph_thread_id, rejected_at, user_feedback,
-             error, started_at, completed_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             error, started_at, completed_at, created_at,
+             checkpoint_timeline)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 str(task.id),
                 str(task.workspace_id),
@@ -85,6 +86,7 @@ class SqliteTaskRepository(TaskRepository):
                 task.started_at.isoformat() if task.started_at else None,
                 task.completed_at.isoformat() if task.completed_at else None,
                 task.created_at.isoformat(),
+                json.dumps(task.checkpoint_timeline) if task.checkpoint_timeline else None,
             ),
         )
         self._db.commit()
@@ -195,4 +197,10 @@ class SqliteTaskRepository(TaskRepository):
         if row["completed_at"]:
             task.completed_at = datetime.fromisoformat(row["completed_at"])
         task.created_at = datetime.fromisoformat(row["created_at"])
+        # Restore checkpoint timeline (history states)
+        try:
+            raw_timeline = row["checkpoint_timeline"]
+            task.checkpoint_timeline = json.loads(raw_timeline) if raw_timeline else []
+        except (json.JSONDecodeError, TypeError, KeyError, IndexError):
+            task.checkpoint_timeline = []
         return task

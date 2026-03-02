@@ -106,8 +106,11 @@ class TestNodeIntegration(unittest.IsolatedAsyncioTestCase):
         # Verify flow
         assert assemble_result["status"] == "assembled"
         assert assemble_result["current_agent_role"] == "engineer"
-        # Events include task_classified from classify_node + pipeline_assembled from assemble_node
-        assert len(assemble_result["events"]) == 2
+        # Events: deterministic_classified + task_classified (from classify) + pipeline_assembled (from assemble)
+        assert len(assemble_result["events"]) == 3
+        event_types = [e["type"] for e in assemble_result["events"]]
+        assert "deterministic_classified" in event_types
+        assert "task_classified" in event_types
         assert assemble_result["events"][-1]["type"] == "pipeline_assembled"
 
     async def test_execute_to_finalize_flow(self):

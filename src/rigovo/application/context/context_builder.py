@@ -23,6 +23,8 @@ from typing import Any
 
 from rigovo.application.context.memory_retriever import RetrievedMemories
 from rigovo.application.context.project_scanner import ProjectSnapshot
+from rigovo.domain.services.behavior_hsm import build_hsm_prompt_section
+from rigovo.domain.services.code_knowledge_graph import CodeKnowledgeGraph
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +91,22 @@ class AgentContext:
 
     role: str
     project_section: str = ""
+    architecture_section: str = ""  # Code Knowledge Graph summary
     memory_section: str = ""
     enrichment_section: str = ""
     pipeline_section: str = ""
     message_section: str = ""
     quality_contract: str = ""
+    behavioral_section: str = ""  # HSM behavioral state injection
+    resume_section: str = ""  # History state: injected when resuming interrupted task
 
     def to_full_context(self) -> str:
         """Assemble all sections into a single context string."""
         sections = []
+
+        # Behavioral state comes FIRST — it defines mandatory workflow phases
+        if self.behavioral_section:
+            sections.append(self.behavioral_section)
 
         if self.quality_contract:
             sections.append(
@@ -106,6 +115,10 @@ class AgentContext:
 
         if self.project_section:
             sections.append(self.project_section)
+
+        # Architecture goes right after project context — it's structural understanding
+        if self.architecture_section:
+            sections.append(self.architecture_section)
 
         if self.memory_section:
             sections.append(self.memory_section)
@@ -118,6 +131,10 @@ class AgentContext:
 
         if self.message_section:
             sections.append(self.message_section)
+
+        # Resume context comes last — it's critical override info
+        if self.resume_section:
+            sections.append(self.resume_section)
 
         full = "\n\n".join(sections)
 
@@ -149,6 +166,10 @@ class ContextBuilder:
         enrichment_text: str = "",
         previous_outputs: dict[str, dict[str, Any]] | None = None,
         agent_messages: list[dict[str, Any]] | None = None,
+        specialisation: str = "",
+        task_type: str = "",
+        knowledge_graph: CodeKnowledgeGraph | None = None,
+        resume_context: dict[str, Any] | None = None,
     ) -> AgentContext:
         """Build complete context for an agent.
 
@@ -158,11 +179,21 @@ class ContextBuilder:
             memories: Retrieved relevant memories.
             enrichment_text: Accumulated enrichment from past tasks.
             previous_outputs: Outputs from agents earlier in pipeline.
+            specialisation: Agent's specialisation (e.g., "frontend", "backend").
+            task_type: Current task classification (e.g., "feature", "infra").
+            knowledge_graph: Code knowledge graph for architecture understanding.
 
         Returns:
             AgentContext with all sections assembled and budgeted.
         """
         ctx = AgentContext(role=role)
+
+        # 0. Behavioral state (HSM) — mandatory workflow phases
+        ctx.behavioral_section = build_hsm_prompt_section(
+            role=role,
+            specialisation=specialisation,
+            task_type=task_type,
+        )
 
         # 1. Quality contract — what this role is held to
         ctx.quality_contract = ROLE_QUALITY_CONTRACT.get(role, "")
@@ -190,6 +221,20 @@ class ContextBuilder:
                 role,
             )
 
+        # 2b. Architecture context — structural understanding from knowledge graph
+        if knowledge_graph and knowledge_graph.node_count > 0:
+            # Planner and Lead get the full architecture summary
+            # Others get a condensed version (they have probe tools)
+            if role in ("planner", "lead"):
+                arch_budget = 3000
+            elif role in ("coder", "reviewer", "security"):
+                arch_budget = 2000
+            else:
+                arch_budget = 1000
+            ctx.architecture_section = knowledge_graph.to_context_section(
+                max_chars=arch_budget,
+            )
+
         # 3. Memory context — lessons from past tasks
         if memories and memories.count > 0:
             ctx.memory_section = self._budget_text(
@@ -211,6 +256,10 @@ class ContextBuilder:
         # 6. Message context — direct consults and responses between agents
         if agent_messages:
             ctx.message_section = self._build_message_section(agent_messages, role)
+
+        # 7. Resume context — injected when task is resuming from interruption
+        if resume_context and resume_context.get("is_resuming"):
+            ctx.resume_section = self._build_resume_section(resume_context)
 
         return ctx
 
@@ -272,6 +321,36 @@ class ContextBuilder:
         if len(text) <= max_chars:
             return text
         return text[:max_chars] + "\n... (truncated for context budget)"
+
+    def _build_resume_section(self, resume_context: dict[str, Any]) -> str:
+        """Build resume context section for agents running after task resume."""
+        parts = ["--- RESUME CONTEXT (this task was interrupted and is being resumed) ---"]
+
+        checkpoint = resume_context.get("resumed_from_checkpoint", "")
+        if checkpoint:
+            parts.append(f"Resumed from: {checkpoint}")
+
+        completed = resume_context.get("completed_agents", [])
+        if completed:
+            parts.append(f"Already completed agents: {', '.join(completed)}")
+
+        summaries = resume_context.get("previous_agent_summaries", {})
+        if summaries:
+            parts.append("\nPrevious agent outputs (before interruption):")
+            for role, summary in summaries.items():
+                if summary:
+                    parts.append(f"  [{role}]: {str(summary)[:150]}")
+
+        files = resume_context.get("files_already_changed", [])
+        if files:
+            parts.append(f"\nFiles already modified: {', '.join(files[:20])}")
+
+        parts.append(
+            "\nIMPORTANT: Do NOT repeat work already completed by previous agents. "
+            "Build upon their outputs. Check which files already exist before creating new ones."
+        )
+
+        return "\n".join(parts)
 
     def _build_message_section(
         self,

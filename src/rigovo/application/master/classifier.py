@@ -288,6 +288,7 @@ class TaskClassifier:
         project_snapshot: Any = None,
         memories: list[Any] | None = None,
         memory_scores: list[float] | None = None,
+        deterministic_hint: dict[str, Any] | None = None,
     ) -> StaffingPlan:
         """Full SME analysis — the Master Agent's primary function.
 
@@ -302,6 +303,8 @@ class TaskClassifier:
             project_snapshot: Project file structure, language, framework info.
             memories: Optional list of Memory objects from workspace history.
             memory_scores: Optional similarity scores for each memory (0.0-1.0).
+            deterministic_hint: Pre-classification from Deterministic Brain.
+                The LLM can refine but NEVER downgrade this classification.
         """
         # Build context from project snapshot
         project_context = self._build_project_context(project_snapshot)
@@ -321,6 +324,22 @@ class TaskClassifier:
             except Exception as e:
                 logger.warning("Failed to retrieve historical intelligence: %s", e)
 
+        # Build deterministic hint section (inject as floor constraint)
+        deterministic_section = ""
+        if deterministic_hint and deterministic_hint.get("is_deterministic"):
+            det_type = deterministic_hint.get("task_type", "feature")
+            det_complexity = deterministic_hint.get("complexity", "medium")
+            det_confidence = deterministic_hint.get("confidence", 0.0)
+            deterministic_section = (
+                f"\n\nDETERMINISTIC PRE-CLASSIFICATION (confidence {det_confidence:.0%}):\n"
+                f"  task_type: {det_type}\n"
+                f"  complexity: {det_complexity}\n"
+                f"This is a FLOOR — you can upgrade (e.g., add security concerns, raise "
+                f"complexity) but NEVER downgrade below this classification. If the "
+                f"pre-classification says 'new_project', your staffing plan MUST include "
+                f"agents suitable for a new project (planner, coder, reviewer at minimum)."
+            )
+
         # Build user message with all context
         message_parts = [
             "TASK DESCRIPTION:",
@@ -332,6 +351,9 @@ class TaskClassifier:
 
         if historical_intelligence:
             message_parts.extend(["", historical_intelligence])
+
+        if deterministic_section:
+            message_parts.append(deterministic_section)
 
         message_parts.append("\nAnalyze this task as a Distinguished Engineer. Produce the staffing plan.")
 

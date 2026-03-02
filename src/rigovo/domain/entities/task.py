@@ -129,6 +129,9 @@ class Task:
     # LangGraph persistence
     langgraph_thread_id: str | None = None
 
+    # Checkpoint timeline (history states for resume intelligence)
+    checkpoint_timeline: list[dict[str, Any]] = field(default_factory=list)
+
     # User interaction
     rejected_at: str | None = None  # Which checkpoint was rejected
     user_feedback: str | None = None

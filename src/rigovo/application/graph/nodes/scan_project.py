@@ -25,6 +25,7 @@ from typing import Any
 
 from rigovo.application.context.project_scanner import ProjectScanner
 from rigovo.application.graph.state import TaskState
+from rigovo.domain.services.code_knowledge_graph import KnowledgeGraphBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +34,15 @@ async def scan_project_node(
     state: TaskState,
     scanner: ProjectScanner | None = None,
 ) -> dict[str, Any]:
-    """Scan the project and store snapshot in state.
+    """Scan the project and store snapshot + knowledge graph in state.
 
     This runs before classify so that classification also benefits
     from knowing the project structure (e.g., detecting language
     for tech stack-specific task routing).
+
+    Two perception layers:
+    1. ProjectSnapshot — file tree, tech stack, key config files
+    2. CodeKnowledgeGraph — imports, exports, dependencies, domain clusters
     """
     await asyncio.sleep(0)  # Yield to event loop
     scanner = scanner or ProjectScanner()
@@ -53,8 +58,20 @@ async def scan_project_node(
         ", ".join(snapshot.tech_stack) or "unknown",
     )
 
+    # Build code knowledge graph — structural understanding of dependencies
+    kg_builder = KnowledgeGraphBuilder()
+    knowledge_graph = kg_builder.build(project_root)
+
+    logger.info(
+        "Knowledge graph built: %d nodes, %d edges, %d clusters",
+        knowledge_graph.node_count,
+        knowledge_graph.edge_count,
+        len(knowledge_graph.clusters),
+    )
+
     return {
         "project_snapshot": snapshot,
+        "code_knowledge_graph": knowledge_graph,
         "status": "project_scanned",
         "events": state.get("events", [])
         + [
@@ -65,6 +82,9 @@ async def scan_project_node(
                 "tech_stack": snapshot.tech_stack,
                 "entry_points": snapshot.entry_points,
                 "test_dirs": snapshot.test_directories,
+                "knowledge_graph_nodes": knowledge_graph.node_count,
+                "knowledge_graph_edges": knowledge_graph.edge_count,
+                "knowledge_graph_clusters": len(knowledge_graph.clusters),
             }
         ],
     }

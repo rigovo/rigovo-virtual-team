@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from rigovo.domain.services.code_knowledge_graph import CodeKnowledgeGraph
 from rigovo.infrastructure.filesystem.code_writer import CodeWriter
 from rigovo.infrastructure.filesystem.command_runner import CommandRunner
 from rigovo.infrastructure.filesystem.project_reader import ProjectReader
@@ -75,6 +76,7 @@ class ToolExecutor:
         worktree_mode: str = "project",
         worktree_root: str = "",
         filesystem_sandbox_mode: str = "project_root",
+        knowledge_graph: CodeKnowledgeGraph | None = None,
     ) -> None:
         self._integration_catalog = integration_catalog or {}
         self._integration_policy = integration_policy or {}
@@ -92,6 +94,7 @@ class ToolExecutor:
         self._runner = CommandRunner(
             self._execution_root, allowed_commands=allowed_commands or None
         )
+        self._knowledge_graph = knowledge_graph
 
         self._handlers: dict[str, Any] = {
             "read_file": self._handle_read_file,
@@ -101,6 +104,9 @@ class ToolExecutor:
             "run_command": self._handle_run_command,
             "read_dependencies": self._handle_read_dependencies,
             "invoke_integration": self._handle_invoke_integration,
+            "get_component_map": self._handle_get_component_map,
+            "get_impact_radius": self._handle_get_impact_radius,
+            "probe_environment": self._handle_probe_environment,
         }
 
     def _resolve_execution_root(self) -> Path:
@@ -226,6 +232,40 @@ class ToolExecutor:
 
     def _handle_read_dependencies(self, inputs: dict[str, Any]) -> dict[str, Any]:
         return self._reader.read_dependencies()
+
+    # --- Knowledge Graph tool handlers ---
+
+    def _handle_get_component_map(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Return components grouped by domain from the code knowledge graph."""
+        if self._knowledge_graph is None:
+            return {"error": "Code knowledge graph not available. Project scan may not have run."}
+        domain_filter = str(inputs.get("domain_filter", "") or "").strip()
+        clusters = self._knowledge_graph.get_component_map(domain_filter)
+        return {
+            "domains": clusters,
+            "total_domains": len(clusters),
+            "graph_nodes": self._knowledge_graph.node_count,
+            "graph_edges": self._knowledge_graph.edge_count,
+        }
+
+    def _handle_get_impact_radius(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Return impact radius for a file from the code knowledge graph."""
+        if self._knowledge_graph is None:
+            return {"error": "Code knowledge graph not available. Project scan may not have run."}
+        file_path = str(inputs.get("file_path", "")).strip()
+        if not file_path:
+            return {"error": "file_path is required"}
+        max_depth = int(inputs.get("max_depth", 3) or 3)
+        return self._knowledge_graph.get_impact_radius(file_path, max_depth)
+
+    def _handle_probe_environment(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Semantic probe over the code knowledge graph."""
+        if self._knowledge_graph is None:
+            return {"error": "Code knowledge graph not available. Project scan may not have run."}
+        query = str(inputs.get("query", "")).strip()
+        if not query:
+            return {"error": "query is required"}
+        return self._knowledge_graph.probe_environment(query)
 
     def _handle_invoke_integration(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Invoke a plugin capability after enforcing trust/policy gates."""

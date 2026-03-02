@@ -80,6 +80,11 @@ class TaskState(TypedDict, total=False):
     # --- Classification (set by classify node) ---
     classification: ClassificationData
 
+    # --- Deterministic classification (set by classify node BEFORE LLM) ---
+    # Instant two-pass result: regex + vector similarity (<50ms, zero LLM).
+    # This is the FLOOR — the LLM can upgrade but NEVER downgrade.
+    deterministic_classification: dict[str, Any]
+
     # --- Staffing plan (set by classify node — Master Agent SME analysis) ---
     # Contains per-instance agent assignments, dependency DAG, risks, acceptance
     # criteria, domain analysis. This is the Master Agent's full output.
@@ -134,6 +139,7 @@ class TaskState(TypedDict, total=False):
 
     # --- Context engineering ---
     project_snapshot: Any  # ProjectSnapshot from scanner (set at task start)
+    code_knowledge_graph: Any  # CodeKnowledgeGraph — imports, exports, dependencies
     enrichment_updates: list[dict[str, Any]]  # Learnings extracted post-pipeline
 
     # --- Agent debate ---
@@ -149,6 +155,18 @@ class TaskState(TypedDict, total=False):
     memory_learning_metrics: dict[str, Any]  # Per-task feedback metrics for memory loop
     integration_policy: dict[str, Any]  # Runtime policy for plugin/connector/MCP tooling
     integration_catalog: dict[str, Any]  # Loaded plugin capability catalog
+
+    # --- Late-binding reclassification ---
+    reclassify_requested: bool  # True when an agent emits RECLASSIFY signal
+    reclassify_reason: str  # Agent's justification for reclassification
+    reclassify_suggested_type: str  # Agent's suggested new task_type (advisory)
+    reclassify_count: int  # Number of reclassifications already performed (max 1)
+
+    # --- History states (checkpoint timeline + resume intelligence) ---
+    checkpoint_timeline: list[dict[str, Any]]  # Serialized CheckpointRecord list
+    resume_context: dict[str, Any]  # Injected when resuming an interrupted task
+    last_heartbeat: float  # Epoch seconds — stale detection for interrupted tasks
+    is_resuming: bool  # True when this execution is a resume (not fresh start)
 
     # --- Status ---
     status: str  # Current phase name

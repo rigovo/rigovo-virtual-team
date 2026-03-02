@@ -38,6 +38,11 @@ from rigovo.domain.interfaces.llm_provider import LLMProvider
 from rigovo.domain.interfaces.quality_gate import QualityGate
 from rigovo.domain.interfaces.repositories import MemoryRepository
 from rigovo.domain.services.cost_calculator import CostCalculator
+from rigovo.domain.services.history_state import (
+    CheckpointTimeline,
+    CheckpointType,
+    HistoryStateManager,
+)
 from rigovo.domain.services.team_assembler import TeamAssemblerService
 from rigovo.infrastructure.llm.model_catalog import resolve_model_for_role
 from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
@@ -175,7 +180,9 @@ class RunTaskCommand:
             if self._task_repo:
                 await self._task_repo.update_status(task)
             logger.info("Resuming existing task %s", task_id)
+            _is_resuming = True
         else:
+            _is_resuming = False
             # New task — create DB record
             task = Task(
                 workspace_id=self._workspace_id,
@@ -275,7 +282,36 @@ class RunTaskCommand:
             "integration_catalog": self._build_integration_catalog(),
             "status": "running",
             "events": [],
+            "checkpoint_timeline": [],
+            "last_heartbeat": time.time(),
+            "is_resuming": False,
         }
+
+        # GAP 5 fix: inject resume context when resuming
+        if _is_resuming and task.checkpoint_timeline:
+            history_mgr = HistoryStateManager()
+            timeline = history_mgr.load_timeline(str(task_id), task.checkpoint_timeline)
+            resume_ctx = history_mgr.build_resume_context(str(task_id))
+
+            initial_state["is_resuming"] = True
+            initial_state["checkpoint_timeline"] = task.checkpoint_timeline
+            initial_state["completed_roles"] = timeline.completed_agents
+            initial_state["resume_context"] = {
+                "is_resuming": True,
+                "resumed_from_checkpoint": resume_ctx.resumed_from_checkpoint,
+                "completed_agents": resume_ctx.completed_agents,
+                "last_successful_phase": resume_ctx.last_successful_phase,
+                "files_already_changed": resume_ctx.files_already_changed,
+                "previous_agent_summaries": resume_ctx.previous_agent_summaries,
+                "accumulated_tokens": resume_ctx.accumulated_tokens,
+                "accumulated_cost": resume_ctx.accumulated_cost,
+            }
+            logger.info(
+                "Resume context injected: %d agents already completed, "
+                "resuming from %s",
+                len(resume_ctx.completed_agents),
+                resume_ctx.resumed_from_checkpoint,
+            )
 
         # --- 3. Resolve default agents (fallback safety)
         default_agents = team_agents_by_id.get(available_teams[0]["id"], [])
@@ -506,6 +542,11 @@ class RunTaskCommand:
                 "debate_round": int(final_state.get("debate_round", 0) or 0),
             },
         }
+
+        # Persist checkpoint timeline from graph state (history states)
+        raw_timeline = final_state.get("checkpoint_timeline", [])
+        if isinstance(raw_timeline, list) and raw_timeline:
+            task.checkpoint_timeline = raw_timeline
 
         if self._task_repo:
             await self._task_repo.save(task)

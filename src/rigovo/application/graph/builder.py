@@ -27,6 +27,7 @@ from rigovo.application.graph.edges import (
     check_approval,
     check_gates_and_route,
     check_parallel_postprocess,
+    check_reclassify_needed,
     check_replan_result,
     prepare_debate_round,
 )
@@ -41,11 +42,13 @@ from rigovo.application.graph.nodes.execute_agent import (
 from rigovo.application.graph.nodes.finalize import finalize_node
 from rigovo.application.graph.nodes.quality_check import quality_check_node
 from rigovo.application.graph.nodes.verify_execution import verify_execution_node
+from rigovo.application.graph.nodes.reclassify import reclassify_node
 from rigovo.application.graph.nodes.replan import replan_node
 from rigovo.application.graph.nodes.route_team import route_team_node
 from rigovo.application.graph.nodes.scan_project import scan_project_node
 from rigovo.application.graph.nodes.store_memory import store_memory_node
 from rigovo.application.graph.state import TaskState
+from rigovo.domain.services.history_state import CheckpointType, HistoryStateManager
 from rigovo.application.master.classifier import TaskClassifier
 from rigovo.application.master.enricher import ContextEnricher
 from rigovo.application.master.evaluator import AgentEvaluator
@@ -247,6 +250,13 @@ class GraphBuilder:
         async def _enrich(state: TaskState) -> dict:
             return await enrich_node(state, enricher=enricher, evaluator=evaluator)
 
+        async def _reclassify(state: TaskState) -> dict:
+            return await reclassify_node(
+                state, master_llm,
+                classifier=classifier,
+                embedding_provider=embedding_provider,
+            )
+
         async def _replan(state: TaskState) -> dict:
             return await replan_node(state, master_llm)
 
@@ -356,6 +366,7 @@ class GraphBuilder:
         graph.add_node("parallel_fan_out", _parallel_fan_out)
         graph.add_node("debate_check", _prepare_debate)  # Debate prep node
         graph.add_node("commit_approval", _commit_approval)
+        graph.add_node("reclassify", _reclassify)  # Late-binding reclassification
         graph.add_node("replan", _replan)
         graph.add_node("enrich", _enrich)
         graph.add_node("store_memory", _store_memory)
@@ -378,9 +389,21 @@ class GraphBuilder:
             },
         )
 
-        # Agent execution → verify execution → quality gates
+        # Agent execution → verify execution → reclassify check → quality gates
         graph.add_edge("execute_agent", "verify_execution")
-        graph.add_edge("verify_execution", "quality_check")
+
+        # After verification: check if agent requested reclassification
+        graph.add_conditional_edges(
+            "verify_execution",
+            check_reclassify_needed,
+            {
+                "continue": "quality_check",
+                "reclassify": "reclassify",
+            },
+        )
+
+        # After reclassification: re-assemble team with new classification
+        graph.add_edge("reclassify", "assemble")
 
         graph.add_conditional_edges(
             "quality_check",
@@ -578,8 +601,31 @@ class GraphBuilder:
         state: dict,
         pipeline_order: list[str],
     ) -> None:
-        """Run agent instances one-by-one with quality gate retry loops."""
+        """Run agent instances one-by-one with quality gate retry loops.
+
+        History state awareness: when resuming, skips agents that already
+        completed in a previous execution. Uses completed_roles from state
+        (restored from checkpoint timeline) to determine what to skip.
+        """
+        # GAP 3 fix: skip already-completed agents on resume
+        skip_set: set[str] = set()
+        if state.get("is_resuming"):
+            completed = state.get("completed_roles", [])
+            if isinstance(completed, list):
+                skip_set = set(completed)
+            if skip_set:
+                logger.info(
+                    "Sequential resume: skipping %d already-completed agents: %s",
+                    len(skip_set),
+                    ", ".join(sorted(skip_set)),
+                )
+
         for i, instance_id in enumerate(pipeline_order):
+            # Skip agents that completed in previous execution
+            if instance_id in skip_set:
+                logger.info("Skipping already-completed agent: %s", instance_id)
+                continue
+
             state["current_agent_index"] = i
             state["current_agent_role"] = instance_id  # Config key = instance_id
             state["current_instance_id"] = instance_id
@@ -598,6 +644,26 @@ class GraphBuilder:
             # Phase 4: execution verification before quality gates
             update = await verify_execution_node(state)
             state.update(update)
+
+            # Late-binding reclassification check
+            if state.get("reclassify_requested") and int(state.get("reclassify_count", 0) or 0) < 1:
+                logger.info("Sequential path: RECLASSIFY triggered — re-running classification")
+                update = await reclassify_node(
+                    state, self._master_llm,
+                    classifier=self._classifier,
+                    embedding_provider=self._embedding_provider,
+                )
+                state.update(update)
+                # Re-assemble with new classification
+                selected_team_id = str(state.get("team_config", {}).get("team_id", "")).strip()
+                selected_agents = self._team_agents_by_id.get(selected_team_id, self._agents)
+                update = await assemble_node(state, selected_agents)
+                state.update(update)
+                # Restart pipeline with new team
+                new_pipeline = state.get("team_config", {}).get("pipeline_order", [])
+                if new_pipeline:
+                    await self._run_sequential_agents(state, new_pipeline)
+                return  # Don't continue the old pipeline
 
             update = await quality_check_node(state, self._quality_gates)
             state.update(update)
@@ -629,6 +695,21 @@ class GraphBuilder:
                 if not gate_results.get("passed", True):
                     break
 
+            # Record checkpoint after agent completes (history state)
+            # This ensures sequential resume can skip this agent next time
+            completed_roles = list(state.get("completed_roles", []))
+            if instance_id not in completed_roles:
+                completed_roles.append(instance_id)
+                state["completed_roles"] = completed_roles
+            _record_sequential_checkpoint(state, instance_id, gate_results)
+
+    @staticmethod
+    def _record_heartbeat(state: dict) -> None:
+        """Update heartbeat timestamp in state for stale detection."""
+        import time as _time
+
+        state["last_heartbeat"] = _time.time()
+
     @staticmethod
     def _split_pipeline(
         pipeline_order: list[str],
@@ -650,3 +731,51 @@ class GraphBuilder:
             else:
                 sequential.append(instance_id)
         return sequential, parallel
+
+
+def _record_sequential_checkpoint(
+    state: dict,
+    instance_id: str,
+    gate_results: dict,
+) -> None:
+    """Record a checkpoint in the sequential execution path.
+
+    Appends to the checkpoint_timeline list in state so that on resume,
+    the sequential runner knows which agents already completed.
+    """
+    import time as _time
+
+    gate_passed = gate_results.get("passed", True) if isinstance(gate_results, dict) else True
+    checkpoint_type = (
+        CheckpointType.GATE_PASSED if gate_passed else CheckpointType.GATE_FAILED
+    )
+
+    # Build lightweight checkpoint record
+    agent_outputs = state.get("agent_outputs", {})
+    agent_summaries: dict[str, str] = {}
+    if isinstance(agent_outputs, dict):
+        for role, output in agent_outputs.items():
+            if isinstance(output, dict):
+                agent_summaries[role] = str(output.get("summary", ""))[:200]
+
+    record = {
+        "checkpoint_id": f"seq-{len(state.get('checkpoint_timeline', []))+1:03d}",
+        "checkpoint_type": checkpoint_type,
+        "checkpoint_name": f"{instance_id} completed",
+        "timestamp": _time.time(),
+        "agent_role": state.get("current_agent_role", ""),
+        "instance_id": instance_id,
+        "phase": "execute_agent",
+        "completed_roles": list(state.get("completed_roles", [])),
+        "agent_outputs_summary": agent_summaries,
+        "gate_passed": gate_passed,
+    }
+
+    timeline = state.get("checkpoint_timeline", [])
+    if not isinstance(timeline, list):
+        timeline = []
+    timeline.append(record)
+    state["checkpoint_timeline"] = timeline
+
+    # Update heartbeat
+    state["last_heartbeat"] = _time.time()

@@ -1,16 +1,24 @@
-"""Classify node — Master Agent (Distinguished Engineer) analyzes the task.
+"""Classify node — Deterministic Brain + Master Agent (Distinguished Engineer).
 
-This node is the Master Agent's moment. It receives the task description
-and the project snapshot (from scan_project) and produces a full staffing
-plan — which agents, how many, what each one does, and in what order.
+Two-phase classification:
+1. **Deterministic Brain** (<50ms): Two-pass semantic classifier
+   (regex + vector similarity) produces an INSTANT classification floor.
+   This fires a ``deterministic_classified`` event so the UI can show
+   the task type immediately.
 
-The output is stored in ``state["staffing_plan"]`` (new) and
+2. **Master Agent LLM** (10–30s): Full SME analysis that produces a
+   staffing plan.  The LLM receives the deterministic result as a hint
+   and can upgrade (e.g., feature → security) but NEVER downgrade the
+   classification or produce fewer agents than the minimum team table.
+
+Output is stored in ``state["staffing_plan"]`` (new) and
 ``state["classification"]`` (backward-compatible).
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from rigovo.application.graph.state import TaskState
@@ -18,7 +26,13 @@ from rigovo.application.master.classifier import (
     StaffingPlan,
     TaskClassifier,
 )
+from rigovo.application.master.deterministic_brain import (
+    classify_semantic,
+    enforce_minimum_team,
+)
 from rigovo.domain.interfaces.llm_provider import LLMProvider
+
+logger = logging.getLogger(__name__)
 
 # Lightweight fallback prompt (used when no classifier is injected)
 CLASSIFICATION_PROMPT = """\
@@ -50,40 +64,139 @@ async def classify_node(
     state: TaskState,
     llm: LLMProvider,
     classifier: TaskClassifier | None = None,
+    embedding_provider: Any | None = None,
 ) -> dict[str, Any]:
-    """Run the Master Agent's analysis on the task.
+    """Run classification: Deterministic Brain first, then Master Agent LLM.
 
-    When a full ``TaskClassifier`` is injected (the normal path via
-    container), it runs the SME ``analyze()`` method which produces a
-    ``StaffingPlan``.  The plan is stored in state and the legacy
-    ``classification`` dict is derived from it.
+    Phase 1 (instant): Deterministic two-pass classification (regex + vector).
+    Phase 2 (LLM): Full SME analysis with staffing plan, guided by Phase 1 hint.
 
-    Falls back to a lightweight LLM classification when no classifier
-    is available (unit tests, minimal setups).
+    The deterministic result is a FLOOR — the LLM can add agents and
+    upgrade complexity but can NEVER produce a team below the minimum
+    team table or downgrade the task type.
     """
+    description = state["description"]
     project_snapshot = state.get("project_snapshot")
+    events = list(state.get("events", []))
 
-    # ── Primary path: Full SME analysis ──────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # PHASE 1: Deterministic Brain — instant (<50ms, zero LLM calls)
+    # ══════════════════════════════════════════════════════════════════
+    det_result = await classify_semantic(description, embedding_provider)
+
+    deterministic_classification = {
+        "task_type": det_result.task_type,
+        "complexity": det_result.complexity,
+        "confidence": det_result.confidence,
+        "matched_pattern": det_result.matched_pattern,
+        "is_deterministic": det_result.is_deterministic,
+    }
+
+    # Emit deterministic event IMMEDIATELY (UI shows instant classification)
+    events.append({
+        "type": "deterministic_classified",
+        "task_type": det_result.task_type,
+        "complexity": det_result.complexity,
+        "confidence": det_result.confidence,
+        "source": "regex" if det_result.is_deterministic else "semantic",
+        "matched_pattern": det_result.matched_pattern,
+    })
+
+    logger.info(
+        "Deterministic Brain: type=%s complexity=%s confidence=%.2f pattern=%r",
+        det_result.task_type, det_result.complexity,
+        det_result.confidence, det_result.matched_pattern,
+    )
+
+    # ══════════════════════════════════════════════════════════════════
+    # PHASE 2: Master Agent LLM — full SME analysis (10–30s)
+    # ══════════════════════════════════════════════════════════════════
     if classifier is not None:
         plan: StaffingPlan = await classifier.analyze(
-            state["description"],
+            description,
             project_snapshot=project_snapshot,
+            deterministic_hint=deterministic_classification,
         )
+
+        # ── ENFORCE MINIMUM TEAM — LLM can ADD but NEVER REMOVE ─────
+        enforced_agents = enforce_minimum_team(
+            [
+                {
+                    "instance_id": a.instance_id,
+                    "role": a.role,
+                    "specialisation": a.specialisation,
+                    "assignment": a.assignment,
+                    "depends_on": a.depends_on,
+                    "tools_required": a.tools_required,
+                    "verification": a.verification,
+                }
+                for a in plan.agents
+            ],
+            task_type=det_result.task_type,
+            description=description,
+        )
+
+        # ── ENFORCE COMPLEXITY FLOOR — LLM cannot downgrade ─────────
+        _COMPLEXITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        llm_complexity = str(plan.complexity.value)
+        det_complexity = det_result.complexity
+        if _COMPLEXITY_ORDER.get(llm_complexity, 1) < _COMPLEXITY_ORDER.get(det_complexity, 1):
+            logger.info(
+                "Enforcing complexity floor: LLM=%s < deterministic=%s → using %s",
+                llm_complexity, det_complexity, det_complexity,
+            )
+            llm_complexity = det_complexity
 
         # Build legacy classification dict for backward compatibility
         classification: dict[str, Any] = {
             "task_type": str(plan.task_type.value),
-            "complexity": str(plan.complexity.value),
+            "complexity": llm_complexity,
             "workspace_type": plan.workspace_type,
             "reasoning": plan.reasoning,
         }
 
-        # Serialize the staffing plan for state transport
-        staffing_plan_dict = _serialize_staffing_plan(plan)
+        # Override task_type with deterministic if LLM returned something weaker
+        # (e.g., LLM said "feature" when keywords clearly said "new_project")
+        if det_result.is_deterministic and det_result.confidence >= 0.85:
+            if det_result.task_type == "new_project" and classification["task_type"] != "new_project":
+                logger.info(
+                    "Enforcing task_type floor: LLM=%s but deterministic=%s → using new_project",
+                    classification["task_type"], det_result.task_type,
+                )
+                classification["task_type"] = "new_project"
+
+        # Rebuild plan with enforced agents
+        plan_dict = _serialize_staffing_plan(plan)
+        plan_dict["agents"] = enforced_agents
+        plan_dict["complexity"] = llm_complexity
+
+        events.append({
+            "type": "task_classified",
+            "task_type": classification["task_type"],
+            "complexity": classification["complexity"],
+            "workspace_type": classification["workspace_type"],
+            "reasoning": classification["reasoning"],
+            "domain_analysis": plan.domain_analysis,
+            "agent_count": len(enforced_agents),
+            "agent_instances": [
+                {
+                    "instance_id": a.get("instance_id", ""),
+                    "role": a.get("role", ""),
+                    "specialisation": a.get("specialisation", ""),
+                    "assignment": (a.get("assignment", "") or "")[:200],
+                }
+                for a in enforced_agents
+            ],
+            "risks": plan.risks[:5],
+            "acceptance_criteria": plan.acceptance_criteria[:5],
+            "deterministic_hint_used": True,
+            "minimum_team_enforced": len(enforced_agents) > len(plan.agents),
+        })
 
         return {
             "classification": classification,
-            "staffing_plan": staffing_plan_dict,
+            "deterministic_classification": deterministic_classification,
+            "staffing_plan": plan_dict,
             "status": "classified",
             "cost_accumulator": {
                 **state.get("cost_accumulator", {}),
@@ -92,36 +205,16 @@ async def classify_node(
                     "cost": 0.0,
                 },
             },
-            "events": state.get("events", [])
-            + [
-                {
-                    "type": "task_classified",
-                    "task_type": classification["task_type"],
-                    "complexity": classification["complexity"],
-                    "workspace_type": classification["workspace_type"],
-                    "reasoning": classification["reasoning"],
-                    "domain_analysis": plan.domain_analysis,
-                    "agent_count": len(plan.agents),
-                    "agent_instances": [
-                        {
-                            "instance_id": a.instance_id,
-                            "role": a.role,
-                            "specialisation": a.specialisation,
-                            "assignment": a.assignment[:200],
-                        }
-                        for a in plan.agents
-                    ],
-                    "risks": plan.risks[:5],
-                    "acceptance_criteria": plan.acceptance_criteria[:5],
-                }
-            ],
+            "events": events,
         }
 
-    # ── Fallback: lightweight LLM classification ──────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # FALLBACK: lightweight LLM classification (no classifier injected)
+    # ══════════════════════════════════════════════════════════════════
     response = await llm.invoke(
         messages=[
             {"role": "system", "content": CLASSIFICATION_PROMPT},
-            {"role": "user", "content": state["description"]},
+            {"role": "user", "content": description},
         ],
         temperature=0.0,
         max_tokens=256,
@@ -146,8 +239,25 @@ async def classify_node(
     if "workspace_type" not in classification:
         classification["workspace_type"] = _derive_workspace_type(state, classification)
 
+    # Apply deterministic floor to fallback classification too
+    if det_result.is_deterministic and det_result.confidence >= 0.85:
+        _COMPLEXITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        if _COMPLEXITY_ORDER.get(classification.get("complexity", "medium"), 1) < _COMPLEXITY_ORDER.get(det_result.complexity, 1):
+            classification["complexity"] = det_result.complexity
+        if det_result.task_type == "new_project":
+            classification["task_type"] = "new_project"
+
+    events.append({
+        "type": "task_classified",
+        "task_type": classification.get("task_type"),
+        "complexity": classification.get("complexity"),
+        "workspace_type": classification.get("workspace_type"),
+        "reasoning": classification.get("reasoning"),
+    })
+
     return {
         "classification": classification,
+        "deterministic_classification": deterministic_classification,
         "status": "classified",
         "cost_accumulator": {
             **state.get("cost_accumulator", {}),
@@ -156,16 +266,7 @@ async def classify_node(
                 "cost": 0.0,
             },
         },
-        "events": state.get("events", [])
-        + [
-            {
-                "type": "task_classified",
-                "task_type": classification.get("task_type"),
-                "complexity": classification.get("complexity"),
-                "workspace_type": classification.get("workspace_type"),
-                "reasoning": classification.get("reasoning"),
-            }
-        ],
+        "events": events,
     }
 
 

@@ -25,10 +25,45 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid5, NAMESPACE_DNS
 
-from rigovo.domain.entities.agent import Agent
+from rigovo.domain.entities.agent import Agent, AgentStats, EnrichmentContext
 from rigovo.domain.entities.task import TaskComplexity, TaskType
 
 logger = logging.getLogger(__name__)
+
+# ── Default prompts for roles without a template agent ───────────────
+# This ensures the assembler NEVER silently skips a required role.
+_DEFAULT_ROLE_PROMPTS: dict[str, str] = {
+    "planner": "You are a Project Manager. Analyze requirements, break down tasks, create structured implementation plans with file paths and verification steps.",
+    "coder": "You are a Software Engineer. Write production-quality code following the plan. Run tests and verify the build after every change.",
+    "reviewer": "You are a Code Reviewer. Review all code changes for correctness, patterns, security, and maintainability. Produce a structured verdict.",
+    "security": "You are a Security Engineer. Audit all code changes for vulnerabilities, authentication/authorization issues, and compliance.",
+    "qa": "You are a QA Engineer. Write and run tests to ensure adequate coverage for all changed code paths.",
+    "devops": "You are a DevOps Engineer. Set up infrastructure, CI/CD pipelines, and deployment configuration.",
+    "sre": "You are an SRE. Configure observability, resilience patterns, and operational runbooks.",
+    "lead": "You are a Tech Lead. Perform final architectural review of all work. Verify design decisions, code quality, and completeness.",
+}
+
+_DEFAULT_ROLE_TOOLS: dict[str, list[str]] = {
+    "planner": ["read_file", "list_directory", "search_files"],
+    "coder": ["read_file", "write_file", "list_directory", "search_files", "run_command"],
+    "reviewer": ["read_file", "list_directory", "search_files", "run_command"],
+    "security": ["read_file", "list_directory", "search_files", "run_command"],
+    "qa": ["read_file", "write_file", "list_directory", "search_files", "run_command"],
+    "devops": ["read_file", "write_file", "list_directory", "search_files", "run_command"],
+    "sre": ["read_file", "write_file", "list_directory", "search_files", "run_command"],
+    "lead": ["read_file", "list_directory", "search_files"],
+}
+
+_DEFAULT_PIPELINE_ORDER: dict[str, int] = {
+    "planner": 0,
+    "coder": 1,
+    "reviewer": 2,
+    "security": 3,
+    "qa": 4,
+    "devops": 5,
+    "sre": 6,
+    "lead": 7,
+}
 
 
 @dataclass
@@ -135,16 +170,26 @@ class TeamAssemblerService:
                 instance_id = f"{instance_id}-{len(pipeline_agents)}"
             seen_instance_ids.add(instance_id)
 
-            # Find the template agent for this role
+            # Find the template agent for this role.
+            # If no template exists, CREATE a default agent — NEVER skip.
             template = agent_by_role.get(role)
             if template is None:
                 logger.warning(
                     "Staffing plan requests role '%s' (instance '%s') "
-                    "but no such agent exists — skipping",
+                    "but no template agent exists — creating default",
                     role,
                     instance_id,
                 )
-                continue
+                template = self._create_default_agent(role, available_agents)
+                if template is None:
+                    # Truly unknown role with no fallback — last resort skip
+                    logger.error(
+                        "Cannot create default for unknown role '%s' — skipping",
+                        role,
+                    )
+                    continue
+                # Cache for future slots of the same role
+                agent_by_role[role] = template
 
             # Clone the template for this specific instance
             agent = self._clone_agent_for_instance(
@@ -323,6 +368,55 @@ you tried and what the outcome was. "Assuming it works" is NOT acceptable.
                     agent.tools.append(tool)
 
         return agent
+
+    @staticmethod
+    def _create_default_agent(
+        role: str,
+        available_agents: list[Agent],
+    ) -> Agent | None:
+        """Create a default Agent for a role that has no template.
+
+        This ensures the assembler NEVER silently skips a required role
+        from the minimum team table.  Uses sensible defaults and copies
+        identity fields from any existing agent in the list.
+
+        Returns None only for completely unknown roles.
+        """
+        prompt = _DEFAULT_ROLE_PROMPTS.get(role)
+        if prompt is None:
+            return None
+
+        # Borrow identity fields from any existing agent
+        reference = available_agents[0] if available_agents else None
+        from datetime import datetime, timezone
+        from uuid import uuid4
+
+        return Agent(
+            id=uuid4(),
+            team_id=reference.team_id if reference else uuid4(),
+            workspace_id=reference.workspace_id if reference else uuid4(),
+            role=role,
+            name=role.replace("_", " ").title(),
+            description=f"Default {role} agent (auto-created by assembler)",
+            system_prompt=prompt,
+            llm_model=reference.llm_model if reference else "claude-sonnet-4-6",
+            tools=list(_DEFAULT_ROLE_TOOLS.get(role, ["read_file"])),
+            custom_rules=[],
+            depends_on=[],
+            input_contract={},
+            output_contract={},
+            stats=AgentStats(),
+            enrichment=EnrichmentContext(
+                common_mistakes=[],
+                domain_knowledge=[],
+                pre_check_rules=[],
+                workspace_conventions=[],
+            ),
+            pipeline_order=_DEFAULT_PIPELINE_ORDER.get(role, 5),
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
 
     def _compute_parallel_groups(
         self,

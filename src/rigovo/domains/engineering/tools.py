@@ -23,6 +23,9 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
         "list_directory",
         "search_codebase",
         "read_dependencies",
+        "get_component_map",
+        "get_impact_radius",
+        "probe_environment",
         "consult_agent",
         "invoke_integration",
     ],
@@ -33,14 +36,28 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
         "search_codebase",
         "run_command",
         "read_dependencies",
+        "get_component_map",
+        "get_impact_radius",
+        "probe_environment",
         "spawn_subtask",
         "consult_agent",
     ],
-    "reviewer": ["read_file", "list_directory", "search_codebase", "consult_agent"],
+    "reviewer": [
+        "read_file",
+        "list_directory",
+        "search_codebase",
+        "get_component_map",
+        "get_impact_radius",
+        "probe_environment",
+        "consult_agent",
+    ],
     "security": [
         "read_file",
         "search_codebase",
         "run_command",
+        "get_component_map",
+        "get_impact_radius",
+        "probe_environment",
         "consult_agent",
         "invoke_integration",
     ],
@@ -50,6 +67,9 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
         "list_directory",
         "search_codebase",
         "run_command",
+        "get_component_map",
+        "get_impact_radius",
+        "probe_environment",
         "consult_agent",
     ],
     "devops": [
@@ -57,6 +77,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
         "write_file",
         "list_directory",
         "run_command",
+        "get_impact_radius",
         "consult_agent",
         "invoke_integration",
     ],
@@ -65,6 +86,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
         "write_file",
         "list_directory",
         "run_command",
+        "get_impact_radius",
         "consult_agent",
         "invoke_integration",
     ],
@@ -72,6 +94,9 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
         "read_file",
         "list_directory",
         "search_codebase",
+        "get_component_map",
+        "get_impact_radius",
+        "probe_environment",
         "consult_agent",
         "invoke_integration",
     ],
@@ -257,6 +282,83 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 },
             },
             "required": ["kind", "plugin_id", "target_id", "operation"],
+        },
+    },
+    # --- Environment Probing Tools (Code Knowledge Graph) ---
+    # These tools give agents STRUCTURAL UNDERSTANDING of the codebase,
+    # not just text search. An agent using these tools knows that
+    # UserService depends on AuthProvider, that changing models.py
+    # affects 12 files, and that the "auth" domain spans 5 files.
+    "get_component_map": {
+        "name": "get_component_map",
+        "description": (
+            "Get a map of code components grouped by domain/module. "
+            "Shows which files belong to each domain (auth, api, models, etc.) "
+            "and their key exported symbols (classes, functions, types). "
+            "Use this FIRST to understand the codebase architecture before "
+            "reading individual files. Optionally filter by domain name."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "domain_filter": {
+                    "type": "string",
+                    "description": (
+                        "Filter to a specific domain (e.g. 'auth', 'api', 'models'). "
+                        "Leave empty to get all domains."
+                    ),
+                },
+            },
+        },
+    },
+    "get_impact_radius": {
+        "name": "get_impact_radius",
+        "description": (
+            "Given a file path, return all files that would be affected by "
+            "changes to that file. Shows direct dependents (files that import it), "
+            "transitive dependents (files that import the dependents), and "
+            "what the file itself depends on. Use this BEFORE modifying any file "
+            "to understand the blast radius of your changes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Relative path to the file to analyze (e.g. 'src/auth/provider.py').",
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "description": "How many levels of transitive dependencies to follow. Default: 3.",
+                    "default": 3,
+                },
+            },
+            "required": ["file_path"],
+        },
+    },
+    "probe_environment": {
+        "name": "probe_environment",
+        "description": (
+            "Semantic search over the code architecture. Given a concept "
+            "(e.g. 'authentication', 'database', 'user management'), returns "
+            "all related files, symbols, and connected components. Unlike "
+            "search_codebase which finds text matches, this tool understands "
+            "RELATIONSHIPS — it finds files in the auth domain PLUS files "
+            "that import/depend on auth components. Use this to map out "
+            "a feature area before planning or implementing changes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Concept to probe for (e.g. 'authentication', 'payment', "
+                        "'database models', 'API routes')."
+                    ),
+                },
+            },
+            "required": ["query"],
         },
     },
 }

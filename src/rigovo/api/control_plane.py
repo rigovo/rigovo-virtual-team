@@ -38,6 +38,36 @@ from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskReposit
 _live_agent_progress: dict[str, dict[str, dict]] = {}  # task_id -> {role -> step_data}
 _live_task_events: dict[str, list[dict[str, Any]]] = {}  # task_id -> rolling runtime events
 _live_task_classification: dict[str, dict[str, Any]] = {}  # task_id -> classification data (set early)
+_classification_cleanup_tasks: dict[str, Any] = {}  # task_id -> asyncio.Task for TTL cleanup
+
+
+def _schedule_classification_cleanup(task_id: str, ttl_seconds: int = 300) -> None:
+    """Schedule removal of classification from live cache after TTL.
+
+    This allows the task detail API to still read classification data
+    for up to 5 minutes after the task finishes/fails, preventing the
+    'unclassified' display bug.
+    """
+    import asyncio
+
+    # Cancel any existing cleanup for this task
+    existing = _classification_cleanup_tasks.pop(task_id, None)
+    if existing and not existing.done():
+        existing.cancel()
+
+    async def _cleanup() -> None:
+        await asyncio.sleep(ttl_seconds)
+        _live_task_classification.pop(task_id, None)
+        _classification_cleanup_tasks.pop(task_id, None)
+
+    try:
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(_cleanup())
+        _classification_cleanup_tasks[task_id] = task
+    except RuntimeError:
+        # No event loop running — just leave in cache (it'll be cleaned up eventually)
+        pass
+
 
 # ── Human-in-the-loop approval synchronization ─────────────────────
 # When tier="approve" the graph pauses at each checkpoint and calls the
@@ -159,6 +189,34 @@ def _on_agent_event(event: dict) -> None:
     etype = event.get("type", "")
     task_id = event.get("task_id", "")
 
+    # deterministic_classified fires INSTANTLY (<50ms) before the LLM call
+    if etype == "deterministic_classified" and task_id:
+        _live_task_classification[task_id] = {
+            "task_type": event.get("task_type", "feature"),
+            "complexity": event.get("complexity", "medium"),
+            "workspace_type": "pending_llm",  # Will be refined by task_classified
+            "reasoning": f"Deterministic classification (confidence: {event.get('confidence', 0):.0%})",
+            "agent_count": 0,
+            "agent_instances": [],
+            "source": event.get("source", "regex"),
+            "confidence": event.get("confidence", 0),
+        }
+        return
+
+    # reclassified — late-binding reclassification updates live classification
+    if etype == "reclassified" and task_id:
+        _live_task_classification[task_id] = {
+            "task_type": event.get("new_task_type", "feature"),
+            "complexity": event.get("new_complexity", "medium"),
+            "workspace_type": _live_task_classification.get(task_id, {}).get("workspace_type", "existing_project"),
+            "reasoning": f"Reclassified from {event.get('previous_task_type', '?')}: {event.get('reason', '')}",
+            "agent_count": _live_task_classification.get(task_id, {}).get("agent_count", 0),
+            "agent_instances": _live_task_classification.get(task_id, {}).get("agent_instances", []),
+            "reclassified": True,
+            "previous_task_type": event.get("previous_task_type", ""),
+        }
+        return
+
     # task_classified has no 'role' — handle it before the role guard
     if etype == "task_classified" and task_id:
         _live_task_classification[task_id] = {
@@ -275,10 +333,13 @@ def _on_agent_event(event: dict) -> None:
             existing_gates.append(gate_entry)
             existing["gate_results"] = existing_gates
     elif etype in ("task_finalized", "task_failed"):
-        # Clean up live state once task is done
+        # Clean up live agent progress and events, but KEEP classification
+        # in cache with a TTL so the UI can still fetch it after task ends.
         _live_agent_progress.pop(task_id, None)
         _live_task_events.pop(task_id, None)
-        _live_task_classification.pop(task_id, None)
+        # DO NOT pop _live_task_classification here — it's needed for the
+        # task detail API even after failure.  Instead, schedule TTL cleanup.
+        _schedule_classification_cleanup(task_id, ttl_seconds=300)
 
 
 def _on_runtime_event(event: dict) -> None:

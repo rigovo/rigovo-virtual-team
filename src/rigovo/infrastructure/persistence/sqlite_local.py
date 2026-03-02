@@ -197,6 +197,9 @@ class LocalDatabase:
             "ALTER TABLE tasks ADD COLUMN custom_title TEXT",
             "ALTER TABLE tasks ADD COLUMN workspace_path TEXT",
             "ALTER TABLE tasks ADD COLUMN workspace_label TEXT",
+            # v4 — history states (checkpoint timeline for resume intelligence)
+            "ALTER TABLE tasks ADD COLUMN checkpoint_timeline TEXT",
+            "ALTER TABLE tasks ADD COLUMN last_heartbeat REAL",
         ]:
             try:
                 conn.execute(_col_sql)

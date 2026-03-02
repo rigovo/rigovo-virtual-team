@@ -77,10 +77,15 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
         assert "cost_accumulator" in result
         assert "classifier" in result["cost_accumulator"]
         assert result["cost_accumulator"]["classifier"]["tokens"] == 150
-        assert len(result["events"]) == 1
-        assert result["events"][0]["type"] == "task_classified"
-        assert result["events"][0]["task_type"] == "feature"
-        assert result["events"][0]["complexity"] == "high"
+        # 2 events: deterministic_classified (instant) + task_classified (LLM)
+        assert len(result["events"]) == 2
+        event_types = [e["type"] for e in result["events"]]
+        assert "deterministic_classified" in event_types
+        assert "task_classified" in event_types
+        # Find the task_classified event and verify its fields
+        task_event = next(e for e in result["events"] if e["type"] == "task_classified")
+        assert task_event["task_type"] == "feature"
+        assert task_event["complexity"] == "high"
 
     async def test_classify_node_invalid_json_defaults(self):
         """Test classify_node defaults to feature/medium on invalid JSON."""
@@ -97,7 +102,11 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
         assert result["classification"]["task_type"] == "feature"
         assert result["classification"]["complexity"] == "medium"
         assert result["status"] == "classified"
-        assert len(result["events"]) == 1
+        # 2 events: deterministic_classified (instant) + task_classified (LLM)
+        assert len(result["events"]) == 2
+        event_types = [e["type"] for e in result["events"]]
+        assert "deterministic_classified" in event_types
+        assert "task_classified" in event_types
 
     async def test_classify_node_preserves_cost_accumulator(self):
         """Test classify_node preserves existing cost data."""
@@ -151,7 +160,21 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
         assert result["classification"]["complexity"] == "high"
         assert result["cost_accumulator"]["master_agent"]["tokens"] == 0
         assert "staffing_plan" in result
-        assert len(result["staffing_plan"]["agents"]) == 1
+        # enforce_minimum_team guarantees bug minimum team [coder, reviewer]
+        # Mock plan had [coder-1] → enforce adds reviewer → 2 agents
+        agents = result["staffing_plan"]["agents"]
+        assert len(agents) >= 2, f"Expected >=2 agents (minimum bug team), got {len(agents)}: {[a['role'] for a in agents]}"
+        agent_roles = {a["role"] for a in agents}
+        assert "coder" in agent_roles, "Bug minimum team must include coder"
+        assert "reviewer" in agent_roles, "Bug minimum team must include reviewer"
+        # Verify deterministic classification also present
+        assert "deterministic_classification" in result
+        assert result["deterministic_classification"]["task_type"] == "bug"
+        assert result["deterministic_classification"]["is_deterministic"] is True
+        # Verify deterministic_classified event fires BEFORE task_classified
+        event_types = [e["type"] for e in result["events"]]
+        assert "deterministic_classified" in event_types
+        assert "task_classified" in event_types
         mock_llm.invoke.assert_not_called()
 
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,60 @@ ROLE_MAX_TOKENS: dict[str, int] = {
     "sre": 4096,
     "docs": 4096,
 }
+
+# ── RECLASSIFY signal detection ──────────────────────────────────────
+# Agents can emit a RECLASSIFY signal in their output when they discover
+# the initial classification was wrong. The signal is a structured block:
+#
+#   RECLASSIFY: infra
+#   REASON: This task requires Docker and K8s setup, not a feature implementation.
+#
+# Or a JSON variant:
+#   {"signal": "RECLASSIFY", "suggested_type": "infra", "reason": "..."}
+#
+# Only planner and lead roles can trigger reclassification.
+RECLASSIFY_ALLOWED_ROLES = {"planner", "lead"}
+
+_RECLASSIFY_TEXT_PATTERN = re.compile(
+    r"RECLASSIFY\s*:\s*(\w+)\s*\n\s*REASON\s*:\s*(.+?)(?:\n|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _detect_reclassify_signal(
+    text: str,
+    role: str,
+) -> tuple[bool, str, str]:
+    """Detect a RECLASSIFY signal in agent output text.
+
+    Returns:
+        (detected, suggested_type, reason) — all empty strings if not detected.
+    """
+    if role not in RECLASSIFY_ALLOWED_ROLES:
+        return False, "", ""
+
+    # Try structured text pattern first
+    match = _RECLASSIFY_TEXT_PATTERN.search(text)
+    if match:
+        return True, match.group(1).strip().lower(), match.group(2).strip()
+
+    # Try JSON variant (agent may embed a JSON block)
+    try:
+        # Look for JSON block in the text
+        json_match = re.search(r'\{[^{}]*"signal"\s*:\s*"RECLASSIFY"[^{}]*\}', text, re.IGNORECASE)
+        if json_match:
+            data = json.loads(json_match.group(0))
+            if str(data.get("signal", "")).upper() == "RECLASSIFY":
+                return (
+                    True,
+                    str(data.get("suggested_type", "")).strip().lower(),
+                    str(data.get("reason", "")).strip(),
+                )
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    return False, "", ""
+
 
 CONSULT_MAX_QUESTION_CHARS = 1200
 CONSULT_MAX_RESPONSE_CHARS = 1200
@@ -315,6 +370,10 @@ def _build_agent_messages(
         enrichment_text=agent_config.get("enrichment_context", ""),
         previous_outputs=state.get("agent_outputs"),
         agent_messages=state.get("agent_messages"),
+        specialisation=agent_config.get("specialisation", ""),
+        task_type=state.get("classification", {}).get("task_type", ""),
+        knowledge_graph=state.get("code_knowledge_graph"),
+        resume_context=state.get("resume_context"),
     )
     if memory_section_text:
         agent_context.memory_section = memory_section_text
@@ -1349,6 +1408,7 @@ async def execute_agent_node(
         worktree_mode=str(state.get("worktree_mode", "project")),
         worktree_root=str(state.get("worktree_root", "")),
         filesystem_sandbox_mode=str(state.get("filesystem_sandbox_mode", "project_root")),
+        knowledge_graph=state.get("code_knowledge_graph"),
     )
 
     # --- LLM setup ---
@@ -1526,6 +1586,36 @@ async def execute_agent_node(
         }
     )
 
+    # ── Detect RECLASSIFY signal in agent output ──────────────────
+    reclassify_detected, reclassify_type, reclassify_reason = _detect_reclassify_signal(
+        final_text, current_role,
+    )
+    reclassify_fields: dict[str, Any] = {}
+    if reclassify_detected:
+        reclassify_count = int(state.get("reclassify_count", 0) or 0)
+        if reclassify_count < 1:  # Budget check
+            logger.info(
+                "RECLASSIFY signal detected from %s: type=%s reason=%r",
+                current_instance, reclassify_type, reclassify_reason[:200],
+            )
+            reclassify_fields = {
+                "reclassify_requested": True,
+                "reclassify_reason": reclassify_reason[:500],
+                "reclassify_suggested_type": reclassify_type,
+            }
+            events.append({
+                "type": "reclassify_signal",
+                "source_instance": current_instance,
+                "source_role": current_role,
+                "suggested_type": reclassify_type,
+                "reason": reclassify_reason[:200],
+            })
+        else:
+            logger.warning(
+                "RECLASSIFY signal from %s ignored — budget exhausted (%d)",
+                current_instance, reclassify_count,
+            )
+
     return {
         "agent_outputs": {
             **state.get("agent_outputs", {}),
@@ -1544,6 +1634,7 @@ async def execute_agent_node(
         "memory_context_by_role": memory_context_by_role,
         "memory_retrieval_log": memory_retrieval_log,
         "events": events,
+        **reclassify_fields,
     }
 
 

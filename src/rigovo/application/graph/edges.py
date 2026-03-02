@@ -35,6 +35,29 @@ def _get_instances_by_role(state: TaskState, role: str) -> list[str]:
     ]
 
 
+# ── Reclassification check ──────────────────────────────────────────────
+
+def check_reclassify_needed(state: TaskState) -> str:
+    """Route after verify_execution — check if agent requested reclassification.
+
+    If reclassify_requested is True and budget permits, route to reclassify
+    node instead of quality gates. This short-circuits the normal pipeline
+    because reclassification invalidates the current team composition.
+
+    Returns:
+        "reclassify" — agent requested reclassification, budget permits
+        "continue"   — normal flow, proceed to quality gates
+    """
+    if not state.get("reclassify_requested", False):
+        return "continue"
+
+    reclassify_count = int(state.get("reclassify_count", 0) or 0)
+    if reclassify_count >= 1:  # Max 1 reclassification per task
+        return "continue"
+
+    return "reclassify"
+
+
 # ── Approval ────────────────────────────────────────────────────────────
 
 def check_approval(state: TaskState) -> str:
