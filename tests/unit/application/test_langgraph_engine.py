@@ -390,31 +390,33 @@ class TestRunTaskCommandUsesLangGraph(unittest.IsolatedAsyncioTestCase):
         # RunTaskCommand._run_graph should use langgraph (since it's installed)
         cmd = RunTaskCommand.__new__(RunTaskCommand)
         cmd._event_emitter = None  # No emitter in test
-        cmd._project_root = Path(".")  # Required for checkpointer path
-        state: TaskState = {
-            "task_id": "t-1",
-            "workspace_id": "ws-1",
-            "description": "Test task",
-            "project_root": ".",
-            "team_config": {},
-            "current_agent_index": 0,
-            "current_agent_role": "",
-            "agent_outputs": {},
-            "gate_results": {},
-            "fix_packets": [],
-            "retry_count": 0,
-            "max_retries": 3,
-            "approval_status": "",
-            "cost_accumulator": {},
-            "budget_max_cost_per_task": 5.00,
-            "budget_max_tokens_per_task": 500_000,
-            "memories_to_store": [],
-            "status": "starting",
-            "events": [],
-        }
+        with tempfile.TemporaryDirectory(prefix="rigovo_langgraph_cmd_") as tmp_dir:
+            # Use an isolated tiny workspace so scan_project is deterministic and fast.
+            cmd._project_root = Path(tmp_dir)
+            state: TaskState = {
+                "task_id": "t-1",
+                "workspace_id": "ws-1",
+                "description": "Test task",
+                "project_root": tmp_dir,
+                "team_config": {},
+                "current_agent_index": 0,
+                "current_agent_role": "",
+                "agent_outputs": {},
+                "gate_results": {},
+                "fix_packets": [],
+                "retry_count": 0,
+                "max_retries": 3,
+                "approval_status": "",
+                "cost_accumulator": {},
+                "budget_max_cost_per_task": 5.00,
+                "budget_max_tokens_per_task": 500_000,
+                "memories_to_store": [],
+                "status": "starting",
+                "events": [],
+            }
 
-        result = await cmd._run_graph(builder, state)
-        assert result["status"] == "completed"
+            result = await cmd._run_graph(builder, state)
+            assert result["status"] == "completed"
 
 
 if __name__ == "__main__":

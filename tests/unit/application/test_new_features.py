@@ -556,13 +556,15 @@ class TestHelperFunctions(unittest.TestCase):
         assert result is None
 
     def test_check_budget_guards_token_limit(self):
-        """Budget guard returns error dict when tokens exceed limit."""
+        """Budget guard requests approval when tokens exceed limit."""
         state = _make_agent_state()
         state["budget_max_tokens_per_task"] = 100
         state["cost_accumulator"] = {"a": {"tokens": 200}}
         result = _check_budget_guards(state, "coder")
         assert result is not None
-        assert "budget_exceeded" in result["status"]
+        assert result["status"] == "awaiting_budget_approval"
+        assert result["approval_status"] == "pending"
+        assert result["approval_data"]["checkpoint"] == "token_budget_exceeded"
 
 
 # =====================================================================
