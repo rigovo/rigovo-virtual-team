@@ -127,6 +127,7 @@ class TaskState(TypedDict, total=False):
 
     # --- Approval ---
     approval_status: str  # 'pending', 'approved', 'rejected'
+    approval_data: dict[str, Any]  # payload shown to user at approval checkpoints
     user_feedback: str
 
     # --- Cost tracking ---

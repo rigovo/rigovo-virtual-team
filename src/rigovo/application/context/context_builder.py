@@ -29,10 +29,10 @@ from rigovo.domain.services.code_knowledge_graph import CodeKnowledgeGraph
 logger = logging.getLogger(__name__)
 
 # --- Context budget (prevent prompt blowup) ---
-MAX_PROJECT_CONTEXT_CHARS = 15_000
-MAX_MEMORY_CONTEXT_CHARS = 5_000
-MAX_PIPELINE_CONTEXT_CHARS = 8_000
-MAX_TOTAL_CONTEXT_CHARS = 40_000
+MAX_PROJECT_CONTEXT_CHARS = 10_000
+MAX_MEMORY_CONTEXT_CHARS = 3_000
+MAX_PIPELINE_CONTEXT_CHARS = 4_000
+MAX_TOTAL_CONTEXT_CHARS = 20_000
 
 # Role-specific quality expectations injected alongside context
 ROLE_QUALITY_CONTRACT: dict[str, str] = {

@@ -21,7 +21,7 @@ Each intent category sets hard constraints:
     - max_agents:      How many agents can run (1–12)
     - max_tool_rounds: How many tool loop iterations each agent gets (3–25)
     - max_file_reads:  How many files the planner can read (0–unlimited)
-    - token_budget:    Per-task token ceiling (50K–500K)
+    - token_budget:    Per-task token ceiling (50K–200K default; extend by approval)
     - planner_mode:    "survey" (read codebase first) or "think" (plan from description)
 """
 
@@ -80,20 +80,20 @@ INTENT_PROFILES: dict[str, IntentProfile] = {
     ),
     "fix": IntentProfile(
         intent="fix",
-        max_agents=5,  # planner + coder + reviewer + qa + security
-        max_tool_rounds=20,
+        max_agents=4,  # planner + coder + reviewer + qa
+        max_tool_rounds=12,
         max_file_reads=30,  # Focused reading
-        token_budget=300_000,
+        token_budget=200_000,
         planner_mode="survey",
         confidence=0.0,
         matched_signal="",
     ),
     "build": IntentProfile(
         intent="build",
-        max_agents=12,  # Full pipeline
-        max_tool_rounds=25,
+        max_agents=6,  # Completion-first default, scale up only with approval
+        max_tool_rounds=10,
         max_file_reads=0,  # 0 = unlimited
-        token_budget=300_000,
+        token_budget=200_000,
         planner_mode="survey",
         confidence=0.0,
         matched_signal="",

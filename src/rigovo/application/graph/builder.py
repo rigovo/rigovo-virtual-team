@@ -116,6 +116,89 @@ class GraphBuilder:
         self._enricher = enricher
         self._evaluator = evaluator
 
+    async def _run_execute_with_budget_approval(self, state: TaskState) -> dict[str, Any]:
+        """Run execute_agent_node with token-limit approval continuation.
+
+        When execute_agent_node signals ``awaiting_budget_approval``, this method
+        calls the configured approval handler. If approved, it extends the token
+        cap and retries execute_agent once; if rejected, it returns rejected state.
+        """
+        current_state = state
+        for _ in range(3):
+            result = await execute_agent_node(
+                current_state,
+                self._llm_factory,
+                self._cost_calculator,
+                stream_callback=self._stream_callback,
+                memory_repo=self._memory_repo,
+                embedding_provider=self._embedding_provider,
+                memory_retriever=self._memory_retriever,
+            )
+            if result.get("status") != "awaiting_budget_approval":
+                return result
+
+            approval_state = {**current_state, **result}
+            decision = {"approval_status": "approved", "approval_feedback": "auto-approved"}
+            if self._auto_approve:
+                decision = {"approval_status": "approved", "approval_feedback": "auto-approved"}
+            elif self._approval_handler:
+                decision = await asyncio.to_thread(self._approval_handler, approval_state)
+            else:
+                return {
+                    **result,
+                    "status": "failed",
+                    "error": "Token limit reached and no approval handler is configured.",
+                }
+
+            approval_status = str(decision.get("approval_status", "approved"))
+            approval_feedback = str(decision.get("approval_feedback", "") or "")
+            events = list(result.get("events", []))
+            if approval_status == "rejected":
+                events.append(
+                    {
+                        "type": "approval_denied",
+                        "checkpoint": "token_budget_exceeded",
+                        "feedback": approval_feedback,
+                    }
+                )
+                return {
+                    "status": "rejected",
+                    "approval_status": "rejected",
+                    "approval_feedback": approval_feedback,
+                    "error": result.get("error", ""),
+                    "events": events,
+                }
+
+            approval_data = result.get("approval_data", {}) or {}
+            current_limit = int(current_state.get("budget_max_tokens_per_task", 0) or 0)
+            requested_extension = int(approval_data.get("requested_extension_tokens", 0) or 0)
+            extension = (
+                requested_extension if requested_extension > 0 else max(50_000, current_limit // 4)
+            )
+            new_limit = current_limit + extension
+            events.append(
+                {
+                    "type": "approval_granted",
+                    "checkpoint": "token_budget_exceeded",
+                    "previous_token_limit": current_limit,
+                    "token_limit": new_limit,
+                    "extension_tokens": extension,
+                    "feedback": approval_feedback,
+                }
+            )
+            current_state = {
+                **current_state,
+                "events": events,
+                "approval_status": "approved",
+                "budget_max_tokens_per_task": new_limit,
+            }
+
+        return {
+            "status": "failed",
+            "error": "Token limit extension approved repeatedly but execution still could not proceed.",
+            "events": current_state.get("events", []),
+        }
+
     # ------------------------------------------------------------------
     # Checkpointer factory (item 3)
     # ------------------------------------------------------------------
@@ -222,15 +305,7 @@ class GraphBuilder:
             return result
 
         async def _execute_agent(state: TaskState) -> dict:
-            return await execute_agent_node(
-                state,
-                llm_factory,
-                cost_calc,
-                stream_callback=stream_cb,
-                memory_repo=memory_repo,
-                embedding_provider=embedding_provider,
-                memory_retriever=memory_retriever,
-            )
+            return await self._run_execute_with_budget_approval(state)
 
         async def _verify_execution(state: TaskState) -> dict:
             return await verify_execution_node(state)
@@ -641,15 +716,7 @@ class GraphBuilder:
             state["current_agent_role"] = instance_id  # Config key = instance_id
             state["current_instance_id"] = instance_id
 
-            update = await execute_agent_node(
-                state,
-                self._llm_factory,
-                self._cost_calculator,
-                stream_callback=self._stream_callback,
-                memory_repo=self._memory_repo,
-                embedding_provider=self._embedding_provider,
-                memory_retriever=self._memory_retriever,
-            )
+            update = await self._run_execute_with_budget_approval(state)
             state.update(update)
 
             # Phase 4: execution verification before quality gates
@@ -686,15 +753,7 @@ class GraphBuilder:
                 max_retries = state.get("max_retries", 5)
 
                 while retry_count < max_retries and not gate_results.get("passed", True):
-                    update = await execute_agent_node(
-                        state,
-                        self._llm_factory,
-                        self._cost_calculator,
-                        stream_callback=self._stream_callback,
-                        memory_repo=self._memory_repo,
-                        embedding_provider=self._embedding_provider,
-                        memory_retriever=self._memory_retriever,
-                    )
+                    update = await self._run_execute_with_budget_approval(state)
                     state.update(update)
                     # Phase 4: verify again on retry
                     update = await verify_execution_node(state)

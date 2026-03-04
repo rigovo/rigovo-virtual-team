@@ -45,6 +45,7 @@ DEFAULT_MAX_TOKENS = 8192
 MS_PER_SECOND = 1000
 STREAM_CHUNK_MIN_SIZE = 4  # Minimum chars before emitting stream event
 MAX_TOOL_ROUNDS = 25  # Safety limit to prevent infinite tool loops
+TOKEN_EXTENSION_STEP = 50_000
 
 # Per-role max_tokens — sized to what each role actually produces.
 # Per-role max_tokens — sized to what each role actually produces.
@@ -608,11 +609,25 @@ def _check_budget_guards(state: TaskState, current_role: str) -> dict[str, Any] 
     accumulated_tokens = sum(v.get("tokens", 0) for v in state.get("cost_accumulator", {}).values())
     token_limit = state.get("budget_max_tokens_per_task", 0)
     if token_limit > 0 and accumulated_tokens >= token_limit:
+        requested_extension = max(TOKEN_EXTENSION_STEP, int(token_limit * 0.25))
+        summary = (
+            "Token limit reached. Approve an extension to continue this run "
+            f"for '{current_role}'. Used {accumulated_tokens:,}/{token_limit:,} tokens."
+        )
         return {
-            "status": "budget_exceeded_tokens",
+            "status": "awaiting_budget_approval",
             "error": (
                 f"Token limit exceeded: {accumulated_tokens:,} tokens (limit {token_limit:,})"
             ),
+            "approval_status": "pending",
+            "approval_data": {
+                "checkpoint": "token_budget_exceeded",
+                "summary": summary,
+                "token_limit": int(token_limit),
+                "tokens_used": int(accumulated_tokens),
+                "requested_extension_tokens": int(requested_extension),
+                "current_role": current_role,
+            },
             "events": state.get("events", [])
             + [
                 {
@@ -620,7 +635,17 @@ def _check_budget_guards(state: TaskState, current_role: str) -> dict[str, Any] 
                     "role": current_role,
                     "tokens_used": accumulated_tokens,
                     "token_limit": token_limit,
-                }
+                },
+                {
+                    "type": "approval_requested",
+                    "checkpoint": "token_budget_exceeded",
+                    "summary": {
+                        "token_limit": int(token_limit),
+                        "tokens_used": int(accumulated_tokens),
+                        "requested_extension_tokens": int(requested_extension),
+                        "role": current_role,
+                    },
+                },
             ],
         }
     return None
@@ -1487,18 +1512,47 @@ async def execute_agent_node(
         memory_retriever=memory_retriever,
     )
 
+    # --- Runtime token pressure controls ---
+    # Near cap: reduce per-agent max_tokens and tool rounds to push completion-first behavior.
+    runtime_agent_config = dict(agent_config)
+    intent_profile = state.get("intent_profile") or {}
+    intent_max_rounds = int(intent_profile.get("max_tool_rounds", MAX_TOOL_ROUNDS) or MAX_TOOL_ROUNDS)
+    token_limit = int(state.get("budget_max_tokens_per_task", 0) or 0)
+    accumulated_tokens = sum(v.get("tokens", 0) for v in state.get("cost_accumulator", {}).values())
+    if token_limit > 0:
+        remaining_tokens = max(0, token_limit - accumulated_tokens)
+        if remaining_tokens <= 60_000:
+            intent_max_rounds = min(intent_max_rounds, 8)
+            role_cap = int(ROLE_MAX_TOKENS.get(current_role, DEFAULT_MAX_TOKENS))
+            hard_cap = max(1024, min(role_cap, int(remaining_tokens * 0.20)))
+            configured = int(runtime_agent_config.get("max_tokens", role_cap) or role_cap)
+            runtime_agent_config["max_tokens"] = min(configured, hard_cap)
+            if remaining_tokens <= 30_000:
+                intent_max_rounds = min(intent_max_rounds, 4)
+            events_for_pressure = list(state.get("events", []))
+            events_for_pressure.append(
+                {
+                    "type": "token_pressure_mode",
+                    "role": current_role,
+                    "remaining_tokens": remaining_tokens,
+                    "tool_round_cap": intent_max_rounds,
+                    "max_tokens_cap": int(runtime_agent_config["max_tokens"]),
+                }
+            )
+            state = {**state, "events": events_for_pressure}
+
     # --- Build messages ---
-    system_prompt = agent_config["system_prompt"]
+    system_prompt = runtime_agent_config["system_prompt"]
     messages = _build_agent_messages(
         state,
         system_prompt,
-        agent_config,
+        runtime_agent_config,
         current_role,
         memory_section_text=memory_section_text,
     )
 
     # --- Resolve tool definitions ---
-    tool_defs = _resolve_tool_definitions(agent_config, current_role)
+    tool_defs = _resolve_tool_definitions(runtime_agent_config, current_role)
 
     # --- Create ToolExecutor ---
     project_root = Path(state.get("project_root", "."))
@@ -1513,9 +1567,9 @@ async def execute_agent_node(
     )
 
     # --- LLM setup ---
-    llm_model = agent_config.get("llm_model", DEFAULT_LLM_MODEL)
+    llm_model = runtime_agent_config.get("llm_model", DEFAULT_LLM_MODEL)
     llm: LLMProvider = llm_factory(llm_model)
-    batch_timeout = agent_config.get("timeout_seconds", DEFAULT_BATCH_TIMEOUT)
+    batch_timeout = runtime_agent_config.get("timeout_seconds", DEFAULT_BATCH_TIMEOUT)
 
     # Emit agent_started event
     events = list(state.get("events", []))
@@ -1526,8 +1580,8 @@ async def execute_agent_node(
             "type": "agent_started",
             "role": current_role,
             "instance_id": current_instance,
-            "name": agent_config["name"],
-            "specialisation": agent_config.get("specialisation", ""),
+            "name": runtime_agent_config["name"],
+            "specialisation": runtime_agent_config.get("specialisation", ""),
         }
     )
 
@@ -1539,8 +1593,6 @@ async def execute_agent_node(
             # Always use batch invoke for tool-calling agents.
             # This is the standard pattern: invoke → tools → invoke → tools → done.
             # Intent-aware: use max_tool_rounds from intent profile if available
-            intent_profile = state.get("intent_profile") or {}
-            intent_max_rounds = intent_profile.get("max_tool_rounds", MAX_TOOL_ROUNDS)
             (
                 final_text,
                 input_tokens,
@@ -1552,7 +1604,7 @@ async def execute_agent_node(
                 messages=messages,
                 tool_defs=tool_defs,
                 tool_executor=tool_executor,
-                agent_config=agent_config,
+                agent_config=runtime_agent_config,
                 role=current_role,
                 state=state,
                 agent_messages=agent_messages_log,
@@ -1571,11 +1623,11 @@ async def execute_agent_node(
             )
         elif stream_callback:
             # --- Streaming mode for text-only agents (no tools) ---
-            idle_timeout = agent_config.get("idle_timeout", DEFAULT_IDLE_TIMEOUT)
+            idle_timeout = runtime_agent_config.get("idle_timeout", DEFAULT_IDLE_TIMEOUT)
             response = await _execute_streaming(
                 llm,
                 messages,
-                agent_config,
+                runtime_agent_config,
                 idle_timeout,
                 current_role,
                 stream_callback,
@@ -1594,8 +1646,8 @@ async def execute_agent_node(
             response = await asyncio.wait_for(
                 llm.invoke(
                     messages=messages,
-                    temperature=agent_config.get("temperature", DEFAULT_TEMPERATURE),
-                    max_tokens=agent_config.get("max_tokens", DEFAULT_MAX_TOKENS),
+                    temperature=runtime_agent_config.get("temperature", DEFAULT_TEMPERATURE),
+                    max_tokens=runtime_agent_config.get("max_tokens", DEFAULT_MAX_TOKENS),
                 ),
                 timeout=batch_timeout,
             )
@@ -1677,7 +1729,8 @@ async def execute_agent_node(
             "role": current_role,
             "instance_id": current_instance,
             "name": agent_config["name"],
-            "specialisation": agent_config.get("specialisation", ""),
+            "name": runtime_agent_config["name"],
+            "specialisation": runtime_agent_config.get("specialisation", ""),
             "tokens": total_tokens,
             "cost": cost,
             "duration_ms": duration_ms,
