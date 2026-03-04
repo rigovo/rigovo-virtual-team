@@ -295,6 +295,158 @@ function AgentStatusStrip({ steps }: { steps: TaskStep[] }) {
 }
 
 /* ================================================================== */
+/*  InlineLogViewer — terminal-style per-agent output panel           */
+/* ================================================================== */
+interface InlineLogViewerProps {
+  steps: TaskStep[];
+  taskStatus: string;
+}
+
+function InlineLogViewer({ steps, taskStatus }: InlineLogViewerProps) {
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const isRunning = taskStatus === "running" || taskStatus === "queued";
+
+  // Auto-expand the currently running step; auto-scroll to bottom while running
+  useEffect(() => {
+    const runningStep = steps.find(s => s.status === "running");
+    if (runningStep) {
+      setExpanded(prev => ({ ...prev, [runningStep.agent]: true }));
+    }
+  }, [steps]);
+
+  useEffect(() => {
+    if (isRunning && bottomRef.current) {
+      bottomRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [steps, isRunning]);
+
+  const allExpanded = steps.every(s => expanded[s.agent]);
+
+  return (
+    <div className="inline-log-viewer">
+      {/* toolbar */}
+      <div className="ilv-toolbar">
+        <span className="ilv-toolbar-title">
+          <span className="ilv-dot" />
+          Agent Logs
+        </span>
+        <div className="ilv-toolbar-actions">
+          {isRunning && (
+            <span className="ilv-live-badge">● LIVE</span>
+          )}
+          <button
+            type="button"
+            className="ilv-toggle-all"
+            onClick={() => {
+              const next = !allExpanded;
+              setExpanded(steps.reduce<Record<string, boolean>>((a, s) => { a[s.agent] = next; return a; }, {}));
+            }}
+          >
+            {allExpanded ? "Collapse all" : "Expand all"}
+          </button>
+        </div>
+      </div>
+
+      {/* log entries */}
+      <div className="ilv-body">
+        {steps.length === 0 && (
+          <div className="ilv-empty">No agent output yet.</div>
+        )}
+        {steps.map((step, i) => {
+          const isOpen = expanded[step.agent] !== false && (
+            step.status === "running" || step.status === "complete" || step.status === "failed" || expanded[step.agent] === true
+          );
+          const statusIcon = step.status === "complete" ? "✓" :
+                             step.status === "failed"   ? "✗" :
+                             step.status === "running"  ? "▶" :
+                             step.status === "skipped"  ? "○" : "·";
+          const statusColor = step.status === "complete" ? "var(--color-success, #22c55e)" :
+                              step.status === "failed"   ? "var(--color-error, #ef4444)" :
+                              step.status === "running"  ? "var(--accent, #6366f1)" :
+                              "var(--t4)";
+          const gatesFailed = step.gate_results.filter(g => !g.passed).length;
+          const durationSec = step.duration_ms != null ? (step.duration_ms / 1000).toFixed(1) : null;
+
+          return (
+            <div key={`${step.agent}-${i}`} className={`ilv-block ${step.status}`}>
+              {/* block header (clickable) */}
+              <button
+                type="button"
+                className="ilv-block-header"
+                onClick={() => setExpanded(prev => ({ ...prev, [step.agent]: !isOpen }))}
+                aria-expanded={isOpen}
+              >
+                <span className="ilv-chevron">{isOpen ? "▾" : "▸"}</span>
+                <span className="ilv-status-icon" style={{ color: statusColor }}>{statusIcon}</span>
+                <span className="ilv-agent-name">
+                  {step.agent_name || step.agent}
+                </span>
+                <div className="ilv-block-meta">
+                  {gatesFailed > 0 && (
+                    <span className="ilv-gate-badge">⚡ {gatesFailed} gate{gatesFailed > 1 ? "s" : ""}</span>
+                  )}
+                  {step.tokens != null && (
+                    <span className="ilv-tokens">{step.tokens.toLocaleString()} tok</span>
+                  )}
+                  {durationSec && (
+                    <span className="ilv-duration">{durationSec}s</span>
+                  )}
+                  <span className="ilv-step-status" style={{ color: statusColor }}>{step.status}</span>
+                </div>
+              </button>
+
+              {/* output body */}
+              {isOpen && (
+                <div className="ilv-output">
+                  {/* gate results */}
+                  {step.gate_results.length > 0 && (
+                    <div className="ilv-gates">
+                      {step.gate_results.map((g, gi) => (
+                        <div key={gi} className={`ilv-gate-row ${g.passed ? "passed" : "failed"}`}>
+                          <span className="ilv-gate-icon">{g.passed ? "✓" : "✗"}</span>
+                          <span className="ilv-gate-name">{g.gate}</span>
+                          {!g.passed && (
+                            <span className="ilv-gate-msg">{g.message}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* execution log (commands run) */}
+                  {step.execution_log && step.execution_log.length > 0 && (
+                    <div className="ilv-exec-log">
+                      {step.execution_log.map((entry, ei) => (
+                        <div key={ei} className={`ilv-exec-entry ${entry.exit_code === 0 ? "ok" : "err"}`}>
+                          <span className="ilv-exec-prompt">$</span>
+                          <span className="ilv-exec-cmd">{entry.command}</span>
+                          <span className={`ilv-exec-code ${entry.exit_code === 0 ? "ok" : "err"}`}>
+                            [{entry.exit_code}]
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* main agent output text */}
+                  {step.output ? (
+                    <pre className="ilv-pre">{step.output}</pre>
+                  ) : (
+                    step.status === "running"
+                      ? <div className="ilv-running-pulse">Running<span className="ilv-dots" /></div>
+                      : <div className="ilv-no-output">No output recorded.</div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <div ref={bottomRef} />
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
 /*  FilesDrawer — bottom drawer with Monaco file viewer               */
 /* ================================================================== */
 interface FilesDrawerProps {
@@ -538,7 +690,7 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
   const [gov, setGov]           = useState<GovernanceData | null>(null);
   const [costs, setCosts]       = useState<CostData | null>(null);
   const [files, setFiles]       = useState<FilesData | null>(null);
-  const [viewMode, setViewMode]           = useState<"map" | "timeline">("map");
+  const [viewMode, setViewMode]           = useState<"map" | "timeline" | "logs">("map");
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [leftOpen, setLeftOpen]           = useState(true);
 
@@ -655,7 +807,7 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
           </div>
         </div>
         <div className="td-header-right">
-          {/* View toggle: Map ↔ Timeline */}
+          {/* View toggle: Map ↔ Timeline ↔ Logs */}
           {hasSteps && (
             <div className="td-view-toggle">
               <button
@@ -673,6 +825,14 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
                 title="Agent Timeline"
               >
                 ☰ Timeline
+              </button>
+              <button
+                type="button"
+                className={`td-view-btn ${viewMode === "logs" ? "active" : ""}`}
+                onClick={() => setViewMode("logs")}
+                title="Agent Logs"
+              >
+                ▤ Logs
               </button>
             </div>
           )}
@@ -727,7 +887,7 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
           </button>
         )}
 
-        {/* Left: Neural Map or Timeline */}
+        {/* Left: Neural Map | Timeline | Logs */}
         {viewMode === "map" ? (
           <div className={`td-map-left ${leftOpen ? "" : "td-panel-hidden"}`}>
             {isProcessing ? (
@@ -750,7 +910,7 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
               />
             )}
           </div>
-        ) : (
+        ) : viewMode === "timeline" ? (
           <div className={`td-timeline-left ${leftOpen ? "" : "td-panel-hidden"}`}>
             {isProcessing ? (
               <div className="p-4"><ProcessingState status={task.status} /></div>
@@ -764,6 +924,14 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
                 onOpenFiles={openFilesDrawer}
               />
             )}
+          </div>
+        ) : (
+          /* Logs view */
+          <div className={`td-logs-left ${leftOpen ? "" : "td-panel-hidden"}`}>
+            <InlineLogViewer
+              steps={detail?.steps ?? []}
+              taskStatus={task.status}
+            />
           </div>
         )}
 

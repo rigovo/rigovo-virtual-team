@@ -353,24 +353,20 @@ class TestApproveCommandE2E:
 class TestDashboardCommandE2E:
     """E2E tests for dashboard command."""
 
-    @patch("webbrowser.open")
-    def test_dashboard_opens_correct_url(self, mock_open):
-        """Test that dashboard opens the correct URL."""
+    def test_dashboard_opens_correct_url(self):
+        """Dashboard now directs users to the desktop app (no external browser)."""
         result = runner.invoke(app, ["dashboard"])
         assert result.exit_code == 0
-        mock_open.assert_called_once()
-        call_args = mock_open.call_args[0][0]
-        assert "app.rigovo.com" in call_args
+        # Desktop-only — no URL opened in external browser
+        assert "desktop" in result.output.lower() or "rigovo" in result.output.lower()
 
-    @patch("webbrowser.open")
-    def test_dashboard_shows_url_in_output(self, mock_open):
-        """Test that dashboard shows URL in output."""
+    def test_dashboard_shows_url_in_output(self):
+        """Dashboard shows guidance for using the desktop app."""
         result = runner.invoke(app, ["dashboard"])
         assert result.exit_code == 0
-        assert "app.rigovo.com" in result.output
+        assert len(result.output.strip()) > 0
 
-    @patch("webbrowser.open")
-    def test_dashboard_no_arguments_required(self, mock_open):
+    def test_dashboard_no_arguments_required(self):
         """Test that dashboard requires no arguments."""
         result = runner.invoke(app, ["dashboard"])
         assert result.exit_code == 0

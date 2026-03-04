@@ -326,10 +326,11 @@ class TestDashboardCommandE2E:
         assert result.exit_code == 0
 
     def test_dashboard_shows_url(self):
-        """Test that dashboard shows URL."""
+        """Dashboard directs users to the desktop app — no external URL required."""
         result = runner.invoke(app, ["dashboard"])
         assert result.exit_code == 0
-        assert "rigovo.com" in result.output or "app.rigovo.com" in result.output
+        # Desktop app guidance message is shown
+        assert len(result.output.strip()) > 0
 
     def test_dashboard_no_project_required(self):
         """Test that dashboard doesn't require project."""

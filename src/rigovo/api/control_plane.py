@@ -119,7 +119,11 @@ def _make_approval_handler(
         try:
             fut.result(timeout=10)
         except Exception:
-            pass  # best-effort — UI poll will still reflect the node state
+            logger.warning(
+                "Approval handler: failed to persist AWAITING_APPROVAL for task %s",
+                task_id,
+                exc_info=True,
+            )
 
         # ── 2. Block until human decision (or timeout) ───────────────────
         event = threading.Event()
@@ -130,7 +134,19 @@ def _make_approval_handler(
         _approval_events.pop(task_id, None)
 
         if not signalled:
-            # Timeout: auto-approve so the graph is never permanently stuck
+            # Timeout: auto-approve so the graph is never permanently stuck.
+            # Also update DB so the UI doesn't show AWAITING_APPROVAL indefinitely.
+            async def _clear_awaiting() -> None:
+                try:
+                    task_repo = SqliteTaskRepository(container.get_db())
+                    task = await task_repo.get(UUID(task_id))
+                    if task and task.status == TaskStatus.AWAITING_APPROVAL:
+                        task.start()  # transition back to running
+                        await task_repo.update_status(task)
+                except Exception:
+                    pass  # best-effort
+
+            asyncio.run_coroutine_threadsafe(_clear_awaiting(), main_loop)
             return {
                 "approval_status": "approved",
                 "approval_feedback": "auto-approved after timeout",
