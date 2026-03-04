@@ -281,7 +281,7 @@ class TaskClassifier:
                 {"role": "user", "content": user_message},
             ],
             temperature=0.1,  # Slight creativity for team composition
-            max_tokens=8192,  # Staffing plans can be large (4096 caused truncation)
+            max_tokens=4096,  # Staffing plans — compact JSON, 4k is sufficient
         )
 
         return self._parse_staffing_plan(response.content, description)

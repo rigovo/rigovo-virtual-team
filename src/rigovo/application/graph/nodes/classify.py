@@ -113,8 +113,78 @@ async def classify_node(
     )
 
     # ══════════════════════════════════════════════════════════════════
-    # PHASE 2: Master Agent LLM — full SME analysis (10–30s)
+    # PHASE 2: Master Agent LLM — full SME analysis
+    # FAST PATH: skip LLM entirely when deterministic brain is highly
+    # confident (≥0.90) — build staffing plan from minimum team table.
+    # This cuts classification from 10-30s → <100ms for common tasks.
     # ══════════════════════════════════════════════════════════════════
+    if det_result.is_deterministic and det_result.confidence >= 0.90 and classifier is not None:
+        logger.info(
+            "FAST PATH: skipping Master Agent LLM (deterministic confidence=%.2f ≥ 0.90)",
+            det_result.confidence,
+        )
+        # Build a minimal staffing plan from deterministic result + enforce_minimum_team
+        fast_agents = enforce_minimum_team(
+            [],  # Start empty — enforce_minimum_team fills the minimum team
+            task_type=det_result.task_type,
+            description=description,
+        )
+        classification: dict[str, Any] = {
+            "task_type": det_result.task_type,
+            "complexity": det_result.complexity,
+            "workspace_type": "new_project"
+            if det_result.task_type == "new_project"
+            else "existing_project",
+            "reasoning": f"Deterministic fast path (confidence={det_result.confidence:.0%}, pattern={det_result.matched_pattern})",
+        }
+        plan_dict: dict[str, Any] = {
+            "task_type": det_result.task_type,
+            "complexity": det_result.complexity,
+            "workspace_type": classification["workspace_type"],
+            "domain_analysis": f"Auto-classified as {det_result.task_type} ({det_result.complexity})",
+            "architecture_notes": "",
+            "agents": fast_agents,
+            "risks": [],
+            "acceptance_criteria": [],
+            "reasoning": classification["reasoning"],
+        }
+        events.append(
+            {
+                "type": "task_classified",
+                "task_type": det_result.task_type,
+                "complexity": det_result.complexity,
+                "workspace_type": classification["workspace_type"],
+                "reasoning": classification["reasoning"],
+                "domain_analysis": plan_dict["domain_analysis"],
+                "agent_count": len(fast_agents),
+                "agent_instances": [
+                    {
+                        "instance_id": a.get("instance_id", ""),
+                        "role": a.get("role", ""),
+                        "specialisation": a.get("specialisation", ""),
+                        "assignment": (a.get("assignment", "") or "")[:200],
+                    }
+                    for a in fast_agents
+                ],
+                "risks": [],
+                "acceptance_criteria": [],
+                "deterministic_hint_used": True,
+                "minimum_team_enforced": True,
+                "fast_path": True,
+            }
+        )
+        return {
+            "classification": classification,
+            "deterministic_classification": deterministic_classification,
+            "staffing_plan": plan_dict,
+            "status": "classified",
+            "cost_accumulator": {
+                **state.get("cost_accumulator", {}),
+                "master_agent": {"tokens": 0, "cost": 0.0},
+            },
+            "events": events,
+        }
+
     if classifier is not None:
         plan: StaffingPlan = await classifier.analyze(
             description,

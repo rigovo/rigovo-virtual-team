@@ -53,7 +53,9 @@ class LLMConfig(BaseSettings):
     """
 
     model: str = Field(default="claude-sonnet-4-6", alias="LLM_MODEL")
-    master_model: str = Field(default="", alias="LLM_MASTER_MODEL")  # empty = use main model
+    master_model: str = Field(
+        default="claude-sonnet-4-6", alias="LLM_MASTER_MODEL"
+    )  # Sonnet: fast enough for staffing plans
 
     # Per-role model overrides — JSON string: '{"coder":"claude-opus-4-6","qa":"claude-haiku-4-5"}'
     # These override ROLE_DEFAULT_MODELS in model_catalog.py for all tasks.
