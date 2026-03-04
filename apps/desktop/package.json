@@ -14,8 +14,7 @@
     "@electron-toolkit/utils": "^3.0.0",
     "@monaco-editor/react": "^4.7.0",
     "@xyflow/react": "^12.10.1",
-    "electron-updater": "^6.8.3",
-    "monaco-editor": "^0.55.1",
+"monaco-editor": "^0.55.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
@@ -42,13 +41,7 @@
       "output": "release"
     },
     "icon": "resources/icon.png",
-    "publish": {
-      "provider": "github",
-      "owner": "rigovo",
-      "repo": "rigovo-teams",
-      "releaseType": "release"
-    },
-    "mac": {
+"mac": {
       "target": [
         "dmg",
         "zip"

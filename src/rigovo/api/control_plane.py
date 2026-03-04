@@ -412,6 +412,14 @@ class RenameTaskRequest(BaseModel):
     title: str  # Custom display title; overrides description in the inbox/sidebar
 
 
+
+class PingResponse(BaseModel):
+    """Response schema for the GET /v1/ping liveness probe."""
+
+    status: str
+    timestamp: str
+
+
 class RegisterProjectRequest(BaseModel):
     path: str
     name: str = ""
@@ -1171,6 +1179,14 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/v1/ping")
+    def ping() -> PingResponse:
+        """Liveness probe returning current UTC timestamp."""
+        return PingResponse(
+            status="ok",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @app.get("/v1/runtime/capabilities")
     def runtime_capabilities() -> dict[str, Any]:
@@ -3481,7 +3497,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         response = await call_next(request)
         duration_ms = (time.time() - start) * 1000
         # Log non-health requests
-        if request.url.path != "/health":
+        if request.url.path not in ("/health", "/v1/ping"):
             logger.info(
                 "%s %s → %d (%.0fms)",
                 request.method,

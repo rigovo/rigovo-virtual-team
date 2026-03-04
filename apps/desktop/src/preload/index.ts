@@ -15,22 +15,15 @@ export interface ElectronAPI {
   stopEngine: () => Promise<{ running: boolean; pid: number | null; apiUrl: string }>;
   engineLastError: () => Promise<string>;
   openExternal: (url: string) => Promise<void>;
-  /** Open a folder picker. Returns the absolute path of the selected folder, or null if cancelled. */
   openFolder: () => Promise<string | null>;
   listProjectFiles: (projectPath: string) => Promise<string[]>;
-  /** Shallow-clone a git repo to destDir. Resolves with the absolute destination path on success. */
   gitClone: (url: string, destDir: string) => Promise<string>;
-  /** Open a folder picker for choosing clone destination parent. Returns the absolute path or null if cancelled. */
   pickCloneDest: () => Promise<string | null>;
-  /** Get the current app version (e.g. "1.0.0-beta.1") */
   appVersion: () => Promise<string>;
-  /** Get default workspace path (~/.rigovo/workspace) */
   defaultWorkspace: () => Promise<string>;
-  /** Manually check for updates. Returns whether an update is available. */
+  // Auto-updater stubs (removed — kept for API compatibility)
   checkForUpdate: () => Promise<{ available: boolean; version: string }>;
-  /** Quit and install a downloaded update immediately. */
   installUpdate: () => Promise<void>;
-  /** Listen for update events from the main process. */
   onUpdateAvailable: (callback: (info: { version: string; releaseDate?: string }) => void) => void;
   onUpdateDownloaded: (callback: (info: { version: string }) => void) => void;
 }

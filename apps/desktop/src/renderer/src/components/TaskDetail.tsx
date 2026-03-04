@@ -630,7 +630,7 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
                 "td-complexity-low"
               }`}>{detail.complexity}</span>
             )}
-            {detail?.confidence_score !== undefined && (
+            {detail?.confidence_score !== undefined && detail.status !== "running" && detail.status !== "pending" && (
               <span className={`td-confidence-badge ${
                 detail.confidence_score >= 80 ? "confidence-high" :
                 detail.confidence_score >= 60 ? "confidence-medium" :

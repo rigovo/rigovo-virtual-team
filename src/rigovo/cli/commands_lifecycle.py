@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-import webbrowser
 from pathlib import Path
 from uuid import UUID
 
@@ -31,10 +30,9 @@ def register(app: typer.Typer) -> None:
 
     @app.command()
     def dashboard() -> None:
-        """Open the Rigovo releases page in your browser."""
-        url = "https://github.com/rigovo/rigovo-teams/releases"
-        console.print(f"  Opening {url} ...")
-        webbrowser.open(url)
+        """Print the Rigovo desktop app info."""
+        console.print("  Rigovo Virtual Team — desktop app")
+        console.print("  Use the desktop app Settings to manage your workspace.")
 
     @app.command()
     def replay(

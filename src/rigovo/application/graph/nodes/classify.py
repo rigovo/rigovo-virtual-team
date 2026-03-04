@@ -118,9 +118,9 @@ async def classify_node(
     # confident (≥0.90) — build staffing plan from minimum team table.
     # This cuts classification from 10-30s → <100ms for common tasks.
     # ══════════════════════════════════════════════════════════════════
-    if det_result.is_deterministic and det_result.confidence >= 0.90 and classifier is not None:
+    if det_result.is_deterministic and det_result.confidence >= 0.85 and classifier is not None:
         logger.info(
-            "FAST PATH: skipping Master Agent LLM (deterministic confidence=%.2f ≥ 0.90)",
+            "FAST PATH: skipping Master Agent LLM (deterministic confidence=%.2f ≥ 0.85)",
             det_result.confidence,
         )
         # Build a minimal staffing plan from deterministic result + enforce_minimum_team

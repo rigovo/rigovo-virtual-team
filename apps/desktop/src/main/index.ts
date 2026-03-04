@@ -3,7 +3,6 @@ import { join, resolve, relative } from "node:path";
 import { homedir } from "node:os";
 import { ChildProcess, execSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
-import { autoUpdater, UpdateInfo } from "electron-updater";
 
 /* ------------------------------------------------------------------ */
 /*  Engine lifecycle – same semantics as the old Tauri Rust backend   */
@@ -73,6 +72,55 @@ function isSafeExternalUrl(raw: string): boolean {
   } catch {
     return false;
   }
+}
+
+/* ── Anti-flooding: global external URL rate limiter ── */
+// HARD protection against runaway browser tab flooding.
+// Rules:
+//   1. Same URL can only be opened once per 60 seconds
+//   2. Max 3 external opens per 60 seconds total (burst limit)
+//   3. During app shutdown, block ALL external opens
+//   4. NEVER open more than 10 unique URLs per session
+
+const _urlOpenHistory: Map<string, number> = new Map();
+const _globalOpenTimes: number[] = [];
+let _appShuttingDown = false;
+let _sessionOpenCount = 0;
+const MAX_SESSION_OPENS = 10;
+
+function canOpenExternalUrl(url: string): boolean {
+  if (_appShuttingDown) return false;
+
+  // Hard session cap — no app should ever need to open 10+ browser tabs
+  if (_sessionOpenCount >= MAX_SESSION_OPENS) {
+    console.warn("[rigovo] HARD BLOCK: session limit reached (" + MAX_SESSION_OPENS + " opens). url:", url);
+    return false;
+  }
+
+  const now = Date.now();
+
+  // Rule 1: Same URL blocked for 60 seconds
+  const lastOpen = _urlOpenHistory.get(url);
+  if (lastOpen && now - lastOpen < 60_000) {
+    console.warn("[rigovo] Blocked duplicate URL open (cooldown 60s):", url);
+    return false;
+  }
+
+  // Rule 2: Max 3 opens in any 60-second window
+  while (_globalOpenTimes.length > 0 && now - _globalOpenTimes[0] > 60_000) {
+    _globalOpenTimes.shift();
+  }
+  if (_globalOpenTimes.length >= 3) {
+    console.warn("[rigovo] Blocked external URL open (burst limit 3/60s):", url);
+    return false;
+  }
+
+  // Record this open
+  _urlOpenHistory.set(url, now);
+  _globalOpenTimes.push(now);
+  _sessionOpenCount++;
+
+  return true;
 }
 
 function parseBoolEnv(name: string, defaultValue: boolean): boolean {
@@ -237,18 +285,14 @@ function registerIpc(): void {
   ipcMain.handle("engine:last-error", () => _lastEngineError);
 
   // Open URL in system browser (for WorkOS AuthKit redirect flow).
-  // Rate-limited: max 1 open per 3 seconds to prevent tab flooding.
-  let lastIpcExternalOpen = 0;
+  // Protected by global anti-flooding limiter.
   ipcMain.handle("shell:open-external", (_event, url: string) => {
     if (!isSafeExternalUrl(url)) {
       throw new Error("Blocked unsafe external URL");
     }
-    const now = Date.now();
-    if (now - lastIpcExternalOpen < 3000) {
-      console.warn("[rigovo] Blocked rapid IPC external URL open:", url);
+    if (!canOpenExternalUrl(url)) {
       return;
     }
-    lastIpcExternalOpen = now;
     return shell.openExternal(url);
   });
 
@@ -275,7 +319,6 @@ function registerIpc(): void {
     });
     if (result.canceled || !result.filePaths.length) return null;
     const folderPath = result.filePaths[0];
-    // Validate that the selected path is actually a directory
     try {
       const stats = statSync(folderPath);
       if (!stats.isDirectory()) {
@@ -290,7 +333,6 @@ function registerIpc(): void {
   // Git clone — shallow-clone a remote repo to a local destination
   ipcMain.handle("git:clone", async (_event, url: string, destDir: string) => {
     return new Promise<string>((resolve, reject) => {
-      // Validate inputs
       if (!url || !url.trim()) {
         reject(new Error("Repository URL cannot be empty"));
         return;
@@ -339,7 +381,6 @@ function registerIpc(): void {
     });
     if (result.canceled || !result.filePaths.length) return null;
     const destPath = result.filePaths[0];
-    // Validate that the selected path is a directory
     try {
       const stats = statSync(destPath);
       if (!stats.isDirectory()) {
@@ -360,13 +401,7 @@ function createWindow(): void {
   const runtime = runtimeConfig();
   const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
 
-  // Resolve icon path — works in both dev (source tree) and production (resources)
-  // On macOS, BrowserWindow `icon` is ignored for the dock — must use app.dock.setIcon()
-  // IMPORTANT: .icns files often fail with nativeImage.createFromPath() (returns empty),
-  // so we always prefer .png for the dock icon on macOS. .icns is only used as a last resort.
   const iconPath = (() => {
-    // Prefer .png on macOS (nativeImage reads it reliably); .icns often loads as empty.
-    // On Windows use .ico, on Linux use .png.
     const baseDirs = [
       join(__dirname, "../../resources"),
       join(app.getAppPath(), "resources"),
@@ -374,12 +409,10 @@ function createWindow(): void {
     ];
     const candidates: string[] = [];
     for (const dir of baseDirs) {
-      // Always try .png first — it works reliably on all platforms with nativeImage
       candidates.push(join(dir, "icon.png"));
       if (process.platform === "win32") {
         candidates.push(join(dir, "icon.ico"));
       }
-      // .icns as last resort (electron-builder uses it for DMG, but nativeImage often can't read it)
       if (process.platform === "darwin") {
         candidates.push(join(dir, "icon.icns"));
       }
@@ -396,7 +429,6 @@ function createWindow(): void {
     return undefined;
   })();
 
-  // macOS dock icon — must be set explicitly (BrowserWindow icon doesn't affect dock)
   if (iconPath && process.platform === "darwin" && app.dock) {
     try {
       const img = nativeImage.createFromPath(iconPath);
@@ -427,24 +459,15 @@ function createWindow(): void {
   });
 
   // Open external links in user's browser, not the Electron window.
-  // Rate-limited: max 1 open per 3 seconds to prevent tab flooding.
-  let lastExternalOpen = 0;
+  // Protected by global anti-flooding limiter (max 3/60s, dedup 60s, session cap 10).
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    const now = Date.now();
-    if (now - lastExternalOpen < 3000) {
-      console.warn("[rigovo] Blocked rapid external URL open:", url);
-      return { action: "deny" };
-    }
-    lastExternalOpen = now;
-    if (isSafeExternalUrl(url)) {
+    if (isSafeExternalUrl(url) && canOpenExternalUrl(url)) {
       shell.openExternal(url);
     }
     return { action: "deny" };
   });
 
   // Block navigation to external URLs inside the Electron window.
-  // This prevents the renderer from being hijacked by redirects
-  // (e.g. WorkOS callbacks or stale auth pages pointing to app.rigovo.com).
   mainWindow.webContents.on("will-navigate", (event, url) => {
     const allowed = isDev && process.env.ELECTRON_RENDERER_URL
       ? url.startsWith(process.env.ELECTRON_RENDERER_URL)
@@ -455,8 +478,6 @@ function createWindow(): void {
     }
   });
 
-  // Dev mode → Vite dev server HMR
-  // Production → static files from out/renderer/
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
@@ -469,7 +490,6 @@ function createWindow(): void {
 /* ------------------------------------------------------------------ */
 
 function killPort(port: number): void {
-  // Sanitise port to a strict integer to prevent command injection
   const safePort = Math.trunc(Math.abs(port));
   if (!Number.isFinite(safePort) || safePort < 1 || safePort > 65535) return;
 
@@ -488,7 +508,6 @@ function killPort(port: number): void {
         try { execSync(`taskkill /PID ${pid} /F`, { timeout: 3000, windowsHide: true }); } catch { /* ignore */ }
       }
     } else {
-      // Use spawn-safe approach: get PIDs first, then kill individually
       const out = execSync(
         `lsof -ti :${String(safePort)}`,
         { encoding: "utf8", timeout: 3000 },
@@ -504,96 +523,39 @@ function killPort(port: number): void {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Auto-updater — checks GitHub Releases for new versions            */
-/* ------------------------------------------------------------------ */
-
-function setupAutoUpdater(): void {
-  // Don't check for updates in dev mode
-  if (process.env.ELECTRON_RENDERER_URL) return;
-
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
-  // Allow pre-release (beta) updates since we're on beta channel
-  autoUpdater.allowPrerelease = true;
-
-  autoUpdater.on("update-available", (info: UpdateInfo) => {
-    const win = BrowserWindow.getAllWindows()[0];
-    if (win) {
-      win.webContents.send("update:available", {
-        version: info.version,
-        releaseDate: info.releaseDate,
-      });
-    }
-  });
-
-  autoUpdater.on("update-downloaded", (info: UpdateInfo) => {
-    const win = BrowserWindow.getAllWindows()[0];
-    if (win) {
-      win.webContents.send("update:downloaded", {
-        version: info.version,
-      });
-    }
-  });
-
-  autoUpdater.on("error", (err: Error) => {
-    // Silently log — don't bother the user if update check fails
-    // eslint-disable-next-line no-console
-    console.error("Auto-updater error:", err.message);
-  });
-
-  // Check for updates 5 seconds after launch, then every 4 hours
-  setTimeout(() => { void autoUpdater.checkForUpdates(); }, 5_000);
-  setInterval(() => { void autoUpdater.checkForUpdates(); }, 4 * 60 * 60 * 1000);
-}
-
-/* ------------------------------------------------------------------ */
 /*  App lifecycle                                                     */
 /* ------------------------------------------------------------------ */
 
 async function bootstrapDesktop(): Promise<void> {
   if (!hasElectronRuntime) {
-    // eslint-disable-next-line no-console
     console.error("Electron runtime is unavailable in this process.");
     return;
   }
 
   const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
 
-  // In production: free port 8787 if occupied by a stale process from a previous run.
-  // In dev mode: skip — the e2e script manages the API process externally; killing
-  // it here would cause demo-mode fallback in the renderer (API unreachable).
   if (!isDev) {
     killPort(8787);
   }
 
-  // Set app name before anything else — this controls the macOS dock tooltip
-  // and the app menu title.  In production electron-builder sets it from
-  // package.json productName, but in dev mode Electron defaults to "Electron".
   app.setName("Rigovo Virtual Team");
 
   await app.whenReady();
   registerIpc();
   createWindow();
-  setupAutoUpdater();
 
-  // IPC: renderer can ask to install a downloaded update now
-  ipcMain.handle("update:install", () => {
-    autoUpdater.quitAndInstall(false, true);
-  });
+  // Auto-updater REMOVED — was causing browser tab flooding.
+  // Will re-add once we have proper GitHub releases published.
 
-  // IPC: renderer can manually trigger an update check
-  ipcMain.handle("update:check", async () => {
-    const result = await autoUpdater.checkForUpdates();
-    return result?.updateInfo
-      ? { available: true, version: result.updateInfo.version }
-      : { available: false, version: app.getVersion() };
-  });
-
-  // IPC: get current app version
+  // IPC: get current app version (still works without auto-updater)
   ipcMain.handle("app:version", () => app.getVersion());
 
   // IPC: get default workspace path (~/.rigovo/workspace)
   ipcMain.handle("app:defaultWorkspace", () => defaultWorkspace());
+
+  // Stub IPC handlers so renderer doesn't crash calling removed auto-updater
+  ipcMain.handle("update:install", () => { /* no-op */ });
+  ipcMain.handle("update:check", () => ({ available: false, version: app.getVersion() }));
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -602,13 +564,16 @@ async function bootstrapDesktop(): Promise<void> {
 
 if (hasElectronRuntime) {
   void bootstrapDesktop().catch((err: unknown) => {
-    // eslint-disable-next-line no-console
     console.error("Failed to initialize Electron app", err);
     app.exit(1);
   });
 
+  app.on("before-quit", () => {
+    _appShuttingDown = true;
+  });
+
   app.on("window-all-closed", () => {
-    // Kill engine subprocess before quitting
+    _appShuttingDown = true;
     stopEngine();
     if (process.platform !== "darwin") app.quit();
   });
