@@ -1,7 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
 import { join, resolve, relative } from "node:path";
+import { homedir } from "node:os";
 import { ChildProcess, execSync, spawn } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { autoUpdater, UpdateInfo } from "electron-updater";
 
 /* ------------------------------------------------------------------ */
@@ -39,6 +40,19 @@ function sanitizeEnginePort(raw?: number): number {
   if (typeof raw !== "number" || !Number.isInteger(raw)) return 8787;
   if (raw < 1 || raw > 65535) return 8787;
   return raw;
+}
+
+/**
+ * Default workspace directory when the user hasn't selected a folder or cloned a repo.
+ * Similar to how Claude Code uses ~/.claude — Rigovo uses ~/.rigovo/workspace.
+ * Auto-creates the directory on first access.
+ */
+function defaultWorkspace(): string {
+  const ws = join(homedir(), ".rigovo", "workspace");
+  if (!existsSync(ws)) {
+    mkdirSync(ws, { recursive: true });
+  }
+  return ws;
 }
 
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set([
@@ -96,8 +110,8 @@ function startEngine(
   const rigovoBin = String(process.env.RIGOVO_BIN ?? "rigovo").trim() || "rigovo";
   const args = ["serve", "--host", host, "--port", String(port)];
   let safeProjectDir: string | undefined;
-  if (projectDir) {
-    const candidate = String(projectDir).trim();
+  const candidate = projectDir ? String(projectDir).trim() : "";
+  if (candidate && candidate !== ".") {
     try {
       const stats = statSync(candidate);
       if (stats.isDirectory()) {
@@ -107,11 +121,12 @@ function startEngine(
       safeProjectDir = undefined;
     }
   }
-  if (safeProjectDir) {
-    args.push("--project", safeProjectDir);
+  // Fall back to ~/.rigovo/workspace when no folder is selected
+  if (!safeProjectDir) {
+    safeProjectDir = defaultWorkspace();
   }
-  const opts: { cwd?: string } = {};
-  if (safeProjectDir) opts.cwd = safeProjectDir;
+  args.push("--project", safeProjectDir);
+  const opts: { cwd?: string } = { cwd: safeProjectDir };
   const runtime = runtimeConfig();
 
   _lastEngineError = "";
@@ -221,11 +236,19 @@ function registerIpc(): void {
   ipcMain.handle("engine:stop", () => stopEngine());
   ipcMain.handle("engine:last-error", () => _lastEngineError);
 
-  // Open URL in system browser (for WorkOS AuthKit redirect flow)
+  // Open URL in system browser (for WorkOS AuthKit redirect flow).
+  // Rate-limited: max 1 open per 3 seconds to prevent tab flooding.
+  let lastIpcExternalOpen = 0;
   ipcMain.handle("shell:open-external", (_event, url: string) => {
     if (!isSafeExternalUrl(url)) {
       throw new Error("Blocked unsafe external URL");
     }
+    const now = Date.now();
+    if (now - lastIpcExternalOpen < 3000) {
+      console.warn("[rigovo] Blocked rapid IPC external URL open:", url);
+      return;
+    }
+    lastIpcExternalOpen = now;
     return shell.openExternal(url);
   });
 
@@ -403,10 +426,33 @@ function createWindow(): void {
     }
   });
 
-  // Open external links in user's browser, not the Electron window
+  // Open external links in user's browser, not the Electron window.
+  // Rate-limited: max 1 open per 3 seconds to prevent tab flooding.
+  let lastExternalOpen = 0;
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    const now = Date.now();
+    if (now - lastExternalOpen < 3000) {
+      console.warn("[rigovo] Blocked rapid external URL open:", url);
+      return { action: "deny" };
+    }
+    lastExternalOpen = now;
+    if (isSafeExternalUrl(url)) {
+      shell.openExternal(url);
+    }
     return { action: "deny" };
+  });
+
+  // Block navigation to external URLs inside the Electron window.
+  // This prevents the renderer from being hijacked by redirects
+  // (e.g. WorkOS callbacks or stale auth pages pointing to app.rigovo.com).
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    const allowed = isDev && process.env.ELECTRON_RENDERER_URL
+      ? url.startsWith(process.env.ELECTRON_RENDERER_URL)
+      : url.startsWith("file://");
+    if (!allowed) {
+      console.warn("[rigovo] Blocked in-window navigation to:", url);
+      event.preventDefault();
+    }
   });
 
   // Dev mode → Vite dev server HMR
@@ -545,6 +591,9 @@ async function bootstrapDesktop(): Promise<void> {
 
   // IPC: get current app version
   ipcMain.handle("app:version", () => app.getVersion());
+
+  // IPC: get default workspace path (~/.rigovo/workspace)
+  ipcMain.handle("app:defaultWorkspace", () => defaultWorkspace());
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

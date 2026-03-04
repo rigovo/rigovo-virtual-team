@@ -266,6 +266,17 @@ export default function App(): JSX.Element {
   const [taskWorkspaceLabel, setTaskWorkspaceLabel] = useState("");
   const [cloneModalOpen, setCloneModalOpen] = useState(false);
 
+  // Load default workspace (~/.rigovo/workspace) when no folder is selected
+  useEffect(() => {
+    if (taskWorkspacePath || !electronAPI?.defaultWorkspace) return;
+    void electronAPI.defaultWorkspace().then((ws) => {
+      if (ws && !taskWorkspacePath) {
+        setTaskWorkspacePath(ws);
+        setTaskWorkspaceLabel("Default workspace");
+      }
+    }).catch(() => { /* ignore */ });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   /* ---- Engine management ---- */
   const startEngine = useCallback(async (projectDir?: string): Promise<void> => {
     if (!electronAPI) return;

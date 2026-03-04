@@ -31,8 +31,8 @@ def register(app: typer.Typer) -> None:
 
     @app.command()
     def dashboard() -> None:
-        """Open the Rigovo cloud dashboard in your browser."""
-        url = "https://app.rigovo.com"
+        """Open the Rigovo releases page in your browser."""
+        url = "https://github.com/rigovo/rigovo-teams/releases"
         console.print(f"  Opening {url} ...")
         webbrowser.open(url)
 

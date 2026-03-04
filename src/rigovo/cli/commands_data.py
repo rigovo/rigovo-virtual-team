@@ -278,7 +278,7 @@ def register(app: typer.Typer) -> None:
         else:
             console.print("  [red]✗ Authentication failed.[/red]")
             console.print(
-                "  Check your API key at https://app.rigovo.com/settings\n",
+                "  Check your API key in the desktop app Settings → Identity.\n",
             )
 
         asyncio.run(client.close())

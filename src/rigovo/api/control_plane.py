@@ -38,6 +38,7 @@ import logging as _logging
 
 _api_container: Container | None = None
 _api_logger = _logging.getLogger("rigovo.api")
+logger = _api_logger  # alias used throughout the module
 
 # ── Live agent progress tracker (in-memory, per-task) ──────────────
 # Populated by event emitter callbacks during graph execution.

@@ -229,6 +229,8 @@ export interface ElectronAPI {
   pickCloneDest: () => Promise<string | null>;
   /** Get the current app version (e.g. "1.0.0-beta.1") */
   appVersion: () => Promise<string>;
+  /** Get default workspace path (~/.rigovo/workspace) */
+  defaultWorkspace: () => Promise<string>;
   /** Manually check for updates. Returns whether an update is available. */
   checkForUpdate: () => Promise<{ available: boolean; version: string }>;
   /** Quit and install a downloaded update immediately. */
