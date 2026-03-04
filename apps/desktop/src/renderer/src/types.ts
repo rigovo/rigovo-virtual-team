@@ -156,6 +156,10 @@ export interface ExecutionLogEntry {
 
 export interface TaskStep {
   agent: string;
+  /** Canonical role key normalized by bridge API (planner/coder/reviewer/...). */
+  agent_role?: string;
+  /** Stable instance id (e.g. coder-1) normalized by bridge API. */
+  agent_instance?: string;
   /** Human-readable agent name (e.g. "Backend Engineer 1") */
   agent_name?: string;
   status: "pending" | "running" | "complete" | "failed" | "skipped";
@@ -201,6 +205,8 @@ export interface TaskDetail {
   started_at: string | null;
   completed_at: string | null;
   steps: TaskStep[];
+  /** Planned pipeline roles from live classification (running tasks). */
+  planned_roles?: string[];
   cost: { total_tokens: number; total_cost_usd: number } | null;
   approval_data: Record<string, string>;
   /** Confidence score computed from pipeline quality gates (0-100) */

@@ -709,6 +709,12 @@ export default function App(): JSX.Element {
   const userEmail = authSession?.email || "";
   const userInitials = userName.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2);
   const selectedTask = useMemo(() => inbox.find((t) => t.id === selected) ?? null, [inbox, selected]);
+  useEffect(() => {
+    if (newThreadMode || !selectedTask) return;
+    if (selectedTask.tier === "auto" || selectedTask.tier === "notify" || selectedTask.tier === "approve") {
+      setTaskTier(selectedTask.tier);
+    }
+  }, [newThreadMode, selectedTask]);
   // Load project files when active project changes (for @ mention autocomplete)
   useEffect(() => {
     if (!activeProject?.path || !electronAPI) { setProjectFiles([]); return; }
@@ -774,6 +780,10 @@ export default function App(): JSX.Element {
           setNewThreadMode(false);
           setWorkspacePage("threads");
           setSelected(id);
+          const selectedTaskTier = inbox.find((t) => t.id === id)?.tier;
+          if (selectedTaskTier === "auto" || selectedTaskTier === "notify" || selectedTaskTier === "approve") {
+            setTaskTier(selectedTaskTier);
+          }
         }}
         onNewTask={() => {
           setShowSettings(false);

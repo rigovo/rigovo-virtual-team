@@ -11,6 +11,13 @@ import type { CollaborationData, GovernanceData, CostData } from "./AgentTimelin
 import NeuralCalibrationMap from "./NeuralCalibrationMap";
 import FileViewer from "./FileViewer";
 import AgentDetailPanel from "./AgentDetailPanel";
+import ResponseRenderer from "./ResponseRenderer";
+import {
+  canonicalAgentLabel,
+  canonicalStepLabel,
+  isWorkRole,
+  resolveCanonicalRole,
+} from "../lib/agentIdentity";
 
 interface TaskDetailProps {
   task: InboxTask;
@@ -69,15 +76,17 @@ interface MissionData {
   }>;
 }
 
-/* ---- Role label helper (keeps TaskDetail independent of AgentDetailPanel internals) ---- */
-const AGENT_LABELS: Record<string, string> = {
-  master: "Chief Architect", planner: "Project Manager", coder: "Software Engineer",
-  reviewer: "Code Reviewer", security: "Security Engineer", qa: "QA Engineer",
-  devops: "DevOps Engineer", sre: "SRE Engineer", lead: "Tech Lead",
-  rigour: "Quality Gates", memory: "Knowledge Base",
-};
-function agentLabel(role: string): string {
-  return AGENT_LABELS[role.toLowerCase()] ?? (role.charAt(0).toUpperCase() + role.slice(1));
+function progressFromSteps(steps: TaskStep[]): { completed: number; total: number } {
+  const byRole = new Map<string, { completed: boolean }>();
+  for (const s of steps) {
+    const role = resolveCanonicalRole(s.agent_role || s.agent);
+    if (!isWorkRole(role)) continue;
+    const prev = byRole.get(role) ?? { completed: false };
+    if (s.status === "complete") prev.completed = true;
+    byRole.set(role, prev);
+  }
+  const completed = Array.from(byRole.values()).filter((v) => v.completed).length;
+  return { completed, total: byRole.size };
 }
 
 /* ---- Elapsed time hook ---- */
@@ -114,23 +123,36 @@ function getPhase(status: string) {
 /* ================================================================== */
 /*  ProcessingState                                                    */
 /* ================================================================== */
-function ProcessingState({ status }: { status: string }) {
+function ProcessingState({
+  status,
+  taskType,
+  latestDecision,
+  startedAt,
+}: {
+  status: string;
+  taskType?: string;
+  latestDecision?: string;
+  startedAt?: string | null;
+}) {
   const st = status.toLowerCase();
   const isFailed    = st.includes("fail") || st.includes("reject");
   const isCompleted = st.includes("complete");
   const isTerminal  = isFailed || isCompleted;
 
-  /* Live elapsed timer */
+  /* Live elapsed timer (stable across remounts when startedAt is provided) */
   const startRef = useRef(Date.now());
   const [elapsed, setElapsed] = useState(0);
+  const elapsedFromStart = useElapsed(startedAt ?? null);
   useEffect(() => {
     if (isTerminal) return;
+    if (startedAt) return; // useElapsed handles the timer when backend timestamp exists
     const id = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)), 1000);
     return () => clearInterval(id);
-  }, [isTerminal]);
+  }, [isTerminal, startedAt]);
   const mins = Math.floor(elapsed / 60);
   const secs = elapsed % 60;
-  const elapsedStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  const fallbackElapsed = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  const elapsedStr = elapsedFromStart ?? fallbackElapsed;
 
   if (isTerminal) {
     return (
@@ -169,6 +191,16 @@ function ProcessingState({ status }: { status: string }) {
       <div className="mt-4 rounded-xl border border-[var(--border)] bg-[rgba(0,0,0,0.03)] p-4">
         <h3 className="text-sm font-semibold" style={{ color: "var(--t1)" }}>{phase.title}</h3>
         <p className="mt-1 text-[13px] leading-relaxed" style={{ color: "var(--t3)" }}>{phase.desc}</p>
+        {taskType && taskType !== "unclassified" && (
+          <p className="mt-2 text-[11px]" style={{ color: "var(--t3)" }}>
+            Intent detected: <span className="font-semibold capitalize" style={{ color: "var(--t2)" }}>{taskType}</span>
+          </p>
+        )}
+        {latestDecision && (
+          <p className="mt-1 text-[11px]" style={{ color: "var(--t3)" }}>
+            Latest decision: {latestDecision}
+          </p>
+        )}
       </div>
       {/* Progress steps — show which phases are done */}
       <div className="mt-3 flex items-center gap-3">
@@ -273,10 +305,10 @@ function AgentStatusStrip({ steps }: { steps: TaskStep[] }) {
             )}
             <div
               className={`pipeline-node ${isRunning ? "running pipeline-running" : step.status}`}
-              title={`${step.agent}: ${step.status}`}
+              title={`${step.agent_name || step.agent}: ${step.status}`}
             >
               <span className="pipeline-dot" />
-              <span>{step.agent.charAt(0).toUpperCase() + step.agent.slice(1)}</span>
+              <span>{step.agent_name || canonicalAgentLabel(step.agent_role || step.agent)}</span>
             </div>
           </div>
         );
@@ -380,7 +412,7 @@ function InlineLogViewer({ steps, taskStatus }: InlineLogViewerProps) {
                 <span className="ilv-chevron">{isOpen ? "▾" : "▸"}</span>
                 <span className="ilv-status-icon" style={{ color: statusColor }}>{statusIcon}</span>
                 <span className="ilv-agent-name">
-                  {step.agent_name || step.agent}
+                  {canonicalStepLabel(step)}
                 </span>
                 <div className="ilv-block-meta">
                   {gatesFailed > 0 && (
@@ -429,7 +461,7 @@ function InlineLogViewer({ steps, taskStatus }: InlineLogViewerProps) {
                   )}
                   {/* main agent output text */}
                   {step.output ? (
-                    <pre className="ilv-pre">{step.output}</pre>
+                    <ResponseRenderer output={step.output} maxHeightClass="max-h-[420px]" />
                   ) : (
                     step.status === "running"
                       ? <div className="ilv-running-pulse">Running<span className="ilv-dots" /></div>
@@ -566,13 +598,12 @@ function NowStrip({ steps }: { steps: TaskStep[] }) {
   const elapsed = useElapsed(running?.started_at ?? null);
   if (!running) return null;
 
-  const done  = steps.filter(s => s.status === "complete").length;
-  const total = steps.length;
+  const { completed: done, total } = progressFromSteps(steps);
 
   return (
     <div className="td-now-strip">
       <span className="td-now-pulse"><span /><span /><span /></span>
-      <span className="td-now-agent">{agentLabel(running.agent).toUpperCase()}</span>
+      <span className="td-now-agent">{canonicalAgentLabel(running.agent_role || running.agent).toUpperCase()}</span>
       <span className="td-now-sep">·</span>
       <span className="td-now-progress">{done} of {total} agents done</span>
       {elapsed && (
@@ -613,7 +644,7 @@ function FailureBar({ steps, mission, onSelect, pipelineError }: {
       <button type="button" className="td-failure-bar" onClick={() => onSelect(failedStep.agent)}>
         <span className="td-failure-icon">✕</span>
         <div className="td-failure-body">
-          <span className="td-failure-who">{agentLabel(failedStep.agent)} failed</span>
+          <span className="td-failure-who">{canonicalAgentLabel(failedStep.agent_role || failedStep.agent)} failed</span>
           {reason && <span className="td-failure-reason">{reason.slice(0, 160)}</span>}
         </div>
         <span className="td-failure-cta">Inspect →</span>
@@ -760,6 +791,26 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
   const replanCount = mission?.workflow.replan_triggered ?? 0;
   const allGates    = detail?.steps.flatMap(s => s.gate_results) ?? [];
   const gatesFailed = allGates.filter(g => !g.passed).length;
+  const expectedAgents =
+    mission?.team.size && mission.team.size > 0
+      ? mission.team.size
+      : (detail?.planned_roles?.length && detail.planned_roles.length > 0
+          ? detail.planned_roles.length
+          : (detail?.steps.length ?? 0));
+  const liveStepsCost = (detail?.steps ?? []).reduce((sum, s) => sum + (s.cost_usd ?? 0), 0);
+  const mapTotalCost = (costs?.total_cost_usd && costs.total_cost_usd > 0) ? costs.total_cost_usd : liveStepsCost;
+  const completedBaseRoles = new Set(
+    (detail?.steps ?? [])
+      .filter((s) => s.status === "complete")
+      .map((s) => resolveCanonicalRole(s.agent_role || s.agent))
+  );
+  const preferredRoleOrder = ["planner", "coder", "reviewer", "security", "qa", "devops", "sre", "lead"];
+  const missionRoles = (
+    mission?.team.roles?.length
+      ? mission.team.roles
+      : (detail?.planned_roles ?? [])
+  ).map(resolveCanonicalRole);
+  const nextRole = preferredRoleOrder.find((r) => missionRoles.includes(r) && !completedBaseRoles.has(r)) ?? null;
 
   return (
     <div className="animate-fadeup h-full flex flex-col">
@@ -870,6 +921,7 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
 
       {/* ── Quality summary bar ── */}
       {hasSteps && <QualitySummaryBar steps={detail!.steps} detail={detail} />}
+      {mission && <MissionControl mission={mission} />}
 
       {/* ── Split layout: map or timeline (left) + agent detail (right) ── */}
       <div className={`td-map-layout flex-1 min-h-0 ${leftOpen ? "" : "td-map-layout--collapsed"}`}>
@@ -892,7 +944,12 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
           <div className={`td-map-left ${leftOpen ? "" : "td-panel-hidden"}`}>
             {isProcessing ? (
               <div className="td-map-processing">
-                <ProcessingState status={task.status} />
+                <ProcessingState
+                  status={task.status}
+                  taskType={detail?.task_type || mission?.task_type}
+                  latestDecision={mission?.decision_trace?.slice(-1)[0]?.summary}
+                  startedAt={detail?.started_at ?? detail?.created_at ?? null}
+                />
               </div>
             ) : (
               <NeuralCalibrationMap
@@ -900,8 +957,11 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
                 taskStatus={task.status}
                 taskType={detail.task_type}
                 collab={collab}
+                plannedRoles={detail.planned_roles ?? []}
                 totalFiles={totalFiles}
-                totalCost={costs?.total_cost_usd ?? 0}
+                totalCost={mapTotalCost}
+                expectedAgents={expectedAgents}
+                nextExpectedRole={nextRole ? canonicalAgentLabel(nextRole) : null}
                 replanCount={replanCount}
                 gatesTotal={allGates.length}
                 gatesFailed={gatesFailed}
@@ -913,7 +973,14 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
         ) : viewMode === "timeline" ? (
           <div className={`td-timeline-left ${leftOpen ? "" : "td-panel-hidden"}`}>
             {isProcessing ? (
-              <div className="p-4"><ProcessingState status={task.status} /></div>
+              <div className="p-4">
+                <ProcessingState
+                  status={task.status}
+                  taskType={detail?.task_type || mission?.task_type}
+                  latestDecision={mission?.decision_trace?.slice(-1)[0]?.summary}
+                  startedAt={detail?.started_at ?? detail?.created_at ?? null}
+                />
+              </div>
             ) : (
               <AgentTimeline
                 steps={detail.steps}
@@ -944,6 +1011,8 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
             collab={collab}
             costs={costs}
             totalFiles={totalFiles}
+            expectedAgents={expectedAgents}
+            nextExpectedRole={nextRole ? canonicalAgentLabel(nextRole) : null}
             replanCount={replanCount}
             onOpenFiles={openFilesDrawer}
             isApproval={isApproval}

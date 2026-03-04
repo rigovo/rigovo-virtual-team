@@ -93,7 +93,7 @@ INTENT_PROFILES: dict[str, IntentProfile] = {
         max_agents=12,  # Full pipeline
         max_tool_rounds=25,
         max_file_reads=0,  # 0 = unlimited
-        token_budget=500_000,
+        token_budget=300_000,
         planner_mode="survey",
         confidence=0.0,
         matched_signal="",
@@ -279,6 +279,10 @@ async def intent_gate_node(state: TaskState) -> dict[str, Any]:
     class_hint = classification or deterministic
 
     profile = detect_intent(description, class_hint)
+    configured_budget_cap = int(state.get("budget_max_tokens_per_task", 0) or 0)
+    effective_token_budget = profile.token_budget
+    if configured_budget_cap > 0:
+        effective_token_budget = min(profile.token_budget, configured_budget_cap)
 
     events = list(state.get("events", []))
     events.append(
@@ -290,7 +294,8 @@ async def intent_gate_node(state: TaskState) -> dict[str, Any]:
             "max_agents": profile.max_agents,
             "max_tool_rounds": profile.max_tool_rounds,
             "max_file_reads": profile.max_file_reads,
-            "token_budget": profile.token_budget,
+            "token_budget": effective_token_budget,
+            "configured_budget_cap": configured_budget_cap,
             "planner_mode": profile.planner_mode,
         }
     )
@@ -304,7 +309,7 @@ async def intent_gate_node(state: TaskState) -> dict[str, Any]:
         profile.max_agents,
         profile.max_tool_rounds,
         profile.max_file_reads or "unlimited",
-        profile.token_budget // 1000,
+        effective_token_budget // 1000,
     )
 
     return {
@@ -313,11 +318,11 @@ async def intent_gate_node(state: TaskState) -> dict[str, Any]:
             "max_agents": profile.max_agents,
             "max_tool_rounds": profile.max_tool_rounds,
             "max_file_reads": profile.max_file_reads,
-            "token_budget": profile.token_budget,
+            "token_budget": effective_token_budget,
             "planner_mode": profile.planner_mode,
             "confidence": profile.confidence,
             "matched_signal": profile.matched_signal,
         },
-        "budget_max_tokens_per_task": profile.token_budget,
+        "budget_max_tokens_per_task": effective_token_budget,
         "events": events,
     }

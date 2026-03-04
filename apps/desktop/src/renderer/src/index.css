@@ -1290,7 +1290,8 @@
     :root:not([data-theme="light"]) .role-badge-indigo  { background: rgba(129,140,248,0.12); color: #818cf8; }
   }
 
-  .narrative-block    { }
+  .narrative-block    { margin-bottom: 10px; }
+  .narrative-block:last-child { margin-bottom: 0; }
   .narrative-kickoff  { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 12px 16px; background: rgba(0,0,0,0.01); }
   .narrative-decision { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 8px 12px; background: rgba(0,0,0,0.01); }
   .narrative-event-card { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 16px; }

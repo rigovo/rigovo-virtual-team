@@ -6,6 +6,10 @@
 import type { TaskStep, GateResult } from "../types";
 import type { CollaborationData, CostData } from "./AgentTimeline";
 import ResponseRenderer from "./ResponseRenderer";
+import {
+  canonicalStepLabel as canonicalStepLabelForStep,
+  resolveCanonicalRole,
+} from "../lib/agentIdentity";
 
 /* ═══════════════════════════════════════════════════════════════════ */
 /*  Role metadata — Professional titles + colours                       */
@@ -25,35 +29,23 @@ const ROLE_META: Record<string, { label: string; subtitle: string; color: string
   docs:     { label: "Technical Writer",    subtitle: "Documentation",       color: "#a8a29e", icon: "📝" },
 };
 
-/** Map of instance agent keyword → base role key (for "backend-engineer-1" etc.) */
-const BASE_ROLE_KW: Record<string, string> = {
-  backend: "coder", frontend: "coder", engineer: "coder", developer: "coder",
-  dev: "coder", programmer: "coder", implementer: "coder",
-  planner: "planner", architect: "planner",
-  reviewer: "reviewer", review: "reviewer",
-  qa: "qa", tester: "qa", test: "qa",
-  security: "security", sec: "security",
-  devops: "devops", infra: "devops", deploy: "devops",
-  sre: "sre", reliability: "sre", ops: "sre",
-  docs: "docs", documentation: "docs", writer: "docs",
-  lead: "lead", coordinator: "lead",
-};
-
 function roleMeta(role: string) {
-  const r = role.toLowerCase();
+  const r = resolveCanonicalRole(role);
   if (ROLE_META[r]) return ROLE_META[r];
 
-  // Instance agent resolution: "backend-engineer-1" → coder
-  const parts = r.split("-").filter(p => !/^\d+$/.test(p));
-  for (const part of parts) {
-    const baseKey = BASE_ROLE_KW[part];
-    if (baseKey && ROLE_META[baseKey]) {
-      const humanLabel = role.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-      return { ...ROLE_META[baseKey], label: humanLabel };
-    }
-  }
-
   return { label: r.charAt(0).toUpperCase() + r.slice(1), subtitle: "Agent", color: "#a3a3a3", icon: "🤖" };
+}
+
+function resolveBaseRole(role: string): string {
+  return resolveCanonicalRole(role);
+}
+
+function isWorkRole(role: string): boolean {
+  return !["master", "memory", "rigour", "trinity"].includes(role);
+}
+
+function canonicalStepLabel(step: TaskStep): string {
+  return canonicalStepLabelForStep(step);
 }
 
 /* ═══════════════════════════════════════════════════════════════════ */
@@ -66,6 +58,8 @@ export interface AgentDetailPanelProps {
   collab:        CollaborationData | null;
   costs:         CostData | null;
   totalFiles:    number;
+  expectedAgents?: number;
+  nextExpectedRole?: string | null;
   replanCount:   number;
   onOpenFiles:   (agent: string, files: string[]) => void;
   onApprove?:    () => void;
@@ -301,7 +295,7 @@ function AgentHeader({ step, role, agentCost }: AgentHeaderProps) {
       <div className="adp-agent-badge" style={{ borderColor: meta.color + "44", background: meta.color + "12" }}>
         <span className="adp-agent-icon">{meta.icon}</span>
         <div>
-          <span className="adp-agent-codename" style={{ color: meta.color }}>{meta.label}</span>
+          <span className="adp-agent-codename" style={{ color: meta.color }}>{canonicalStepLabel(step)}</span>
           <span className="adp-agent-role">{meta.subtitle}</span>
         </div>
         <span className="adp-agent-status" style={{ color: statusColor(step.status) }}>
@@ -440,12 +434,40 @@ function resolveActiveRole(selectedRole: string | null, steps: TaskStep[]): stri
 
 export default function AgentDetailPanel({
   steps, taskStatus, selectedRole, collab, costs,
-  totalFiles, replanCount, onOpenFiles, onApprove, onReject, isApproval,
+  totalFiles, expectedAgents, nextExpectedRole, replanCount, onOpenFiles, onApprove, onReject, isApproval,
 }: AgentDetailPanelProps) {
 
   const activeRole = resolveActiveRole(selectedRole, steps);
   const step = activeRole ? steps.find(s => s.agent === activeRole) : null;
-  const agentCost = activeRole ? costs?.per_agent?.[activeRole.toLowerCase()]?.cost_usd : undefined;
+  const activeBaseRole = step?.agent_role || (activeRole ? resolveBaseRole(activeRole) : null);
+  const activeCostKey = (step?.agent_instance || activeRole || "").toLowerCase();
+  const agentCost =
+    activeRole
+      ? (
+        costs?.per_agent?.[activeCostKey]?.cost_usd ??
+        (activeBaseRole ? costs?.per_agent?.[activeBaseRole]?.cost_usd : undefined) ??
+        step?.cost_usd
+      )
+      : undefined;
+  const completedCount = (() => {
+    const byRole = new Map<string, boolean>();
+    steps.forEach((s) => {
+      const role = resolveBaseRole(s.agent_role || s.agent);
+      if (!isWorkRole(role)) return;
+      const prev = byRole.get(role) ?? false;
+      byRole.set(role, prev || s.status === "complete");
+    });
+    return Array.from(byRole.values()).filter(Boolean).length;
+  })();
+  const totalAgentCount = expectedAgents && expectedAgents > 0
+    ? expectedAgents
+    : new Set(
+      steps
+        .map((s) => resolveBaseRole(s.agent_role || s.agent))
+        .filter((r) => isWorkRole(r)),
+    ).size;
+  const isActive = !taskStatus.toLowerCase().includes("complete") && !taskStatus.toLowerCase().includes("fail") && !taskStatus.toLowerCase().includes("reject");
+  const hasRunning = steps.some(s => s.status === "running");
 
   return (
     <div className="adp-root">
@@ -456,7 +478,17 @@ export default function AgentDetailPanel({
 
       {activeRole && step && (
         <div className="adp-content">
-          <AgentHeader step={step} role={activeRole} agentCost={agentCost} />
+          <AgentHeader step={step} role={activeBaseRole || activeRole} agentCost={agentCost} />
+          {isActive && !hasRunning && step.status === "complete" && totalAgentCount > completedCount && (
+            <div className="adp-section" style={{ marginTop: 8 }}>
+              <div className="adp-section-hdr">
+                <span className="adp-section-icon">⏳</span>
+                <span className="adp-section-title">
+                  Waiting for next agent{nextExpectedRole ? `: ${nextExpectedRole}` : ""}
+                </span>
+              </div>
+            </div>
+          )}
           <ExecutionLogSection step={step} />
           <GateSection step={step} />
           <FileList
@@ -464,7 +496,7 @@ export default function AgentDetailPanel({
             agent={activeRole}
             onOpen={() => onOpenFiles(activeRole, step.files_changed)}
           />
-          <ConsultationList role={activeRole} collab={collab} />
+          <ConsultationList role={activeBaseRole || activeRole} collab={collab} />
           <AgentOutput step={step} />
           <TeamCommsPanel collab={collab} />
         </div>
@@ -486,7 +518,7 @@ export default function AgentDetailPanel({
           <span className="adp-sum-sep" />
           <span className="adp-sum-item">
             <span className="adp-sum-num">
-              {steps.filter(s => s.status === "complete").length}/{steps.length}
+              {completedCount}/{totalAgentCount}
             </span>
             <span className="adp-sum-lbl">agents</span>
           </span>

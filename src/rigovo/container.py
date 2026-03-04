@@ -273,6 +273,12 @@ class Container:
             enable_streaming=enable_streaming,
             enable_parallel=enable_parallel,
             auto_approve=auto_approve,
+            budget_max_cost_per_task=float(
+                self.config.yml.orchestration.budget.max_cost_per_task
+            ),
+            budget_max_tokens_per_task=int(
+                self.config.yml.orchestration.budget.max_tokens_per_task
+            ),
         )
         # Inject per-agent model overrides from LLM_AGENT_MODELS env var
         cmd._agent_model_overrides = self.config.llm.agent_model_overrides

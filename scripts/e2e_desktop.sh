@@ -10,6 +10,8 @@ CALLBACK_URI="http://127.0.0.1:${API_PORT}/v1/auth/callback"
 API_LOG="${ROOT_DIR}/.rigovo/e2e-api.log"
 API_PID=""
 E2E_INSTALL="${RIGOVO_E2E_INSTALL:-auto}" # auto|always|never
+PY_INSTALL="${RIGOVO_E2E_PY_INSTALL:-auto}" # auto|always|never
+PY_INSTALL_TIMEOUT="${RIGOVO_E2E_PY_INSTALL_TIMEOUT:-300}" # seconds
 
 cleanup() {
   echo "[rigovo] cleaning up..."
@@ -80,25 +82,45 @@ fi
 echo "[rigovo] WorkOS client ID: embedded in config.py (public)"
 echo "[rigovo] API keys: stored encrypted in .rigovo/local.db (set via Settings UI)"
 
-# ── Install Python dependencies ──
+# ── Install Python dependencies (optional) ──
 # IMPORTANT: use python3 -m pip (not bare pip) to guarantee packages go into
 # the SAME Python that will run the API server.
-echo "[rigovo] installing Python dependencies (python3 -m pip)..."
-python3 -m pip install -e "${ROOT_DIR}[dev]" --quiet 2>&1 | tail -5 || {
-  echo "[rigovo] WARNING: pip install failed, trying without --quiet..."
-  python3 -m pip install -e "${ROOT_DIR}[dev]" 2>&1 | tail -20
+run_with_timeout() {
+  local timeout_s="$1"
+  shift
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "${timeout_s}" "$@"
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout "${timeout_s}" "$@"
+  else
+    "$@"
+  fi
 }
 
-# Verify critical dependency: psycopg (required for PostgreSQL backend)
-if ! python3 -c "import psycopg" 2>/dev/null; then
-  echo "[rigovo] psycopg not found after install — installing directly..."
-  python3 -m pip install "psycopg[binary]>=3.2" 2>&1 | tail -5
-  if ! python3 -c "import psycopg" 2>/dev/null; then
-    echo "[rigovo] ERROR: psycopg still not importable. PostgreSQL features will not work."
-    echo "[rigovo] Try manually: python3 -m pip install 'psycopg[binary]'"
+if [[ "${PY_INSTALL}" == "always" ]] || [[ "${PY_INSTALL}" == "auto" ]]; then
+  echo "[rigovo] installing Python dependencies (python3 -m pip, timeout=${PY_INSTALL_TIMEOUT}s)..."
+  if ! run_with_timeout "${PY_INSTALL_TIMEOUT}" python3 -m pip install -e "${ROOT_DIR}[dev]" --quiet 2>&1 | tail -5; then
+    echo "[rigovo] WARNING: pip install timed out or failed."
+    echo "[rigovo]          set RIGOVO_E2E_PY_INSTALL=never if env is already prepared."
   fi
+elif [[ "${PY_INSTALL}" == "never" ]]; then
+  echo "[rigovo] skipping Python install (RIGOVO_E2E_PY_INSTALL=never)"
 fi
-python3 -c "import psycopg; print(f'[rigovo] psycopg {psycopg.__version__} OK')" 2>/dev/null || true
+
+# Verify critical dependency: psycopg (required for PostgreSQL backend)
+if [[ "${PY_INSTALL}" != "never" ]]; then
+  if ! python3 -c "import psycopg" 2>/dev/null; then
+    echo "[rigovo] psycopg not found after install — installing directly..."
+    python3 -m pip install "psycopg[binary]>=3.2" 2>&1 | tail -5
+    if ! python3 -c "import psycopg" 2>/dev/null; then
+      echo "[rigovo] ERROR: psycopg still not importable. PostgreSQL features will not work."
+      echo "[rigovo] Try manually: python3 -m pip install 'psycopg[binary]'"
+    fi
+  fi
+  python3 -c "import psycopg; print(f'[rigovo] psycopg {psycopg.__version__} OK')" 2>/dev/null || true
+else
+  echo "[rigovo] skipped psycopg check (RIGOVO_E2E_PY_INSTALL=never)"
+fi
 
 # ── Install desktop deps if needed ──
 if [[ "${E2E_INSTALL}" == "always" ]] || [[ "${E2E_INSTALL}" == "auto" && ! -d "${DESKTOP_DIR}/node_modules" ]]; then

@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { TaskStep } from "../types";
 import ResponseRenderer from "./ResponseRenderer";
+import {
+  canonicalStepLabel as canonicalStepLabelForStep,
+  resolveCanonicalRole,
+  stepRoleKey as canonicalStepRoleKey,
+} from "../lib/agentIdentity";
 
 type NarrativeKind = "action" | "challenge";
 
@@ -28,45 +33,14 @@ const ROLES: Record<string, RoleMeta> = {
 const REVIEW_ROLES = new Set(["reviewer", "qa", "security"]);
 
 /**
- * Map of instance agent base-role keywords to base role keys.
- * Handles names like "backend-engineer-1", "frontend-dev-2", "qa-lead-1".
- */
-const BASE_ROLE_KEYWORDS: Record<string, string> = {
-  backend: "coder", frontend: "coder", engineer: "coder", developer: "coder",
-  dev: "coder", programmer: "coder", implementer: "coder",
-  planner: "planner", architect: "planner",
-  reviewer: "reviewer", review: "reviewer",
-  qa: "qa", tester: "qa", test: "qa",
-  security: "security", sec: "security",
-  devops: "devops", infra: "devops", deploy: "devops",
-  sre: "sre", reliability: "sre", ops: "sre",
-  docs: "docs", documentation: "docs", writer: "docs",
-  lead: "lead", coordinator: "lead",
-};
-
-/**
  * Resolve a role string to its visual metadata.
  * Supports both base roles ("coder") and instance agents ("backend-engineer-1").
  */
 function roleMeta(role: string): RoleMeta {
-  const lower = role.toLowerCase();
+  const lower = resolveCanonicalRole(role);
 
   // Direct match on known roles
   if (ROLES[lower]) return ROLES[lower];
-
-  // Instance agent resolution: split by hyphens, find base role from keywords
-  const parts = lower.split("-").filter(p => !/^\d+$/.test(p)); // strip numeric suffixes
-  for (const part of parts) {
-    const baseKey = BASE_ROLE_KEYWORDS[part];
-    if (baseKey && ROLES[baseKey]) {
-      // Build a label from the original role name (humanized)
-      const label = role
-        .split("-")
-        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-        .join(" ");
-      return { ...ROLES[baseKey], label };
-    }
-  }
 
   return {
     icon: "\uD83E\uDD16",
@@ -80,12 +54,16 @@ function roleMeta(role: string): RoleMeta {
   };
 }
 
-/** Convert a raw role key or instance_id to a human-readable display name.
- *  "planner" → "Project Manager", "security" → "Security Engineer",
- *  "backend-engineer-1" → "Backend Engineer 1"
- */
-function roleLabel(role: string): string {
-  return roleMeta(role).label;
+function canonicalStepLabel(step: TaskStep): string {
+  return canonicalStepLabelForStep(step);
+}
+
+function stepRoleKey(step: TaskStep): string {
+  return canonicalStepRoleKey(step);
+}
+
+function stepInstanceKey(step: TaskStep): string {
+  return (step.agent_instance || step.agent).toLowerCase();
 }
 
 function statusTone(status: TaskStep["status"]): string {
@@ -98,7 +76,7 @@ function statusTone(status: TaskStep["status"]): string {
 function eventKind(step: TaskStep): NarrativeKind {
   if (step.status === "failed") return "challenge";
   if (step.gate_results.some((g) => !g.passed)) return "challenge";
-  if (REVIEW_ROLES.has(step.agent.toLowerCase())) return "challenge";
+  if (REVIEW_ROLES.has((step.agent_role || step.agent).toLowerCase())) return "challenge";
   return "action";
 }
 
@@ -175,7 +153,15 @@ export interface GovernanceData {
 export interface CostData {
   total_tokens: number;
   total_cost_usd: number;
-  per_agent: Record<string, { input_tokens: number; output_tokens: number; cost_usd: number; model: string }>;
+  per_agent: Record<string, {
+    input_tokens: number;
+    output_tokens: number;
+    cost_usd: number;
+    model: string;
+    agent_role?: string;
+    agent_instance?: string;
+    agent_name?: string;
+  }>;
 }
 
 /* ── Sub-components ── */
@@ -399,7 +385,8 @@ function EventCard({ step, index, costUsd, onOpenFiles }: {
   costUsd?: number;
   onOpenFiles?: () => void;
 }) {
-  const role = roleMeta(step.agent);
+  const role = roleMeta(step.agent_role || step.agent);
+  const roleLabelText = canonicalStepLabel(step);
   const kind = eventKind(step);
   const running = step.status === "running";
   const failed  = step.status === "failed";
@@ -418,7 +405,7 @@ function EventCard({ step, index, costUsd, onOpenFiles }: {
       <header className="narrative-event-head">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-base">{role.icon}</span>
-          <span className={`text-sm font-semibold ${role.color}`}>{role.label}</span>
+          <span className={`text-sm font-semibold ${role.color}`}>{roleLabelText}</span>
           <span className={`text-[10px] font-medium uppercase ${statusTone(step.status)}`}>{step.status}</span>
         </div>
         <div className="flex items-center gap-2">
@@ -568,6 +555,16 @@ export default function AgentTimeline({ steps, taskType, collab, gov, costs, onO
     [steps],
   );
   const queued = useMemo(() => steps.filter((s) => !visibleSteps.includes(s)), [steps, visibleSteps]);
+  const costByRole = useMemo(() => {
+    const map: Record<string, number> = {};
+    const entries = Object.values(costs?.per_agent ?? {});
+    for (const entry of entries) {
+      const role = String(entry.agent_role || "").trim().toLowerCase();
+      if (!role) continue;
+      map[role] = (map[role] ?? 0) + (entry.cost_usd ?? 0);
+    }
+    return map;
+  }, [costs]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -617,26 +614,34 @@ export default function AgentTimeline({ steps, taskType, collab, gov, costs, onO
   const orphanGov    = (gov?.timeline ?? []).filter((_, i) => !usedGovIds.has(i));
 
   return (
-    <div className="space-y-3 pb-4">
+    <div className="space-y-5 pb-4">
       <OrchestratorKickoff taskType={taskType} count={steps.length} />
 
       {visibleSteps.map((step, idx) => {
         const prev = idx > 0 ? visibleSteps[idx - 1] : null;
-        const showDecision = idx === 0 || prev?.agent !== step.agent;
+        const showDecision = idx === 0 || !prev || stepInstanceKey(prev) !== stepInstanceKey(step);
         const { collabEvents, govEvents } = eventsForStep(step);
-        const agentCost = costs?.per_agent?.[step.agent.toLowerCase()]?.cost_usd;
+        const agentCost =
+          costs?.per_agent?.[stepInstanceKey(step)]?.cost_usd ??
+          costs?.per_agent?.[stepRoleKey(step)]?.cost_usd ??
+          costByRole[stepRoleKey(step)];
 
         return (
-          <div key={`${step.agent}-${idx}`} className="narrative-block">
+          <div key={`${step.agent_instance || step.agent}-${idx}`} className="narrative-block">
             {showDecision && (
-              <DecisionCard from={prev?.agent ?? null} to={step.agent} first={idx === 0} index={idx} />
+              <DecisionCard
+                from={(prev?.agent_role || prev?.agent) ?? null}
+                to={step.agent_role || step.agent}
+                first={idx === 0}
+                index={idx}
+              />
             )}
 
             <EventCard
               step={step}
               index={idx}
               costUsd={agentCost}
-              onOpenFiles={step.files_changed.length > 0 ? () => onOpenFiles?.(step.agent, step.files_changed) : undefined}
+              onOpenFiles={step.files_changed.length > 0 ? () => onOpenFiles?.(step.agent_instance || step.agent, step.files_changed) : undefined}
             />
 
             {/* Inline collab events for this step — agent-to-agent conversation, memory injection */}
@@ -677,10 +682,10 @@ export default function AgentTimeline({ steps, taskType, collab, gov, costs, onO
           <p className="narrative-meta-label">Queued agents</p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {queued.map((q, idx) => {
-              const role = roleMeta(q.agent);
+              const role = roleMeta(q.agent_role || q.agent);
               return (
-                <span key={`${q.agent}-${idx}`} className={`rounded-md px-2 py-0.5 text-[10px] ${role.color} bg-[rgba(0,0,0,0.03)]`}>
-                  {role.label}
+                <span key={`${q.agent_instance || q.agent}-${idx}`} className={`rounded-md px-2 py-0.5 text-[10px] ${role.color} bg-[rgba(0,0,0,0.03)]`}>
+                  {canonicalStepLabel(q)}
                 </span>
               );
             })}

@@ -155,7 +155,18 @@ function startEngine(
   const status = engineStatus(host, port);
   if (status.running) return status;
 
-  const rigovoBin = String(process.env.RIGOVO_BIN ?? "rigovo").trim() || "rigovo";
+  const resolveRigovoBin = (): string => {
+    const fromEnv = String(process.env.RIGOVO_BIN ?? "").trim();
+    if (fromEnv) return fromEnv;
+
+    // Prefer repo-local virtualenv binary in dev to avoid running stale global installs.
+    const localVenvBin = resolve(process.cwd(), ".venv", "bin", "rigovo");
+    if (existsSync(localVenvBin)) return localVenvBin;
+
+    return "rigovo";
+  };
+
+  const rigovoBin = resolveRigovoBin();
   const args = ["serve", "--host", host, "--port", String(port)];
   let safeProjectDir: string | undefined;
   const candidate = projectDir ? String(projectDir).trim() : "";

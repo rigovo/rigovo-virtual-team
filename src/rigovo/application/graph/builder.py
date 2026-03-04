@@ -376,9 +376,11 @@ class GraphBuilder:
         graph.add_node("finalize", _finalize)
 
         # --- Edges ---
-        # Pipeline: scan → classify → intent_gate → route_team → assemble → plan_approval
-        graph.add_edge(START, "scan_project")
-        graph.add_edge("scan_project", "classify")
+        # Pipeline (intent-first): classify → intent_gate → route_team → assemble
+        # → plan_approval → scan_project → execute_agent.
+        # This allows Master Brain intent understanding to appear immediately
+        # and defers heavier repo perception until execution is confirmed.
+        graph.add_edge(START, "classify")
         graph.add_edge("classify", "intent_gate")
         graph.add_edge("intent_gate", "route_team")
         graph.add_edge("route_team", "assemble")
@@ -388,10 +390,11 @@ class GraphBuilder:
             "plan_approval",
             check_approval,
             {
-                "approved": "execute_agent",
+                "approved": "scan_project",
                 "rejected": "finalize",
             },
         )
+        graph.add_edge("scan_project", "execute_agent")
 
         # Agent execution → verify execution → reclassify check → quality gates
         graph.add_edge("execute_agent", "verify_execution")
@@ -494,18 +497,14 @@ class GraphBuilder:
         resolved_agents = agents if agents is not None else self._agents
         state = dict(initial_state)
 
-        # 0. Scan project — perception BEFORE reasoning
-        update = await scan_project_node(state)
-        state.update(update)
-
-        # 1. Classify (with project context available)
+        # 0. Classify first — prioritize immediate intent understanding.
         if self._classifier is not None:
             update = await classify_node(state, self._master_llm, classifier=self._classifier)
         else:
             update = await classify_node(state, self._master_llm)
         state.update(update)
 
-        # 1b. Intent Gate — detect user intent and set constraints
+        # 0b. Intent Gate — detect user intent and set constraints
         update = await intent_gate_node(state)
         state.update(update)
 
@@ -544,7 +543,11 @@ class GraphBuilder:
             state.update(update)
             return state
 
-        # 4. Execute agents
+        # 4. Scan project before agent execution (deferred heavy step).
+        update = await scan_project_node(state)
+        state.update(update)
+
+        # 5. Execute agents
         pipeline_order = state.get("team_config", {}).get("pipeline_order", [])
 
         if self._enable_parallel:
@@ -567,7 +570,7 @@ class GraphBuilder:
         else:
             await self._run_sequential_agents(state, pipeline_order)
 
-        # 5. Commit approval
+        # 6. Commit approval
         update = await commit_approval_node(state)
         state.update(update)
         if self._auto_approve:
@@ -585,11 +588,11 @@ class GraphBuilder:
             state.update(update)
             return state
 
-        # 6. Enrich
+        # 7. Enrich
         update = await enrich_node(state, enricher=self._enricher, evaluator=self._evaluator)
         state.update(update)
 
-        # 7. Store memory
+        # 8. Store memory
         update = await store_memory_node(
             state,
             self._master_llm,
@@ -598,7 +601,7 @@ class GraphBuilder:
         )
         state.update(update)
 
-        # 8. Finalize
+        # 9. Finalize
         update = await finalize_node(state)
         state.update(update)
 

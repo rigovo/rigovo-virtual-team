@@ -40,6 +40,92 @@ _api_container: Container | None = None
 _api_logger = _logging.getLogger("rigovo.api")
 logger = _api_logger  # alias used throughout the module
 
+_ROLE_LABELS: dict[str, str] = {
+    "master": "Chief Architect",
+    "planner": "Project Manager",
+    "coder": "Software Engineer",
+    "reviewer": "Code Reviewer",
+    "security": "Security Engineer",
+    "qa": "QA Engineer",
+    "devops": "DevOps Engineer",
+    "sre": "SRE Engineer",
+    "lead": "Tech Lead",
+    "memory": "Knowledge Base",
+    "rigour": "Quality Gates",
+    "trinity": "Quality Gates",
+}
+_ROLE_KEYWORDS: dict[str, str] = {
+    "master": "master",
+    "architect": "master",
+    "planner": "planner",
+    "pm": "planner",
+    "manager": "planner",
+    "coder": "coder",
+    "engineer": "coder",
+    "software": "coder",
+    "developer": "coder",
+    "implementer": "coder",
+    "reviewer": "reviewer",
+    "review": "reviewer",
+    "security": "security",
+    "auditor": "security",
+    "qa": "qa",
+    "tester": "qa",
+    "test": "qa",
+    "devops": "devops",
+    "infra": "devops",
+    "sre": "sre",
+    "reliability": "sre",
+    "lead": "lead",
+    "memory": "memory",
+    "kb": "memory",
+    "knowledge": "memory",
+    "rigour": "rigour",
+    "trinity": "trinity",
+}
+_SINGLETON_ROLES = {"master", "memory", "rigour", "trinity"}
+
+
+def _normalize_step_status(raw: str | None) -> str:
+    s = str(raw or "").strip().lower()
+    if s == "completed":
+        return "complete"
+    return s or "pending"
+
+
+def _canonical_agent_identity(raw_role: str | None, raw_name: str | None = None) -> tuple[str, str, str]:
+    import re
+
+    role_source = str(raw_role or "").strip()
+    name_source = str(raw_name or "").strip()
+    lowered = role_source.lower()
+
+    if lowered in _ROLE_LABELS:
+        role = lowered
+    else:
+        parts = [p for p in re.split(r"[^a-z0-9]+", lowered) if p]
+        role = ""
+        for p in parts:
+            mapped = _ROLE_KEYWORDS.get(p)
+            if mapped:
+                role = mapped
+                break
+        if not role:
+            role = lowered or "unknown"
+
+    index = ""
+    for source in (lowered, name_source.lower()):
+        m = re.search(r"(\d+)$", source)
+        if m:
+            index = m.group(1)
+            break
+
+    instance = role if not index or role in _SINGLETON_ROLES else f"{role}-{index}"
+    label = _ROLE_LABELS.get(role, (name_source or role.replace("_", " ").title()))
+    if index and role not in _SINGLETON_ROLES:
+        label = f"{label} {index}"
+    return role, instance, label
+
 # ── Live agent progress tracker (in-memory, per-task) ──────────────
 # Populated by event emitter callbacks during graph execution.
 # The detail endpoint reads this for running tasks; completed tasks
@@ -295,17 +381,26 @@ def _on_agent_event(event: dict) -> None:
             )
         return
 
-    role = event.get("role", "")
+    role = str(event.get("role", "") or "").strip()
+    instance_id = str(event.get("instance_id", "") or "").strip()
     if not task_id or not role:
         return
 
     if task_id not in _live_agent_progress:
         _live_agent_progress[task_id] = {}
+    task_steps = _live_agent_progress[task_id]
+    role_key, canonical_instance, canonical_name = _canonical_agent_identity(
+        instance_id or role,
+        str(event.get("name", "") or ""),
+    )
+    step_key = canonical_instance or role_key or role
 
     if etype == "agent_started":
-        _live_agent_progress[task_id][role] = {
-            "agent": role,
-            "agent_name": event.get("name", role.replace("_", " ").title()),
+        task_steps[step_key] = {
+            "agent": canonical_instance,
+            "agent_role": role_key,
+            "agent_instance": canonical_instance,
+            "agent_name": canonical_name,
             "status": "running",
             "started_at": datetime.now(timezone.utc).isoformat(),
             "completed_at": None,
@@ -314,11 +409,13 @@ def _on_agent_event(event: dict) -> None:
             "gate_results": [],
         }
     elif etype == "agent_complete":
-        existing = _live_agent_progress[task_id].get(role, {})
-        _live_agent_progress[task_id][role] = {
+        existing = task_steps.get(step_key, {})
+        _live_agent_progress[task_id][step_key] = {
             **existing,
-            "agent": role,
-            "agent_name": event.get("name", role.replace("_", " ").title()),
+            "agent": canonical_instance,
+            "agent_role": role_key,
+            "agent_instance": canonical_instance,
+            "agent_name": canonical_name,
             "status": "complete",
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "output": event.get("summary", existing.get("output", "")),
@@ -335,7 +432,9 @@ def _on_agent_event(event: dict) -> None:
     elif etype == "gate_results":
         # Wire quality_check_node gate results into the agent's live step.
         # This fires after quality_check_node runs for this role.
-        existing = _live_agent_progress[task_id].get(role, {})
+        existing = task_steps.get(step_key, {})
+        if not existing and role_key:
+            existing = task_steps.get(role_key, {})
         if existing:
             passed = event.get("passed", True)
             violation_count = event.get("violations", 0)
@@ -611,6 +710,10 @@ def _percentile(values: list[float], pct: float) -> float:
 
 
 def _tier_from_task(task) -> str:
+    raw = str(getattr(task, "tier", "") or "").strip().lower()
+    if raw in {"auto", "notify", "approve"}:
+        return raw
+    # Legacy fallback for rows created before tier persistence.
     complexity = (task.complexity.value if task.complexity else "").lower()
     if task.status == TaskStatus.AWAITING_APPROVAL or complexity == "critical":
         return "approve"
@@ -800,6 +903,34 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         db = container.get_db()
         db.initialize()
         logger.info("Database schema initialized successfully")
+        # Recover orphaned "running" tasks from previous crashed/restarted API process.
+        # Task execution is in-process, so any active state at startup is stale.
+        active_statuses = (
+            TaskStatus.RUNNING.value,
+            TaskStatus.ASSEMBLING.value,
+            TaskStatus.ROUTING.value,
+            TaskStatus.CLASSIFYING.value,
+            TaskStatus.QUALITY_CHECK.value,
+        )
+        stale = db.fetchall(
+            "SELECT id FROM tasks WHERE status IN (?, ?, ?, ?, ?)",
+            active_statuses,
+        )
+        if stale:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            db.execute(
+                """UPDATE tasks
+                   SET status = ?, completed_at = ?, user_feedback = ?
+                   WHERE status IN (?, ?, ?, ?, ?)""",
+                (
+                    TaskStatus.FAILED.value,
+                    now_iso,
+                    "Recovered after API restart (previous run was interrupted). Please resume the task.",
+                    *active_statuses,
+                ),
+            )
+            db.commit()
+            logger.warning("Recovered %d orphaned running task(s) on startup", len(stale))
     except Exception:
         logger.warning(
             "Could not auto-initialize database — run `rigovo init` if errors persist",
@@ -854,6 +985,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "agent_consult_requested",
             "agent_consult_completed",
             "debate_round",
+            "feedback_loop",
             "integration_invoked",
             "integration_blocked",
             "replan_triggered",
@@ -1109,11 +1241,15 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
 
                 at_mentions = _re.findall(r"@([\w.\-/\\]+)", description)
                 if at_mentions:
-                    project_root = getattr(getattr(container, "config", None), "project_root", None)
-                    if project_root:
+                    mention_root = (
+                        _Path(workspace_path).expanduser()
+                        if str(workspace_path or "").strip()
+                        else getattr(getattr(container, "config", None), "project_root", None)
+                    )
+                    if mention_root:
                         file_blocks: list[str] = []
                         for mention in at_mentions:
-                            fpath = _Path(str(project_root)) / mention
+                            fpath = _Path(str(mention_root)) / mention
                             try:
                                 if fpath.is_file() and fpath.stat().st_size < 200_000:
                                     content = fpath.read_text(encoding="utf-8", errors="replace")
@@ -1225,6 +1361,10 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                     "enabled": bool(orchestration.replan.enabled),
                     "max_replans_per_task": int(orchestration.replan.max_replans_per_task),
                     "trigger_retry_count": int(orchestration.replan.trigger_retry_count),
+                },
+                "budget": {
+                    "max_cost_per_task": float(orchestration.budget.max_cost_per_task),
+                    "max_tokens_per_task": int(orchestration.budget.max_tokens_per_task),
                 },
             },
             "plugins": {
@@ -2138,7 +2278,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                     {
                         "agent": ps.agent_role,
                         "agent_name": ps.agent_name,
-                        "status": ps.status,
+                        "status": _normalize_step_status(ps.status),
                         "started_at": ps.started_at.isoformat() if ps.started_at else None,
                         "completed_at": ps.completed_at.isoformat() if ps.completed_at else None,
                         "output": ps.summary,
@@ -2151,6 +2291,25 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                         "execution_verified": ps.execution_verified,
                     }
                 )
+        elif steps:
+            # Normalize live-step status values for UI consistency.
+            for step in steps:
+                if isinstance(step, dict):
+                    step["status"] = _normalize_step_status(str(step.get("status", "")))
+
+        # Canonicalize step identity at the bridge boundary:
+        # one stable schema for UI consumers.
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            role_key, instance_id, label = _canonical_agent_identity(
+                str(step.get("agent", "")),
+                str(step.get("agent_name", "") or ""),
+            )
+            step["agent"] = instance_id
+            step["agent_role"] = role_key
+            step["agent_instance"] = instance_id
+            step["agent_name"] = label
 
         # Cost info
         cost = None
@@ -2172,6 +2331,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         # Resolve task_type: DB first, then live classification cache, then "unclassified"
         resolved_task_type: str = "unclassified"
         resolved_complexity: str | None = None
+        planned_roles: list[str] = []
+        live_cls = _live_task_classification.get(task_id)
         if task.task_type:
             resolved_task_type = (
                 str(task.task_type.value)
@@ -2180,10 +2341,20 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             )
             resolved_complexity = task.complexity.value if task.complexity else None
         else:
-            live_cls = _live_task_classification.get(task_id)
             if live_cls:
                 resolved_task_type = live_cls.get("task_type", "unclassified")
                 resolved_complexity = live_cls.get("complexity")
+        if live_cls:
+            raw_instances = live_cls.get("agent_instances", [])
+            if isinstance(raw_instances, list):
+                for inst in raw_instances:
+                    if not isinstance(inst, dict):
+                        continue
+                    role = str(inst.get("role", "")).strip().lower()
+                    if role:
+                        canonical_role, _, _ = _canonical_agent_identity(role, "")
+                        if canonical_role and canonical_role not in planned_roles:
+                            planned_roles.append(canonical_role)
 
         # Surface pipeline failure reason (Fix #5)
         error_reason = (
@@ -2202,6 +2373,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "started_at": task.started_at.isoformat() if task.started_at else None,
             "completed_at": task.completed_at.isoformat() if task.completed_at else None,
             "steps": steps,
+            "planned_roles": planned_roles,
             "cost": cost,
             "approval_data": task.approval_data or {},
             "confidence_score": confidence_score,
@@ -2397,7 +2569,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                     {
                         "id": str(e.id),
                         "action": e.action.value if hasattr(e.action, "value") else str(e.action),
-                        "agent_role": e.agent_role or "",
+                        "agent_role": _canonical_agent_identity(e.agent_role or "", "")[0],
+                        "agent_name": _canonical_agent_identity(e.agent_role or "", "")[2],
                         "summary": e.summary,
                         "metadata": e.metadata or {},
                         "created_at": e.created_at.isoformat() if e.created_at else None,
@@ -2429,7 +2602,35 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         merged_events = []
         for ev in [*(stored_events if isinstance(stored_events, list) else []), *live_events]:
             if isinstance(ev, dict):
-                merged_events.append(ev)
+                ev_type = str(ev.get("type", "")).strip()
+                # Backward/forward compatibility:
+                # debate loop events are currently emitted as "feedback_loop" in the graph
+                # while some UI surfaces expect "debate_round".
+                if ev_type == "feedback_loop":
+                    normalized = dict(ev)
+                    normalized["type"] = "debate_round"
+                    normalized.setdefault("from_role", ev.get("source_role"))
+                    normalized.setdefault("to_role", ev.get("target_coder"))
+                    normalized.setdefault("reviewer_feedback", ev.get("feedback_preview", ""))
+                    merged_events.append(normalized)
+                else:
+                    merged_events.append(ev)
+
+        # Canonicalize role identity in collaboration events for stable UI schema.
+        normalized_events: list[dict[str, Any]] = []
+        for ev in merged_events:
+            if not isinstance(ev, dict):
+                continue
+            item = dict(ev)
+            for key in ("role", "from_role", "to_role", "source_role", "target_coder"):
+                raw = str(item.get(key, "") or "").strip()
+                if not raw:
+                    continue
+                canonical_role, _, canonical_name = _canonical_agent_identity(raw, "")
+                item[key] = canonical_role
+                item[f"{key}_name"] = canonical_name
+            normalized_events.append(item)
+        merged_events = normalized_events
 
         def _event_ts(ev: dict[str, Any]) -> float:
             val = ev.get("created_at")
@@ -2443,6 +2644,21 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             for m in (stored_messages if isinstance(stored_messages, list) else [])
             if isinstance(m, dict)
         ][-400:]
+        normalized_messages: list[dict[str, Any]] = []
+        for msg in messages:
+            item = dict(msg)
+            from_role = str(item.get("from_role", "") or "").strip()
+            to_role = str(item.get("to_role", "") or "").strip()
+            if from_role:
+                canonical_role, _, canonical_name = _canonical_agent_identity(from_role, "")
+                item["from_role"] = canonical_role
+                item["from_role_name"] = canonical_name
+            if to_role:
+                canonical_role, _, canonical_name = _canonical_agent_identity(to_role, "")
+                item["to_role"] = canonical_role
+                item["to_role_name"] = canonical_name
+            normalized_messages.append(item)
+        messages = normalized_messages
 
         summary = {
             "consult_requests": sum(
@@ -2452,7 +2668,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 1 for e in merged_events if str(e.get("type", "")) == "agent_consult_completed"
             ),
             "debate_rounds": sum(
-                1 for e in merged_events if str(e.get("type", "")) == "debate_round"
+                1
+                for e in merged_events
+                if str(e.get("type", "")) in {"debate_round", "feedback_loop"}
             ),
             "integration_invoked": sum(
                 1 for e in merged_events if str(e.get("type", "")) == "integration_invoked"
@@ -2527,7 +2745,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                     "category": category,
                     "decision": decision,
                     "action": action,
-                    "actor": a.agent_role or "system",
+                    "actor": _canonical_agent_identity(a.agent_role or "system", "")[0],
+                    "actor_name": _canonical_agent_identity(a.agent_role or "system", "")[2],
                     "summary": a.summary,
                     "metadata": a.metadata or {},
                     "source": "audit",
@@ -2596,7 +2815,14 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                     "category": category,
                     "decision": decision,
                     "action": ev_type,
-                    "actor": ev.get("role") or ev.get("from_role") or "system",
+                    "actor": _canonical_agent_identity(
+                        str(ev.get("role") or ev.get("from_role") or "system"),
+                        "",
+                    )[0],
+                    "actor_name": _canonical_agent_identity(
+                        str(ev.get("role") or ev.get("from_role") or "system"),
+                        "",
+                    )[2],
                     "summary": summary,
                     "metadata": ev,
                     "source": "event",
@@ -2630,24 +2856,51 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         try:
             from rigovo.infrastructure.persistence.sqlite_cost_repo import SqliteCostRepository
 
+            task_repo = SqliteTaskRepository(container.get_db())
+            task = await task_repo.get(UUID(task_id))
+            role_by_agent_id: dict[str, str] = {}
+            instance_by_agent_id: dict[str, str] = {}
+            name_by_agent_id: dict[str, str] = {}
+            if task and task.pipeline_steps:
+                for ps in task.pipeline_steps:
+                    aid = str(getattr(ps, "agent_id", "") or "").strip()
+                    raw_role = str(getattr(ps, "agent_role", "") or "").strip()
+                    raw_name = str(getattr(ps, "agent_name", "") or "").strip()
+                    role, instance, label = _canonical_agent_identity(raw_role, raw_name)
+                    if aid and role:
+                        role_by_agent_id[aid] = role
+                        instance_by_agent_id[aid] = instance
+                        name_by_agent_id[aid] = label
+
             cost_repo = SqliteCostRepository(container.get_db())
             entries = await cost_repo.list_by_task(UUID(task_id))
             per_agent: dict[str, dict] = {}
             total_tokens = 0
             total_cost = 0.0
             for e in entries:
-                role = e.agent_role if hasattr(e, "agent_role") and e.agent_role else "unknown"
-                if role not in per_agent:
-                    per_agent[role] = {
+                aid = str(getattr(e, "agent_id", "") or "").strip()
+                role = role_by_agent_id.get(aid, "")
+                instance = instance_by_agent_id.get(aid, "")
+                if not role:
+                    fallback = f"agent:{aid[:8]}" if aid else "unknown"
+                    role, instance, label = _canonical_agent_identity(fallback, "")
+                else:
+                    _, instance, label = _canonical_agent_identity(instance or role, "")
+                key = instance or role
+                if key not in per_agent:
+                    per_agent[key] = {
+                        "agent_role": role,
+                        "agent_instance": instance,
+                        "agent_name": name_by_agent_id.get(aid, label),
                         "input_tokens": 0,
                         "output_tokens": 0,
                         "cost_usd": 0.0,
                         "model": "",
                     }
-                per_agent[role]["input_tokens"] += e.input_tokens
-                per_agent[role]["output_tokens"] += e.output_tokens
-                per_agent[role]["cost_usd"] += e.cost_usd
-                per_agent[role]["model"] = e.llm_model or per_agent[role]["model"]
+                per_agent[key]["input_tokens"] += e.input_tokens
+                per_agent[key]["output_tokens"] += e.output_tokens
+                per_agent[key]["cost_usd"] += e.cost_usd
+                per_agent[key]["model"] = e.llm_model or per_agent[key]["model"]
                 total_tokens += e.total_tokens
                 total_cost += e.cost_usd
             return {
@@ -2718,7 +2971,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                         "ts": entry.created_at.isoformat() if entry.created_at else None,
                         "action": action,
                         "summary": entry.summary,
-                        "actor": entry.agent_role or "system",
+                        "actor": _canonical_agent_identity(entry.agent_role or "system", "")[0],
                         "metadata": entry.metadata or {},
                     }
                 )
@@ -2772,6 +3025,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 role = str(step.get("role", "")).strip()
                 if role:
                     team_roles.append(role)
+        team_roles = [_canonical_agent_identity(r, "")[0] for r in team_roles if str(r).strip()]
 
         # Resolve task_type with live classification fallback
         _mission_task_type: str = "unclassified"
@@ -2814,7 +3068,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             all_files: set[str] = set()
             pipeline = (task.metadata or {}).get("pipeline", [])
             for step in pipeline:
-                role = step.get("role", "unknown")
+                raw_role = str(step.get("role", "unknown"))
+                role = _canonical_agent_identity(raw_role, "")[0]
                 files = step.get("files_changed", [])
                 if files:
                     by_agent[role] = files

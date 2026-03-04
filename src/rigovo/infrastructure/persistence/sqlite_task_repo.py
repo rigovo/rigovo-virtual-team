@@ -60,8 +60,8 @@ class SqliteTaskRepository(TaskRepository):
              pipeline_steps, total_tokens, total_cost_usd, duration_ms,
              retries, langgraph_thread_id, rejected_at, user_feedback,
              error, started_at, completed_at, created_at,
-             checkpoint_timeline)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             checkpoint_timeline, workspace_path, workspace_label)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 str(task.id),
                 str(task.workspace_id),
@@ -87,6 +87,8 @@ class SqliteTaskRepository(TaskRepository):
                 task.completed_at.isoformat() if task.completed_at else None,
                 task.created_at.isoformat(),
                 json.dumps(task.checkpoint_timeline) if task.checkpoint_timeline else None,
+                getattr(task, "workspace_path", "") or "",
+                getattr(task, "workspace_label", "") or "",
             ),
         )
         self._db.commit()
@@ -203,4 +205,13 @@ class SqliteTaskRepository(TaskRepository):
             task.checkpoint_timeline = json.loads(raw_timeline) if raw_timeline else []
         except (json.JSONDecodeError, TypeError, KeyError, IndexError):
             task.checkpoint_timeline = []
+        # Workspace metadata (added in schema v3; absent in older DBs)
+        try:
+            task.workspace_path = row["workspace_path"] or ""
+        except (KeyError, IndexError):
+            task.workspace_path = ""
+        try:
+            task.workspace_label = row["workspace_label"] or ""
+        except (KeyError, IndexError):
+            task.workspace_label = ""
         return task

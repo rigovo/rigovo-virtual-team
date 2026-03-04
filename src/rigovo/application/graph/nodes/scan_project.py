@@ -1,7 +1,7 @@
 """Scan project node — gives agents PERCEPTION of the codebase.
 
-This node runs ONCE at the start of every task, before any agent
-executes. It scans the project directory and builds an immutable
+This node runs ONCE per task before agent execution. It scans the
+project directory and builds an immutable
 snapshot that every agent in the pipeline receives.
 
 Without this node, agents are blind. They have to guess what the
@@ -36,9 +36,9 @@ async def scan_project_node(
 ) -> dict[str, Any]:
     """Scan the project and store snapshot + knowledge graph in state.
 
-    This runs before classify so that classification also benefits
-    from knowing the project structure (e.g., detecting language
-    for tech stack-specific task routing).
+    This runs after early intent classification/routing so the UI can
+    react quickly, but before execute_agent so agents still get full
+    structural context.
 
     Two perception layers:
     1. ProjectSnapshot — file tree, tech stack, key config files

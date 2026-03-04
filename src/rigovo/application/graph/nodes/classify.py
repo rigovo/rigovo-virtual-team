@@ -17,8 +17,10 @@ Output is stored in ``state["staffing_plan"]`` (new) and
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 from rigovo.application.graph.state import TaskState
@@ -33,6 +35,16 @@ from rigovo.application.master.deterministic_brain import (
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 
 logger = logging.getLogger(__name__)
+
+
+def _classifier_timeout_seconds() -> int:
+    """Runtime-configurable timeout for Master Agent classification."""
+    raw = os.environ.get("RIGOVO_CLASSIFIER_TIMEOUT_SECONDS", "25").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 25
+    return max(5, min(value, 120))
 
 # Lightweight fallback prompt (used when no classifier is injected)
 CLASSIFICATION_PROMPT = """\
@@ -186,11 +198,136 @@ async def classify_node(
         }
 
     if classifier is not None:
-        plan: StaffingPlan = await classifier.analyze(
-            description,
-            project_snapshot=project_snapshot,
-            deterministic_hint=deterministic_classification,
-        )
+        try:
+            plan: StaffingPlan = await asyncio.wait_for(
+                classifier.analyze(
+                    description,
+                    project_snapshot=project_snapshot,
+                    deterministic_hint=deterministic_classification,
+                ),
+                timeout=_classifier_timeout_seconds(),
+            )
+        except TimeoutError:
+            logger.warning(
+                "Master classification timed out after %ss; using deterministic fallback",
+                _classifier_timeout_seconds(),
+            )
+            fast_agents = enforce_minimum_team(
+                [],
+                task_type=det_result.task_type,
+                description=description,
+            )
+            classification = {
+                "task_type": det_result.task_type,
+                "complexity": det_result.complexity,
+                "workspace_type": "new_project"
+                if det_result.task_type == "new_project"
+                else "existing_project",
+                "reasoning": "Master classification timed out; used deterministic fallback.",
+            }
+            plan_dict = {
+                "task_type": det_result.task_type,
+                "complexity": det_result.complexity,
+                "workspace_type": classification["workspace_type"],
+                "domain_analysis": "Deterministic fallback after classifier timeout.",
+                "architecture_notes": "",
+                "agents": fast_agents,
+                "risks": ["Master classifier timeout; plan may be less specialized."],
+                "acceptance_criteria": [],
+                "reasoning": classification["reasoning"],
+            }
+            events.append(
+                {
+                    "type": "task_classified",
+                    "task_type": classification["task_type"],
+                    "complexity": classification["complexity"],
+                    "workspace_type": classification["workspace_type"],
+                    "reasoning": classification["reasoning"],
+                    "agent_count": len(fast_agents),
+                    "agent_instances": [
+                        {
+                            "instance_id": a.get("instance_id", ""),
+                            "role": a.get("role", ""),
+                            "specialisation": a.get("specialisation", ""),
+                            "assignment": (a.get("assignment", "") or "")[:200],
+                        }
+                        for a in fast_agents
+                    ],
+                    "deterministic_hint_used": True,
+                    "minimum_team_enforced": True,
+                    "fallback_reason": "classifier_timeout",
+                }
+            )
+            return {
+                "classification": classification,
+                "deterministic_classification": deterministic_classification,
+                "staffing_plan": plan_dict,
+                "status": "classified",
+                "cost_accumulator": {
+                    **state.get("cost_accumulator", {}),
+                    "master_agent": {"tokens": 0, "cost": 0.0},
+                },
+                "events": events,
+            }
+        except Exception as e:
+            logger.warning("Master classification failed: %s; using deterministic fallback", e)
+            fast_agents = enforce_minimum_team(
+                [],
+                task_type=det_result.task_type,
+                description=description,
+            )
+            classification = {
+                "task_type": det_result.task_type,
+                "complexity": det_result.complexity,
+                "workspace_type": "new_project"
+                if det_result.task_type == "new_project"
+                else "existing_project",
+                "reasoning": f"Master classification failed ({type(e).__name__}); used deterministic fallback.",
+            }
+            plan_dict = {
+                "task_type": det_result.task_type,
+                "complexity": det_result.complexity,
+                "workspace_type": classification["workspace_type"],
+                "domain_analysis": "Deterministic fallback after classifier failure.",
+                "architecture_notes": "",
+                "agents": fast_agents,
+                "risks": ["Master classifier failed; plan may be less specialized."],
+                "acceptance_criteria": [],
+                "reasoning": classification["reasoning"],
+            }
+            events.append(
+                {
+                    "type": "task_classified",
+                    "task_type": classification["task_type"],
+                    "complexity": classification["complexity"],
+                    "workspace_type": classification["workspace_type"],
+                    "reasoning": classification["reasoning"],
+                    "agent_count": len(fast_agents),
+                    "agent_instances": [
+                        {
+                            "instance_id": a.get("instance_id", ""),
+                            "role": a.get("role", ""),
+                            "specialisation": a.get("specialisation", ""),
+                            "assignment": (a.get("assignment", "") or "")[:200],
+                        }
+                        for a in fast_agents
+                    ],
+                    "deterministic_hint_used": True,
+                    "minimum_team_enforced": True,
+                    "fallback_reason": "classifier_exception",
+                }
+            )
+            return {
+                "classification": classification,
+                "deterministic_classification": deterministic_classification,
+                "staffing_plan": plan_dict,
+                "status": "classified",
+                "cost_accumulator": {
+                    **state.get("cost_accumulator", {}),
+                    "master_agent": {"tokens": 0, "cost": 0.0},
+                },
+                "events": events,
+            }
 
         # ── ENFORCE MINIMUM TEAM — LLM can ADD but NEVER REMOVE ─────
         enforced_agents = enforce_minimum_team(

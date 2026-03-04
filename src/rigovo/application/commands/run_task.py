@@ -188,6 +188,8 @@ class RunTaskCommand:
         enable_streaming: bool = True,
         enable_parallel: bool = False,
         auto_approve: bool = True,
+        budget_max_cost_per_task: float = 25.00,
+        budget_max_tokens_per_task: int = 200_000,
     ) -> None:
         self._workspace_id = workspace_id
         self._project_root = project_root
@@ -216,8 +218,8 @@ class RunTaskCommand:
         self._enable_streaming = enable_streaming
         self._enable_parallel = enable_parallel
         self._auto_approve = auto_approve
-        self._budget_max_cost: float = 25.00  # soft warning only, never hard-stops
-        self._budget_max_tokens: int = 500_000  # token soft limit
+        self._budget_max_cost: float = max(0.0, float(budget_max_cost_per_task or 0.0))
+        self._budget_max_tokens: int = max(0, int(budget_max_tokens_per_task or 0))
         self._agent_model_overrides: dict[str, str] = {}  # Set via set_agent_model_overrides()
 
         # Master Agent sub-services
@@ -322,11 +324,21 @@ class RunTaskCommand:
             return {"status": "failed", "error": err, "task_id": str(task_id)}
 
         domain_id = available_teams[0].get("domain", "engineering")
+        effective_project_root = self._resolve_effective_project_root(
+            task_id=task_id,
+            workspace_path=(workspace_path or getattr(task, "workspace_path", "") or "").strip(),
+        )
+        if str(getattr(task, "workspace_path", "") or "").strip() != str(effective_project_root):
+            task.workspace_path = str(effective_project_root)
+            if not getattr(task, "workspace_label", ""):
+                task.workspace_label = effective_project_root.name
+            if self._task_repo:
+                await self._task_repo.save(task)
 
         initial_state: TaskState = {
             "task_id": str(task_id),
             "workspace_id": str(self._workspace_id),
-            "project_root": str(self._project_root),
+            "project_root": str(effective_project_root),
             "worktree_mode": str(os.environ.get("RIGOVO_WORKTREE_MODE", "project")),
             "worktree_root": str(os.environ.get("RIGOVO_WORKTREE_ROOT", "")),
             "filesystem_sandbox_mode": str(
@@ -638,7 +650,7 @@ class RunTaskCommand:
                     agent_id=uuid5(NAMESPACE_DNS, f"{task_id}:{role}"),
                     agent_role=role,
                     agent_name=_agent_name,
-                    status="completed",
+                    status="complete",
                     duration_ms=output.get("duration_ms", 0),
                     total_tokens=output.get("tokens", 0),
                     cost_usd=output.get("cost", 0.0),
@@ -666,6 +678,7 @@ class RunTaskCommand:
                     "agent_consult_requested",
                     "agent_consult_completed",
                     "debate_round",
+                    "feedback_loop",
                     "integration_invoked",
                     "integration_blocked",
                     "replan_triggered",
@@ -747,6 +760,35 @@ class RunTaskCommand:
             else list(agent_outputs.keys()),
             "files_changed": self._extract_files_changed(agent_outputs),
         }
+
+    def _resolve_effective_project_root(self, task_id: UUID, workspace_path: str) -> Path:
+        """Choose execution root for this task.
+
+        Priority:
+        1) Explicit workspace_path from user/UI (create it if needed).
+        2) Configured project_root, unless it looks like Rigovo's own source tree.
+        3) Fallback to ~/.rigovo/projects/task-<id8>.
+        """
+        requested = workspace_path.strip()
+        if requested:
+            candidate = Path(requested).expanduser()
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate.resolve()
+
+        root = self._project_root.resolve()
+        if not self._looks_like_rigovo_source(root):
+            return root
+
+        fallback = Path.home() / ".rigovo" / "projects" / f"task-{str(task_id)[:8]}"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback.resolve()
+
+    @staticmethod
+    def _looks_like_rigovo_source(root: Path) -> bool:
+        """Detect running from Rigovo's own repository, not a user workspace."""
+        return (root / "src" / "rigovo").is_dir() and (
+            (root / "rigovo.yml").is_file() or (root / "pyproject.toml").is_file()
+        )
 
     async def _run_graph(
         self,

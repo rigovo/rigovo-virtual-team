@@ -60,6 +60,7 @@ interface RuntimeCapabilities {
     max_retries: number;
     consultation_enabled: boolean;
     replan: { enabled: boolean; max_replans_per_task: number; trigger_retry_count: number };
+    budget?: { max_cost_per_task: number; max_tokens_per_task: number };
   };
   plugins: {
     enabled: boolean;
@@ -183,6 +184,7 @@ export default function Settings({ onBack }: SettingsProps) {
     consultationEnabled: false,
     replanEnabled: false,
     replanMaxReplans: 2,
+    maxTokensPerTask: 200000,
     qualityGateEnabled: true,
   });
 
@@ -261,6 +263,7 @@ export default function Settings({ onBack }: SettingsProps) {
       consultationEnabled: boolInBlock("consultation", "enabled"),
       replanEnabled:       boolInBlock("replan", "enabled"),
       replanMaxReplans:    numInBlock("replan", "max_replans_per_task"),
+      maxTokensPerTask:    numInBlock("budget", "max_tokens_per_task"),
       qualityGateEnabled:  boolInBlock("quality", "rigour_enabled"),
     };
   }, []);
@@ -276,6 +279,7 @@ export default function Settings({ onBack }: SettingsProps) {
       consultationEnabled: yml.consultationEnabled ?? runtimeCaps?.orchestration.consultation_enabled         ?? false,
       replanEnabled:       yml.replanEnabled       ?? runtimeCaps?.orchestration.replan.enabled               ?? false,
       replanMaxReplans:    yml.replanMaxReplans    ?? runtimeCaps?.orchestration.replan.max_replans_per_task  ?? 2,
+      maxTokensPerTask:    yml.maxTokensPerTask    ?? runtimeCaps?.orchestration.budget?.max_tokens_per_task  ?? 200000,
       qualityGateEnabled:  yml.qualityGateEnabled  ?? true,
     });
   }, [ymlRaw, runtimeCaps, parseOrchFromYml]);
@@ -399,6 +403,7 @@ export default function Settings({ onBack }: SettingsProps) {
     yml = patchYmlInBlock(yml, "consultation", "enabled", orchSettings.consultationEnabled);
     yml = patchYmlInBlock(yml, "replan",       "enabled", orchSettings.replanEnabled);
     yml = patchYmlInBlock(yml, "replan",       "max_replans_per_task", orchSettings.replanMaxReplans);
+    yml = patchYmlInBlock(yml, "budget",       "max_tokens_per_task", orchSettings.maxTokensPerTask);
 
     // Quality gate maps to quality.rigour_enabled (not quality_gate_enabled)
     yml = patchYmlInBlock(yml, "quality", "rigour_enabled", orchSettings.qualityGateEnabled);
@@ -978,6 +983,34 @@ export default function Settings({ onBack }: SettingsProps) {
                       className="w-16 rounded border text-xs text-center px-2 py-1" style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }} />
                   </div>
                 )}
+              </div>
+
+              {/* Token budget */}
+              <div className="rounded-lg border px-4 py-3"
+                style={{ borderColor: "var(--ui-border)", background: "rgba(0,0,0,0.01)" }}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium" style={{ color: "var(--ui-text)" }}>Max tokens per task</p>
+                    <p className="text-[11px] mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
+                      Hard stop for total tokens consumed by a single task run.
+                    </p>
+                  </div>
+                  <input
+                    type="number"
+                    min={10000}
+                    max={1000000}
+                    step={10000}
+                    value={orchSettings.maxTokensPerTask}
+                    onChange={(e) =>
+                      setOrchSettings((p) => ({
+                        ...p,
+                        maxTokensPerTask: Math.max(10000, Math.min(1000000, Number(e.target.value) || 200000)),
+                      }))
+                    }
+                    className="w-28 rounded border text-xs text-right px-2 py-1"
+                    style={{ borderColor: "var(--ui-border)", color: "var(--ui-text)" }}
+                  />
+                </div>
               </div>
 
               {/* Quality gates — maps to quality.rigour_enabled in YAML */}

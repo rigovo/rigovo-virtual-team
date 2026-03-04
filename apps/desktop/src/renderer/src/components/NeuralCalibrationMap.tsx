@@ -20,6 +20,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import type { TaskStep } from "../types";
 import type { CollaborationData } from "./AgentTimeline";
+import { resolveCanonicalRole } from "../lib/agentIdentity";
 
 /* ═══════════════════════════════════════════════════════════════════ */
 /*  Static topology                                                     */
@@ -106,42 +107,26 @@ const FALLBACK_EDGES: Array<{ id: string; from: string; to: string; kind: EdgeKi
   { id: "e-qa-lead-fb",       from: "qa",       to: "lead",    kind: "execution", dur: "2.4s", requireAbsent: ["sre"] },
 ];
 
-/* ── Instance-agent → base-role resolution ──────────────────────────── */
-/* Steps may have agent names like "backend-engineer-1" or "security-auditor-2"
-   which need to be resolved to the base NODE_META keys for DAG rendering.     */
-const BASE_ROLE_KW: Record<string, string> = {
-  backend: "coder", frontend: "coder", engineer: "coder", developer: "coder",
-  planner: "planner", architect: "planner",
-  reviewer: "reviewer",
-  qa: "qa", tester: "qa",
-  security: "security", auditor: "security",
-  devops: "devops",
-  sre: "sre", reliability: "sre",
-  lead: "lead",
-  docs: "lead",      // docs agents route to lead node
-  master: "master",
-};
-
 /** Resolve a step's agent name to the NODE_META key it maps to. */
 function resolveBaseRole(agent: string): string {
-  const lower = agent.toLowerCase();
-  if (NODE_META[lower]) return lower;
-  const parts = lower.split("-").filter(p => !/^\d+$/.test(p));
-  for (const part of parts) {
-    const mapped = BASE_ROLE_KW[part];
-    if (mapped && NODE_META[mapped]) return mapped;
-  }
-  return lower; // fallback: keep as-is
+  const canonical = resolveCanonicalRole(agent);
+  if (canonical === "rigour") return "trinity";
+  if (canonical === "docs") return "lead";
+  return canonical;
 }
 
 /** Find the first step matching a given base role (NODE_META key). */
 function findStepForNode(steps: TaskStep[], nodeId: string): TaskStep | undefined {
-  return steps.find(s => resolveBaseRole(s.agent) === nodeId);
+  return steps.find(s => resolveBaseRole(s.agent_role || s.agent) === nodeId);
 }
 
 /** Check if any step matches a given base role. */
 function hasStepForNode(steps: TaskStep[], nodeId: string): boolean {
-  return steps.some(s => resolveBaseRole(s.agent) === nodeId);
+  return steps.some(s => resolveBaseRole(s.agent_role || s.agent) === nodeId);
+}
+
+function isWorkRole(role: string): boolean {
+  return !["master", "memory", "trinity"].includes(role);
 }
 
 const EDGE_COLOR: Record<EdgeKind, string> = {
@@ -273,8 +258,11 @@ export interface NeuralCalibrationMapProps {
   taskStatus:    string;
   taskType?:     string;
   collab:        CollaborationData | null;
+  plannedRoles?: string[];
   totalFiles:    number;
   totalCost:     number;
+  expectedAgents?: number;
+  nextExpectedRole?: string | null;
   replanCount:   number;
   gatesTotal:    number;
   gatesFailed:   number;
@@ -288,7 +276,9 @@ export interface NeuralCalibrationMapProps {
 
 export default function NeuralCalibrationMap({
   steps, taskStatus, taskType = "engineering",
-  totalFiles, totalCost, replanCount,
+  collab,
+  plannedRoles = [],
+  totalFiles, totalCost, expectedAgents, nextExpectedRole, replanCount,
   gatesTotal, gatesFailed, selectedAgent, onSelectAgent,
 }: NeuralCalibrationMapProps) {
   const st         = taskStatus.toLowerCase();
@@ -306,7 +296,7 @@ export default function NeuralCalibrationMap({
         map[id] = isComplete ? "complete" : isFailed ? "failed" : "running";
       } else if (id === "trinity") {
         const triggered = steps.some(s => {
-          const base = resolveBaseRole(s.agent);
+          const base = resolveBaseRole(s.agent_role || s.agent);
           return ["coder","reviewer"].includes(base) && s.status !== "pending";
         });
         map[id] = triggered ? (gatesFailed > 0 ? "failed" : isActive ? "running" : "complete") : "idle";
@@ -322,15 +312,19 @@ export default function NeuralCalibrationMap({
   const inPipeline = useMemo(() => {
     const s = new Set(["master", "memory"]);
     steps.forEach(step => {
-      const base = resolveBaseRole(step.agent);
+      const base = resolveBaseRole(step.agent_role || step.agent);
+      if (NODE_META[base]) s.add(base);
+    });
+    plannedRoles.forEach((role) => {
+      const base = resolveBaseRole(role);
       if (NODE_META[base]) s.add(base);
     });
     if (steps.some(st => {
-      const base = resolveBaseRole(st.agent);
+      const base = resolveBaseRole(st.agent_role || st.agent);
       return ["coder","reviewer","security","qa"].includes(base);
     })) s.add("trinity");
     return s;
-  }, [steps]);
+  }, [steps, plannedRoles]);
 
   /* ── Build React Flow nodes — only pipeline agents ───────────────── */
   const rfNodes: Node[] = useMemo(() =>
@@ -401,6 +395,32 @@ export default function NeuralCalibrationMap({
     onSelectAgent(step ? step.agent : node.id);
   }, [nodeStatuses, steps, onSelectAgent]);
 
+  const progress = useMemo(() => {
+    const byRole = new Map<string, { completed: boolean; running: boolean }>();
+    steps.forEach((s) => {
+      const role = resolveBaseRole(s.agent_role || s.agent);
+      if (!isWorkRole(role)) return;
+      const prev = byRole.get(role) ?? { completed: false, running: false };
+      if (s.status === "complete") prev.completed = true;
+      if (s.status === "running") prev.running = true;
+      byRole.set(role, prev);
+    });
+    const completed = Array.from(byRole.values()).filter((v) => v.completed).length;
+    const running = Array.from(byRole.values()).some((v) => v.running);
+    const derivedTotal = new Set(
+      [
+        ...Array.from(byRole.keys()),
+        ...plannedRoles.map((r) => resolveBaseRole(r)).filter((r) => isWorkRole(r)),
+      ],
+    ).size;
+    return { completed, running, derivedTotal };
+  }, [steps, plannedRoles]);
+
+  const completedCount = progress.completed;
+  const totalAgentCount = expectedAgents && expectedAgents > 0 ? expectedAgents : progress.derivedTotal;
+  const hasRunning = progress.running;
+  const debateRounds = collab?.summary?.debate_rounds ?? 0;
+
   return (
     <div className="ncm-root">
 
@@ -438,6 +458,13 @@ export default function NeuralCalibrationMap({
           <span>{isFailed ? "✕ Pipeline Failed" : "✓ Pipeline Complete"}</span>
         </div>
       )}
+      {isActive && !hasRunning && completedCount > 0 && totalAgentCount > completedCount && (
+        <div className="ncm-pipeline-status" style={{ top: 12, right: 12, left: "auto" }}>
+          <span>
+            Waiting for next agent{nextExpectedRole ? `: ${nextExpectedRole}` : ""} ({completedCount}/{totalAgentCount})
+          </span>
+        </div>
+      )}
 
       {/* ── Stats bar ── */}
       <div className="ncm-stats-bar">
@@ -447,7 +474,7 @@ export default function NeuralCalibrationMap({
         </div>
         <div className="ncm-stat-divider" />
         <div className="ncm-stat-item">
-          <span className="ncm-stat-num">{steps.filter(s => s.status === "complete").length}/{steps.length || "—"}</span>
+          <span className="ncm-stat-num">{completedCount}/{totalAgentCount || "—"}</span>
           <span className="ncm-stat-lbl">AGENTS DONE</span>
         </div>
         <div className="ncm-stat-divider" />
@@ -468,6 +495,15 @@ export default function NeuralCalibrationMap({
             <div className="ncm-stat-item">
               <span className="ncm-stat-num" style={{ color: "#fb923c" }}>{replanCount}</span>
               <span className="ncm-stat-lbl">REPLANS</span>
+            </div>
+          </>
+        )}
+        {debateRounds > 0 && (
+          <>
+            <div className="ncm-stat-divider" />
+            <div className="ncm-stat-item">
+              <span className="ncm-stat-num" style={{ color: "#fb923c" }}>{debateRounds}</span>
+              <span className="ncm-stat-lbl">DEBATES</span>
             </div>
           </>
         )}

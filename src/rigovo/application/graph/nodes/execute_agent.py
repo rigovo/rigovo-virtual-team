@@ -1043,6 +1043,7 @@ async def _run_agentic_loop(
     subtask_count_ref = {"value": 0}
     subtask_token_total_ref = {"value": 0}
     execution_log: list[dict[str, Any]] = []  # Track run_command calls with exit codes
+    run_command_counts: dict[str, int] = {}  # Guard against repeated shell loops
     agent_messages = agent_messages if agent_messages is not None else []
     events = events if events is not None else []
     temperature = agent_config.get("temperature", DEFAULT_TEMPERATURE)
@@ -1209,6 +1210,29 @@ async def _run_agentic_loop(
                         events=events,
                     )
             else:
+                if tc["name"] == "run_command":
+                    raw_cmd = str(tc.get("input", {}).get("command", "")).strip()
+                    normalized_cmd = " ".join(raw_cmd.split())
+                    if normalized_cmd:
+                        seen_count = run_command_counts.get(normalized_cmd, 0) + 1
+                        run_command_counts[normalized_cmd] = seen_count
+                        if seen_count > 2:
+                            logger.warning(
+                                "Agent %s: blocking repeated run_command (%r) after %d attempts",
+                                role,
+                                normalized_cmd[:120],
+                                seen_count - 1,
+                            )
+                            return tc, json.dumps(
+                                {
+                                    "status": "blocked_repetitive_command",
+                                    "error": (
+                                        f"Command '{normalized_cmd[:120]}' repeated too many times "
+                                        f"({seen_count - 1}). Summarize findings and continue."
+                                    ),
+                                    "exit_code": 2,
+                                }
+                            )
                 # Intent-aware file read cap — block reads beyond limit
                 if tc["name"] in ("read_file", "list_directory", "search_codebase"):
                     nonlocal file_read_count
