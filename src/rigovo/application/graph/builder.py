@@ -96,6 +96,7 @@ class GraphBuilder:
         router: TeamRouter | None = None,
         enricher: ContextEnricher | None = None,
         evaluator: AgentEvaluator | None = None,
+        cache_repo: Any | None = None,
     ) -> None:
         self._llm_factory = llm_factory
         self._master_llm = master_llm
@@ -115,6 +116,7 @@ class GraphBuilder:
         self._router = router
         self._enricher = enricher
         self._evaluator = evaluator
+        self._cache_repo = cache_repo
 
     async def _run_execute_with_budget_approval(self, state: TaskState) -> dict[str, Any]:
         """Run execute_agent_node with token-limit approval continuation.
@@ -265,10 +267,15 @@ class GraphBuilder:
         # --- Node wrappers (bind injected deps) ---
 
         async def _scan_project(state: TaskState) -> dict:
-            return await scan_project_node(state)
+            return await scan_project_node(state, cache_repo=self._cache_repo)
 
         async def _classify(state: TaskState) -> dict:
-            return await classify_node(state, master_llm, classifier=classifier)
+            return await classify_node(
+                state,
+                master_llm,
+                classifier=classifier,
+                cache_repo=self._cache_repo,
+            )
 
         async def _intent_gate(state: TaskState) -> dict:
             return await intent_gate_node(state)
@@ -286,7 +293,13 @@ class GraphBuilder:
                         }
                     ],
                 }
-            return await route_team_node(state, master_llm, available_teams, router=router)
+            return await route_team_node(
+                state,
+                master_llm,
+                available_teams,
+                router=router,
+                cache_repo=self._cache_repo,
+            )
 
         async def _assemble(state: TaskState) -> dict:
             selected_team_id = str(state.get("team_config", {}).get("team_id", "")).strip()
@@ -574,9 +587,14 @@ class GraphBuilder:
 
         # 0. Classify first — prioritize immediate intent understanding.
         if self._classifier is not None:
-            update = await classify_node(state, self._master_llm, classifier=self._classifier)
+            update = await classify_node(
+                state,
+                self._master_llm,
+                classifier=self._classifier,
+                cache_repo=self._cache_repo,
+            )
         else:
-            update = await classify_node(state, self._master_llm)
+            update = await classify_node(state, self._master_llm, cache_repo=self._cache_repo)
         state.update(update)
 
         # 0b. Intent Gate — detect user intent and set constraints
@@ -591,6 +609,7 @@ class GraphBuilder:
                 self._master_llm,
                 available_teams,
                 router=self._router,
+                cache_repo=self._cache_repo,
             )
             state.update(update)
 
@@ -619,7 +638,7 @@ class GraphBuilder:
             return state
 
         # 4. Scan project before agent execution (deferred heavy step).
-        update = await scan_project_node(state)
+        update = await scan_project_node(state, cache_repo=self._cache_repo)
         state.update(update)
 
         # 5. Execute agents

@@ -95,6 +95,9 @@ function ValueStrip({
   baselineTokens,
   consultCount,
   debateCount,
+  cacheSavedTokens,
+  cacheSavedCostUsd,
+  cacheHitRate,
 }: {
   totalTokens: number;
   totalCostUsd: number;
@@ -102,6 +105,9 @@ function ValueStrip({
   baselineTokens: number | null;
   consultCount: number;
   debateCount: number;
+  cacheSavedTokens: number;
+  cacheSavedCostUsd: number;
+  cacheHitRate: number | null;
 }) {
   const hasBaseline = baselineTokens != null && baselineTokens > 0;
   const savedPct = hasBaseline
@@ -122,6 +128,16 @@ function ValueStrip({
         <>
           <span className="td-value-sep">·</span>
           <span className="td-value-item">consult {consultCount} · debate {debateCount}</span>
+        </>
+      )}
+      {(cacheSavedTokens > 0 || cacheSavedCostUsd > 0 || (cacheHitRate != null && cacheHitRate > 0)) && (
+        <>
+          <span className="td-value-sep">·</span>
+          <span className="td-value-item">
+            cache: <b>{cacheSavedTokens.toLocaleString()}</b> tok
+            {cacheSavedCostUsd > 0 ? <> · <b>${cacheSavedCostUsd.toFixed(4)}</b></> : null}
+            {cacheHitRate != null ? <> · hit <b>{cacheHitRate.toFixed(1)}%</b></> : null}
+          </span>
         </>
       )}
     </div>
@@ -863,6 +879,9 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
   const baselineTokens = summary?.baseline_tokens ?? null;
   const consultCount = summary?.consult_count ?? 0;
   const debateCount = summary?.debate_count ?? 0;
+  const cacheSavedTokens = summary?.cache_saved_tokens ?? 0;
+  const cacheSavedCostUsd = summary?.cache_saved_cost_usd ?? 0;
+  const cacheHitRate = summary?.cache_hit_rate ?? null;
   const nextExpectedReason = summary?.next_expected_reason ?? null;
   const gatesFailedSummary = summary?.gates_failed ?? gatesFailed;
   const gatesTotalSummary = summary?.gates_total ?? allGates.length;
@@ -914,6 +933,12 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
             )}
             {(consultCount > 0 || debateCount > 0) && (
               <span className="td-type-badge">consult {consultCount} · debate {debateCount}</span>
+            )}
+            {(cacheSavedTokens > 0 || cacheSavedCostUsd > 0) && (
+              <span className="td-type-badge">
+                cache saved {cacheSavedTokens.toLocaleString()} tok
+                {cacheSavedCostUsd > 0 ? ` · $${cacheSavedCostUsd.toFixed(4)}` : ""}
+              </span>
             )}
             {isActive && nextRole && (
               <span className="td-type-badge">next: {canonicalAgentLabel(nextRole)}</span>
@@ -979,6 +1004,9 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
           baselineTokens={baselineTokens}
           consultCount={consultCount}
           debateCount={debateCount}
+          cacheSavedTokens={cacheSavedTokens}
+          cacheSavedCostUsd={cacheSavedCostUsd}
+          cacheHitRate={cacheHitRate}
         />
       )}
 

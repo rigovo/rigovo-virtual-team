@@ -44,6 +44,7 @@ from rigovo.domain.services.history_state import (
 from rigovo.domain.services.team_assembler import TeamAssemblerService
 from rigovo.infrastructure.llm.model_catalog import resolve_model_for_role
 from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
+from rigovo.infrastructure.persistence.sqlite_cache_repo import SqliteCacheRepository
 from rigovo.infrastructure.persistence.sqlite_cost_repo import SqliteCostRepository
 from rigovo.infrastructure.persistence.sqlite_local import LocalDatabase
 from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
@@ -232,6 +233,7 @@ class RunTaskCommand:
         self._task_repo = SqliteTaskRepository(db) if db else None
         self._audit_repo = SqliteAuditRepository(db) if db else None
         self._cost_repo = SqliteCostRepository(db) if db else None
+        self._cache_repo = SqliteCacheRepository(db) if db else None
 
     async def execute(
         self,
@@ -454,6 +456,7 @@ class RunTaskCommand:
             router=self._router,
             enricher=self._enricher,
             evaluator=self._evaluator,
+            cache_repo=self._cache_repo,
         )
 
         try:
@@ -652,10 +655,17 @@ class RunTaskCommand:
                     agent_name=_agent_name,
                     status="complete",
                     duration_ms=output.get("duration_ms", 0),
+                    input_tokens=int(output.get("input_tokens", 0) or 0),
+                    output_tokens=int(output.get("output_tokens", 0) or 0),
                     total_tokens=output.get("tokens", 0),
                     cost_usd=output.get("cost", 0.0),
                     summary=output.get("summary", ""),
                     files_changed=output.get("files_changed", []),
+                    cached_input_tokens=int(output.get("cached_input_tokens", 0) or 0),
+                    cache_write_tokens=int(output.get("cache_write_tokens", 0) or 0),
+                    cache_source=str(output.get("cache_source", "none") or "none"),
+                    cache_saved_tokens=int(output.get("cache_saved_tokens", 0) or 0),
+                    cache_saved_cost_usd=float(output.get("cache_saved_cost_usd", 0.0) or 0.0),
                     gate_passed=gate_passed,
                     gate_score=output.get("gate_score"),
                     gate_violations=gate_violations,
@@ -679,6 +689,10 @@ class RunTaskCommand:
                     "agent_consult_completed",
                     "debate_round",
                     "feedback_loop",
+                    "cache_hit",
+                    "cache_miss",
+                    "artifact_cache_hit",
+                    "artifact_cache_miss",
                     "integration_invoked",
                     "integration_blocked",
                     "replan_triggered",

@@ -398,9 +398,12 @@ function EventCard({ step, index, costUsd, tokenStats, retryCount, consultCount,
 
   const gates       = step.gate_results ?? [];
   const hasFiles    = step.files_changed.length > 0;
+  const hasCache = (step.cache_source && step.cache_source !== "none")
+    || (step.cache_saved_tokens ?? 0) > 0
+    || (step.cached_input_tokens ?? 0) > 0;
   const gatesPassed = gates.length > 0 && gates.every((g) => g.passed);
   const gatesFailed = gates.some((g) => !g.passed);
-  const showPills   = hasFiles || gates.length > 0 || (costUsd !== undefined && costUsd > 0);
+  const showPills   = hasFiles || gates.length > 0 || (costUsd !== undefined && costUsd > 0) || hasCache;
 
   return (
     <article
@@ -465,9 +468,20 @@ function EventCard({ step, index, costUsd, tokenStats, retryCount, consultCount,
           {costUsd !== undefined && costUsd > 0 && (
             <span className="feed-pill cost">${costUsd.toFixed(4)}</span>
           )}
+          {hasCache && (
+            <span className="feed-pill">
+              {step.cache_source === "provider"
+                ? "cache hit"
+                : step.cache_source === "rigovo_semantic"
+                  ? "semantic cache"
+                  : step.cache_source === "rigovo_exact"
+                    ? "exact cache"
+                    : "cache"}
+            </span>
+          )}
         </div>
       )}
-      {(tokenStats || retryCount || consultCount || debateCount) && (
+      {(tokenStats || retryCount || consultCount || debateCount || (step.cache_saved_tokens ?? 0) > 0 || (step.cache_saved_cost_usd ?? 0) > 0) && (
         <div className="feed-pills mt-2">
           {tokenStats && tokenStats.total > 0 && (
             <>
@@ -479,6 +493,12 @@ function EventCard({ step, index, costUsd, tokenStats, retryCount, consultCount,
           {(retryCount ?? 0) > 0 && <span className="feed-pill fail">retry {retryCount}</span>}
           {(consultCount ?? 0) > 0 && <span className="feed-pill">consult {consultCount}</span>}
           {(debateCount ?? 0) > 0 && <span className="feed-pill">debate {debateCount}</span>}
+          {(step.cache_saved_tokens ?? 0) > 0 && (
+            <span className="feed-pill pass">saved {(step.cache_saved_tokens ?? 0).toLocaleString()} tok</span>
+          )}
+          {(step.cache_saved_cost_usd ?? 0) > 0 && (
+            <span className="feed-pill pass">saved ${Number(step.cache_saved_cost_usd ?? 0).toFixed(4)}</span>
+          )}
         </div>
       )}
     </article>

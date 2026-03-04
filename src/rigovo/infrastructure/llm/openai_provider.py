@@ -114,15 +114,26 @@ class OpenAIProvider(LLMProvider):
                     }
                 )
 
-        # Extract cached token info if available
-        input_tokens = response.usage.prompt_tokens if response.usage else 0
-        output_tokens = response.usage.completion_tokens if response.usage else 0
+        # Normalize usage with provider cache details when available.
+        usage = getattr(response, "usage", None)
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        prompt_details = getattr(usage, "prompt_tokens_details", None)
+        if isinstance(prompt_details, dict):
+            cached_tokens = int(prompt_details.get("cached_tokens", 0) or 0)
+        else:
+            cached_tokens = int(getattr(prompt_details, "cached_tokens", 0) or 0)
+        input_tokens = max(0, prompt_tokens - cached_tokens)
+        cache_source = "provider" if cached_tokens > 0 else "none"
 
         return LLMResponse(
             content=choice.message.content or "",
             usage=LLMUsage(
                 input_tokens=input_tokens,
-                output_tokens=output_tokens,
+                output_tokens=completion_tokens,
+                cached_input_tokens=cached_tokens,
+                cache_write_tokens=0,
+                cache_source=cache_source,
             ),
             model=self._model,
             stop_reason=choice.finish_reason or "",

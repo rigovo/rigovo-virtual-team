@@ -5,211 +5,210 @@
 <h1 align="center">Rigovo Teams</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.0-blue?style=flat-square" />
-  <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square" />
-  <img src="https://img.shields.io/badge/tests-946_passed-brightgreen?style=flat-square" />
-  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" />
-  <img src="https://img.shields.io/badge/desktop-Electron-blueviolet?style=flat-square" />
-</p>
-
-<p align="center">
-  <strong>Your virtual AI engineering team. Describe a task — get production-ready code.</strong>
+  <strong>Multi-agent software engineering with deterministic quality gates, transparent cost, and launch-speed execution.</strong>
 </p>
 
 ---
 
-## What Is Rigovo Teams
+## What Rigovo Is
 
-Rigovo Teams assembles a coordinated team of AI agents to turn task descriptions into production-ready code. Each agent has a specific role, learns from past work, and is governed by quality gates that enforce real standards.
+Rigovo Teams is a local-first AI engineering runtime that turns a task prompt into a structured, auditable software delivery flow.
 
-You describe what needs to be done. Rigovo handles the rest:
+It is designed for teams that want:
 
-1. **Scans** your codebase to understand context
-2. **Detects intent** — brainstorm, research, fix, or build — and allocates resources accordingly
-3. **Classifies** task type and complexity
-4. **Assembles** the right team (2–12 agents depending on intent)
-5. **Executes** each agent with tools, quality gates, and automatic retries
-6. **Reviews** code via parallel reviewer, security, and QA agents
-7. **Learns** from every task — memories and skill profiles persist across projects
+1. High intelligence output (planning + implementation + review)
+2. Strict quality enforcement (Rigour gates)
+3. Cost discipline (intent budgets, cache reuse, approval checkpoints)
+4. Full observability (map, timeline, logs, per-step token/cost telemetry)
 
 ---
 
-## The Team
+## Why This Is Different
 
-| Role | What It Does | Default Model |
+Tools like Cursor, Claude Code, and Codex are strong chat-first coding copilots for direct human-in-the-loop editing.
+
+Rigovo targets a different operating model: orchestrated, policy-aware, multi-agent execution.
+
+| Area | Rigovo Teams | Typical Chat-First Coding Assistant |
 |---|---|---|
-| **Planner** | Reads the codebase, produces a structured plan for the team | Sonnet |
-| **Coder** | Implements the task — writes code, runs tests, uses tools | Opus |
-| **Reviewer** | Reviews code for logic errors and improvements | Sonnet |
-| **Security** | Scans for vulnerabilities, injection risks, auth issues | Haiku |
-| **QA** | Writes and runs tests | Haiku |
-| **DevOps** | CI/CD, Docker, GitHub Actions, infrastructure config | Haiku |
-| **SRE** | Observability, alerting, SLOs, runbooks | Haiku |
-| **Tech Lead** | Final review across all agent outputs — SHIP or HOLD | Opus |
-| **Docs** | API docs, READMEs, architecture decision records | Sonnet |
+| Execution model | Multi-agent pipeline with explicit handoffs | Single active assistant loop |
+| Cost controls | Intent gate + token budgets + budget approval checkpoint | Usually prompt/session level controls |
+| Quality | Deterministic Rigour gates in pipeline | Mostly prompt-guided or post-hoc checking |
+| Auditability | Structured events, checkpoints, approvals, gate history | Primarily conversation history |
+| Caching | Provider cache + Rigovo exact/artifact cache telemetry | Provider-level caching only (varies by tool) |
+| Team UX | Map, Timeline, Logs aligned to pipeline state | Editor/chat centric UI |
 
-All models are configurable per-agent from the Settings → Agents tab in the desktop app, or via `rigovo.yml`.
+If your goal is "finish production tasks with clear governance and predictable spend", Rigovo is the better fit.
 
 ---
 
-## Intent Detection — Smart Resource Allocation
+## Launch Architecture (Current)
 
-Before any agent runs, Rigovo detects **what kind of task** you're asking for and allocates resources accordingly. This is zero-LLM, pure regex, under 5ms.
+### Core runtime path
 
-| Intent | Max Agents | Token Budget | File Reads | Planner Mode |
-|---|---|---|---|---|
-| **Brainstorm** | 2 | 50K | 0 | Think (no codebase) |
-| **Research** | 3 | 150K | 15 | Survey |
-| **Fix** | 5 | 300K | 30 | Survey |
-| **Build** | 12 | 500K | Unlimited | Survey |
+1. Scan workspace
+2. Classify task
+3. Detect intent and enforce budget/profile
+4. Route team and assemble agents
+5. Execute agents with gate checks and retries
+6. Finalize with confidence, costs, and full event trace
 
-A brainstorming task that only needs a conversation won't burn 500K tokens assembling 12 agents. Intent detection ensures you only pay for what the task actually needs.
+### Token budget policy (current defaults)
+
+| Intent | Max Agents | Tool Rounds | File Reads | Token Budget |
+|---|---:|---:|---:|---:|
+| brainstorm | 2 | 3 | 0 | 50,000 |
+| research | 3 | 10 | 15 | 150,000 |
+| fix | 4 | 12 | 30 | 200,000 |
+| build | 6 | 10 | unlimited | 200,000 |
+
+When the token budget is reached, Rigovo raises a budget approval checkpoint.
+If approved, the run extends budget and continues; if rejected, the run stops cleanly.
 
 ---
 
-## The Pipeline
+## Mermaid Flow Diagram
 
+```mermaid
+flowchart TD
+    A[User Task] --> B[scan_project]
+    B --> C[classify]
+    C --> D[intent_gate]
+    D --> E[route_team]
+    E --> F[assemble]
+
+    F --> G[execute_agent]
+    G --> H{quality_check}
+
+    H -- pass --> I{more agents?}
+    I -- yes --> G
+    I -- no --> J[finalize]
+
+    H -- fail --> K[retry with fix packet]
+    K --> H
+    H -- retry exhausted --> L[replan]
+    L --> G
+
+    G --> M{token budget exceeded?}
+    M -- no --> H
+    M -- yes --> N[approval requested]
+    N -- approve --> O[extend budget]
+    O --> G
+    N -- reject --> P[pipeline failed]
+
+    B -. artifact cache hit/miss .-> Q[(SQLite cache)]
+    C -. exact cache hit/miss .-> Q
+    E -. exact cache hit/miss .-> Q
+    G -. provider cache telemetry .-> R[usage + cost accounting]
+
+    J --> S[UI Summary: tokens, cost, gates, cache savings]
 ```
-scan → classify → intent_gate → route_team → assemble
-    ↓
-[Optional] plan_approval → REJECTED → done
-    ↓ approved
-execute_agent → quality_check
-    │              │
-    │        pass  ↓
-    │       next agent or parallel fan-out
-    │
-    │        fail → retry with fix packet (up to 5x)
-    │        fail → replan → retry once more
-    ↓
-[reviewer ║ security ║ qa] ← parallel execution
-    ↓
-[Optional debate] ← if reviewer requests changes
-    ↓
-[Optional] commit_approval
-    ↓
-enrich → evaluate_skills → store_memory → finalize
-```
 
 ---
 
-## Quality Gates
+## Caching Strategy (Implemented)
 
-After every code-producing agent, 23+ deterministic quality gates run automatically (no LLM cost, under 1 second):
+Rigovo currently runs three practical cache layers:
 
-- File size limits, type hints, naming conventions
-- Error handling (no bare `except:`), magic number detection
-- Async safety, import validation, forbidden content
-- Hallucinated imports, secrets detection, command injection
-- Output contract and persona boundary validation
+1. Provider prompt cache telemetry
+   - Anthropic and OpenAI cached input/write tokens are normalized into usage.
+2. Rigovo exact cache
+   - Deterministic reuse for classification fallback and team routing.
+3. Artifact cache
+   - Project scan snapshot and knowledge graph reuse when workspace fingerprint is unchanged.
 
-When gates fail, a **fix packet** tells the agent exactly what's wrong and how to fix it. The agent retries automatically (up to 5 attempts). If retries are exhausted, a **replan** generates a corrective directive and the agent runs once more.
+All cache effects are surfaced in task detail:
 
-**Smart deep mode** adds LLM-powered analysis selectively — for critical tasks, security roles, high-retry agents, and final pipeline steps.
-
-Every completed task receives a **confidence score** (0–100) based on gate pass rate, retry count, violations, and deep analysis results.
-
----
-
-## Memory and Learning
-
-Rigovo learns from every task:
-
-- **Memories** — extracted learnings stored as vectors, retrieved by semantic similarity for future tasks. Works across projects.
-- **Enrichment** — agent-specific pitfalls (e.g., "Never use bare except in auth code") persist and are injected into system prompts on subsequent tasks.
-- **Skill profiles** — rolling performance metrics per agent (success rate, avg tokens, common violations) that improve team composition decisions over time.
+- `cache_hits_exact`
+- `cache_hit_rate`
+- `cache_saved_tokens`
+- `cache_saved_cost_usd`
+- `provider_cached_input_tokens`
 
 ---
 
-## Desktop App
+## Quality and Trust Model
 
-Cross-platform Electron app with dark/light theme.
+Rigovo uses deterministic quality checks in the execution loop, not only prompt instructions.
 
-**Key screens:**
-- **Task Input** — describe what you want, select workspace
-- **Agent Timeline** — watch agents execute in real-time
-- **Pipeline Map** — visual DAG topology of the running pipeline
-- **Agent Detail** — execution logs, tool calls, cost, consultation threads
-- **Approval Cards** — approve/reject at plan and commit stages
-- **Settings** — API keys, per-agent model selection, orchestration config, quality gates
-
-**Settings are hot-reloaded** — changes apply to the next task immediately, no restart needed.
+- Gate pass/fail is explicit in state and UI.
+- Retries are structured (with fix packets).
+- Replan is explicit and visible.
+- Confidence is derived from concrete run evidence (gates, retries, outcomes).
 
 ---
 
-## Getting Started
+## Desktop UX
+
+The desktop app provides three synchronized run views:
+
+1. Map - agent graph and current state
+2. Timeline - chronological execution narrative
+3. Logs - compact step-level operational data
+
+Users can inspect:
+
+- What ran
+- What failed
+- Which gate failed
+- What was retried
+- What cache/budget decisions happened
+- What it cost
+
+---
+
+## Tech Stack
+
+- Backend: Python + FastAPI + LangGraph
+- Runtime DB: SQLite (`.rigovo/local.db`)
+- Desktop: Electron + React + TypeScript
+- Quality engine: Rigour
+
+Note: current launch path is SQLite-first local runtime.
+
+---
+
+## Quick Start
 
 ### Prerequisites
 
 - Python 3.10+
-- Node.js 20+ and pnpm 9+ (desktop app)
-- API key: Anthropic, OpenAI, Google, DeepSeek, Groq, or Mistral
-- WorkOS account (optional — for auth in desktop app)
+- Node.js 20+
+- pnpm 9+
+- At least one LLM API key (Anthropic/OpenAI/etc.)
 
-### Install
-
-```bash
-pip install rigovo
-```
-
-### Initialize a Project
+### Install dependencies
 
 ```bash
-cd your-project
-rigovo init
-# Creates: rigovo.yml, rigour.yml, .env, .rigovo/
+python3 -m pip install -e .
+pnpm -C apps/desktop install
 ```
 
-### Validate Setup
-
-```bash
-rigovo doctor
-# Checks: Python, config, API keys, database, Rigour CLI, git
-```
-
-### Run a Task (CLI)
-
-```bash
-rigovo run "Add input validation to all API endpoints with proper error responses"
-```
-
-### Desktop App (Development)
+### Start desktop dev flow
 
 ```bash
 ./scripts/e2e_desktop.sh
 ```
 
-### Desktop App (Production Build)
+### Run backend tests (targeted)
 
 ```bash
-pnpm -C apps/desktop install
+pytest -q tests/unit/api/test_control_plane_ping.py
+pytest -q tests/unit/application/test_graph_nodes_execute_agent.py
+pytest -q tests/unit/application/test_langgraph_engine.py -k "pipeline_classifies_task or pipeline_executes_agents or auto_approve_mode"
+```
+
+### Build desktop
+
+```bash
 pnpm -C apps/desktop run build
-pnpm -C apps/desktop run dist
-# Output: apps/desktop/release/ (macOS .dmg, Windows .exe, Linux .AppImage)
 ```
 
 ---
 
 ## Configuration
 
-### API Keys
-
-API keys are stored **encrypted in SQLite** — not in plain text files. Set them via the desktop Settings page or `.env` for CLI usage.
-
-```bash
-# .env (CLI usage)
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-### Per-Agent Model Configuration
-
-Three ways to configure which model each agent uses (highest priority wins):
-
-1. **Settings UI** — Desktop app → Settings → Agents tab (saves to `rigovo.yml`)
-2. **rigovo.yml** — `teams.engineering.agents.<role>.model`
-3. **Environment variable** — `LLM_AGENT_MODELS='{"coder":"claude-opus-4-6","qa":"claude-haiku-4-5"}'`
-
-### rigovo.yml
+`rigovo.yml` (example):
 
 ```yaml
 version: "1"
@@ -226,114 +225,57 @@ teams:
 
 orchestration:
   max_retries: 5
-  max_agents_per_task: 10
   consultation:
     enabled: true
   replan:
     enabled: true
-    strategy: deterministic  # deterministic | llm
+    strategy: deterministic
 
 approval:
   after_planning: true
   before_commit: true
 
 quality:
-  deep_mode: "smart"  # never | final | smart | always | ci
+  deep_mode: "smart"
 
 database:
-  backend: sqlite      # sqlite | postgres
+  backend: sqlite
   local_path: ".rigovo/local.db"
 ```
 
-### Auth (WorkOS)
-
-```bash
-# .env
-WORKOS_CLIENT_ID=client_01...
-RIGOVO_IDENTITY_PROVIDER=workos
-```
-
-Redirect URI must be `http://127.0.0.1:8787/v1/auth/callback` — set this in your WorkOS dashboard.
-
 ---
 
-## API
+## API Surface
 
-```
-POST   /v1/tasks                    Create a task
-GET    /v1/tasks/{id}               Task status + outputs + confidence score
-GET    /v1/tasks/{id}/detail        Full detail with events + execution logs
-GET    /v1/ui/inbox                 Task list
-GET    /v1/ui/approvals             Pending approvals
-POST   /v1/tasks/{id}/approve       Approve
-POST   /v1/tasks/{id}/deny          Reject
-GET    /v1/settings                 Current settings
-POST   /v1/settings                 Update settings (hot-reloaded)
-GET    /v1/auth/url                 WorkOS auth URL
-GET    /v1/auth/callback            Auth redirect handler
-GET    /v1/auth/session             Current session
-POST   /v1/auth/logout              Clear session
-GET    /v1/projects                 List projects
-POST   /v1/projects                 Register project
-GET    /health                      Health check
+```text
+POST   /v1/tasks
+GET    /v1/tasks/{id}
+GET    /v1/tasks/{id}/detail
+GET    /v1/ui/inbox
+GET    /v1/ui/approvals
+POST   /v1/tasks/{id}/approve
+POST   /v1/tasks/{id}/deny
+GET    /v1/settings
+POST   /v1/settings
+GET    /v1/projects
+POST   /v1/projects
+GET    /health
 ```
 
 ---
 
-## Running Tests
+## Launch Positioning
 
-```bash
-# Python (946 tests)
-pytest tests/ -q --ignore=tests/unit/infrastructure/test_dashboard.py
+Rigovo wins when users care about outcome per dollar, not just autocomplete speed:
 
-# TypeScript (zero errors)
-cd apps/desktop && npx tsc --noEmit
-```
+- Fewer wasted tokens through intent routing and cache reuse
+- Fewer broken outputs through deterministic gate enforcement
+- Higher trust through full execution audit trail
 
----
-
-## Project Structure
-
-```
-src/rigovo/
-├── api/control_plane.py          # FastAPI endpoints + event streaming
-├── application/
-│   ├── graph/
-│   │   ├── builder.py            # LangGraph pipeline builder
-│   │   ├── edges.py              # Conditional routing
-│   │   ├── state.py              # TaskState (pipeline data)
-│   │   └── nodes/                # Pipeline nodes (scan, classify, intent_gate,
-│   │                             #   route_team, assemble, execute_agent,
-│   │                             #   quality_check, replan, enrich, finalize)
-│   ├── context/                  # Codebase scanning, memory retrieval
-│   ├── commands/run_task.py      # Task execution entry point
-│   └── master/                   # Classification, routing, enrichment
-├── domains/engineering/          # Agent roles, tools, rules
-├── infrastructure/
-│   ├── llm/                      # LLM providers (Anthropic, OpenAI, etc.)
-│   ├── persistence/              # SQLite + PostgreSQL
-│   ├── quality/                  # Rigour quality gate builder
-│   └── filesystem/               # Sandboxed tool executor
-├── config.py                     # Config loading (rigovo.yml + .env + env vars)
-└── container.py                  # Dependency injection + hot-reload
-
-apps/desktop/
-├── src/main/                     # Electron main process
-├── src/preload/                  # Context bridge
-└── src/renderer/src/components/  # React UI (TaskDetail, AgentTimeline,
-                                  #   Settings, ApprovalCard, etc.)
-```
+That combination (intelligence + rigour + cost transparency) is the product moat.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
-
----
-
-<p align="center">
-  Built on <a href="https://github.com/langchain-ai/langgraph">LangGraph</a> ·
-  Governed by <a href="https://github.com/rigour-labs/rigour">Rigour</a> ·
-  Authenticated by <a href="https://workos.com">WorkOS</a>
-</p>
+MIT - see [LICENSE](LICENSE)

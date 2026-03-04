@@ -70,6 +70,11 @@ class PipelineStep:
     # Output summary (no code, no chain-of-thought — just the result)
     summary: str = ""
     files_changed: list[str] = field(default_factory=list)
+    cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_source: str = "none"
+    cache_saved_tokens: int = 0
+    cache_saved_cost_usd: float = 0.0
 
     # Gate results for this step (if applicable)
     gate_passed: bool | None = None

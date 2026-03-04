@@ -420,9 +420,16 @@ def _on_agent_event(event: dict) -> None:
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "output": event.get("summary", existing.get("output", "")),
             "files_changed": event.get("files_changed", []),
+            "input_tokens": event.get("input_tokens", 0),
+            "output_tokens": event.get("output_tokens", 0),
             "tokens": event.get("tokens", 0),
             "cost_usd": event.get("cost", 0.0),
             "duration_ms": event.get("duration_ms", 0),
+            "cached_input_tokens": event.get("cached_input_tokens", 0),
+            "cache_write_tokens": event.get("cache_write_tokens", 0),
+            "cache_source": event.get("cache_source", "none"),
+            "cache_saved_tokens": event.get("cache_saved_tokens", 0),
+            "cache_saved_cost_usd": event.get("cache_saved_cost_usd", 0.0),
             "gate_results": existing.get("gate_results", []),
             "execution_log": event.get("execution_log", existing.get("execution_log", [])),
             "execution_verified": event.get(
@@ -990,6 +997,10 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "integration_blocked",
             "replan_triggered",
             "replan_failed",
+            "cache_hit",
+            "cache_miss",
+            "artifact_cache_hit",
+            "artifact_cache_miss",
             "approval_requested",
             "approval_granted",
             "approval_denied",
@@ -2283,9 +2294,16 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                         "completed_at": ps.completed_at.isoformat() if ps.completed_at else None,
                         "output": ps.summary,
                         "files_changed": ps.files_changed or [],
+                        "input_tokens": ps.input_tokens,
+                        "output_tokens": ps.output_tokens,
                         "tokens": ps.total_tokens,
                         "cost_usd": ps.cost_usd,
                         "duration_ms": ps.duration_ms,
+                        "cached_input_tokens": getattr(ps, "cached_input_tokens", 0),
+                        "cache_write_tokens": getattr(ps, "cache_write_tokens", 0),
+                        "cache_source": getattr(ps, "cache_source", "none"),
+                        "cache_saved_tokens": getattr(ps, "cache_saved_tokens", 0),
+                        "cache_saved_cost_usd": getattr(ps, "cache_saved_cost_usd", 0.0),
                         "gate_results": gate_results,
                         "execution_log": ps.execution_log or [],
                         "execution_verified": ps.execution_verified,
@@ -2424,6 +2442,56 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             if isinstance(e, dict)
             and str(e.get("type", "")) in {"debate_round", "feedback_loop"}
         )
+        cache_hits_exact = sum(
+            1
+            for e in merged_events
+            if isinstance(e, dict)
+            and (
+                str(e.get("type", "")) == "artifact_cache_hit"
+                or (
+                    str(e.get("type", "")) == "cache_hit"
+                    and str(e.get("cache_source", "") or "") == "rigovo_exact"
+                )
+            )
+        )
+        cache_hits_semantic = sum(
+            1
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", "")) == "cache_hit"
+            and str(e.get("cache_source", "") or "") == "rigovo_semantic"
+        )
+        cache_lookups = sum(
+            1
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", "")) in {
+                "cache_hit",
+                "cache_miss",
+                "artifact_cache_hit",
+                "artifact_cache_miss",
+            }
+        )
+        cache_saved_tokens = sum(
+            int(s.get("cache_saved_tokens", 0) or 0)
+            for s in steps
+            if isinstance(s, dict)
+        )
+        cache_saved_tokens += sum(
+            int(e.get("saved_tokens", 0) or 0)
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", "")) == "cache_hit"
+        )
+        cache_saved_cost_usd = round(
+            sum(float(s.get("cache_saved_cost_usd", 0.0) or 0.0) for s in steps if isinstance(s, dict)),
+            6,
+        )
+        provider_cached_input_tokens = sum(
+            int(s.get("cached_input_tokens", 0) or 0)
+            for s in steps
+            if isinstance(s, dict)
+        )
 
         total_tokens = int((cost or {}).get("total_tokens") or task.total_tokens or 0)
         total_cost_usd = float((cost or {}).get("total_cost_usd") or task.total_cost_usd or 0.0)
@@ -2454,6 +2522,16 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             ),
             "consult_count": consult_count,
             "debate_count": debate_count,
+            "cache_hits_exact": cache_hits_exact,
+            "cache_hits_semantic": cache_hits_semantic,
+            "cache_hit_rate": (
+                round(((cache_hits_exact + cache_hits_semantic) / cache_lookups) * 100.0, 2)
+                if cache_lookups > 0
+                else None
+            ),
+            "cache_saved_tokens": cache_saved_tokens,
+            "cache_saved_cost_usd": cache_saved_cost_usd,
+            "provider_cached_input_tokens": provider_cached_input_tokens,
             "gates_total": gates_total,
             "gates_failed": gates_failed,
             "next_expected_role": next_expected_role,
@@ -2999,6 +3077,10 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                         "agent_name": name_by_agent_id.get(aid, label),
                         "input_tokens": 0,
                         "output_tokens": 0,
+                        "cached_input_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "cache_saved_tokens": 0,
+                        "cache_saved_cost_usd": 0.0,
                         "cost_usd": 0.0,
                         "model": "",
                     }
@@ -3008,6 +3090,36 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 per_agent[key]["model"] = e.llm_model or per_agent[key]["model"]
                 total_tokens += e.total_tokens
                 total_cost += e.cost_usd
+
+            # Fallback: when cost_ledger is empty, derive cost from persisted pipeline steps.
+            if not entries and task and task.pipeline_steps:
+                per_agent = {}
+                total_tokens = 0
+                total_cost = 0.0
+                for ps in task.pipeline_steps:
+                    role, instance, label = _canonical_agent_identity(
+                        getattr(ps, "agent_role", ""),
+                        getattr(ps, "agent_name", ""),
+                    )
+                    key = instance or role or "unknown"
+                    per_agent[key] = {
+                        "agent_role": role,
+                        "agent_instance": instance,
+                        "agent_name": label,
+                        "input_tokens": int(getattr(ps, "input_tokens", 0) or 0),
+                        "output_tokens": int(getattr(ps, "output_tokens", 0) or 0),
+                        "cached_input_tokens": int(getattr(ps, "cached_input_tokens", 0) or 0),
+                        "cache_write_tokens": int(getattr(ps, "cache_write_tokens", 0) or 0),
+                        "cache_saved_tokens": int(getattr(ps, "cache_saved_tokens", 0) or 0),
+                        "cache_saved_cost_usd": float(
+                            getattr(ps, "cache_saved_cost_usd", 0.0) or 0.0
+                        ),
+                        "cost_usd": float(getattr(ps, "cost_usd", 0.0) or 0.0),
+                        "model": "",
+                    }
+                    total_tokens += int(getattr(ps, "total_tokens", 0) or 0)
+                    total_cost += float(getattr(ps, "cost_usd", 0.0) or 0.0)
+
             return {
                 "task_id": task_id,
                 "total_tokens": total_tokens,

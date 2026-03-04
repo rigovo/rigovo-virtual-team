@@ -23,6 +23,7 @@ import logging
 import os
 from typing import Any
 
+from rigovo.application.cache_utils import stable_hash, usage_to_dict
 from rigovo.application.graph.state import TaskState
 from rigovo.application.master.classifier import (
     StaffingPlan,
@@ -77,6 +78,7 @@ async def classify_node(
     llm: LLMProvider,
     classifier: TaskClassifier | None = None,
     embedding_provider: Any | None = None,
+    cache_repo: Any | None = None,
 ) -> dict[str, Any]:
     """Run classification: Deterministic Brain first, then Master Agent LLM.
 
@@ -430,6 +432,70 @@ async def classify_node(
     # ══════════════════════════════════════════════════════════════════
     # FALLBACK: lightweight LLM classification (no classifier injected)
     # ══════════════════════════════════════════════════════════════════
+    workspace_id = str(state.get("workspace_id", "") or "")
+    cache_prompt_hash = stable_hash(
+        {
+            "v": "classify_fallback_v1",
+            "description": description,
+            "prompt": CLASSIFICATION_PROMPT,
+        }
+    )
+    cache_context_fingerprint = stable_hash(
+        {
+            "deterministic": deterministic_classification,
+            "workspace_type_hint": _derive_workspace_type(state, {"task_type": det_result.task_type}),
+            "project_root": str(state.get("project_root", "") or ""),
+        }
+    )
+    if cache_repo is not None and workspace_id:
+        cached = await cache_repo.get_exact(
+            workspace_id=workspace_id,
+            role="master_classify_fallback",
+            model=llm.model_name,
+            prompt_hash=cache_prompt_hash,
+            context_fingerprint=cache_context_fingerprint,
+        )
+        if cached and isinstance(cached.get("response"), dict):
+            cached_cls = cached["response"].get("classification")
+            if isinstance(cached_cls, dict):
+                events.append(
+                    {
+                        "type": "task_classified",
+                        "task_type": cached_cls.get("task_type"),
+                        "complexity": cached_cls.get("complexity"),
+                        "workspace_type": cached_cls.get("workspace_type"),
+                        "reasoning": cached_cls.get("reasoning", "Loaded from exact cache."),
+                    }
+                )
+                events.append(
+                    {
+                        "type": "cache_hit",
+                        "cache_source": "rigovo_exact",
+                        "role": "master_classify_fallback",
+                        "saved_tokens": int((cached.get("usage") or {}).get("total_tokens", 0) or 0),
+                    }
+                )
+                return {
+                    "classification": cached_cls,
+                    "deterministic_classification": deterministic_classification,
+                    "status": "classified",
+                    "cost_accumulator": {
+                        **state.get("cost_accumulator", {}),
+                        "classifier": {
+                            "tokens": 0,
+                            "cost": 0.0,
+                        },
+                    },
+                    "events": events,
+                }
+        events.append(
+            {
+                "type": "cache_miss",
+                "cache_source": "none",
+                "role": "master_classify_fallback",
+            }
+        )
+
     response = await llm.invoke(
         messages=[
             {"role": "system", "content": CLASSIFICATION_PROMPT},
@@ -477,6 +543,18 @@ async def classify_node(
             "reasoning": classification.get("reasoning"),
         }
     )
+    if cache_repo is not None and workspace_id:
+        await cache_repo.put_exact(
+            workspace_id=workspace_id,
+            role="master_classify_fallback",
+            model=llm.model_name,
+            prompt_hash=cache_prompt_hash,
+            context_fingerprint=cache_context_fingerprint,
+            response={"classification": classification},
+            usage=usage_to_dict(response.usage),
+            metadata={"task_type": classification.get("task_type", "feature")},
+            ttl_minutes=180,
+        )
 
     return {
         "classification": classification,

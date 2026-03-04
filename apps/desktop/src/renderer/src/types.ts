@@ -170,6 +170,11 @@ export interface TaskStep {
   tokens?: number;
   cost_usd?: number;
   duration_ms?: number;
+  cached_input_tokens?: number;
+  cache_write_tokens?: number;
+  cache_source?: "provider" | "rigovo_exact" | "rigovo_semantic" | "none" | string;
+  cache_saved_tokens?: number;
+  cache_saved_cost_usd?: number;
   gate_results: GateResult[];
   /** Phase 14: Commands executed and their exit codes */
   execution_log?: ExecutionLogEntry[];
@@ -224,6 +229,12 @@ export interface TaskDetail {
     saved_pct?: number | null;
     consult_count?: number;
     debate_count?: number;
+    cache_hits_exact?: number;
+    cache_hits_semantic?: number;
+    cache_hit_rate?: number | null;
+    cache_saved_tokens?: number;
+    cache_saved_cost_usd?: number;
+    provider_cached_input_tokens?: number;
     gates_total?: number;
     gates_failed?: number;
     next_expected_role?: string | null;

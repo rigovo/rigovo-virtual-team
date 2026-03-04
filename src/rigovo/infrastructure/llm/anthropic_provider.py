@@ -100,11 +100,25 @@ class AnthropicProvider(LLMProvider):
                     }
                 )
 
+        usage = getattr(response, "usage", None)
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        cached_input_tokens = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+        cache_write_tokens = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+        cache_source = (
+            "provider"
+            if cached_input_tokens > 0 or cache_write_tokens > 0
+            else "none"
+        )
+
         return LLMResponse(
             content=content,
             usage=LLMUsage(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cached_input_tokens=cached_input_tokens,
+                cache_write_tokens=cache_write_tokens,
+                cache_source=cache_source,
             ),
             model=self._model,
             stop_reason=response.stop_reason or "",

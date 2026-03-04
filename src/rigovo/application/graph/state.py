@@ -18,11 +18,18 @@ class AgentOutput(TypedDict, total=False):
 
     summary: str
     files_changed: list[str]
+    input_tokens: int
+    output_tokens: int
     tokens: int
     cost: float
     duration_ms: int
     subtask_count: int
     subtask_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
+    cache_source: str
+    cache_saved_tokens: int
+    cache_saved_cost_usd: float
     execution_log: list[ExecutionLogEntry]  # Phase 14 execution verification
     execution_verified: bool  # Whether execution verification passed
 

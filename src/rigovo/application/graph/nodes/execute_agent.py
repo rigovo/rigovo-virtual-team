@@ -1022,7 +1022,7 @@ async def _run_subtask(
         except Exception as exc:
             logger.debug("Stream callback failed for subtask start: %s", exc)
 
-    text, inp_tok, out_tok, files, _ = await _run_agentic_loop(
+    text, inp_tok, out_tok, files, loop_metrics = await _run_agentic_loop(
         llm=llm,
         messages=sub_messages,
         tool_defs=sub_tool_defs,
@@ -1039,6 +1039,8 @@ async def _run_subtask(
         "files_changed": files,
         "input_tokens": inp_tok,
         "output_tokens": out_tok,
+        "cached_input_tokens": int(loop_metrics.get("cached_input_tokens", 0) or 0),
+        "cache_write_tokens": int(loop_metrics.get("cache_write_tokens", 0) or 0),
     }
 
 
@@ -1064,6 +1066,9 @@ async def _run_agentic_loop(
     """
     total_input_tokens = 0
     total_output_tokens = 0
+    total_cached_input_tokens = 0
+    total_cache_write_tokens = 0
+    provider_cache_hits = 0
     all_text_parts: list[str] = []
     subtask_count_ref = {"value": 0}
     subtask_token_total_ref = {"value": 0}
@@ -1103,6 +1108,12 @@ async def _run_agentic_loop(
 
         total_input_tokens += response.usage.input_tokens
         total_output_tokens += response.usage.output_tokens
+        cached_tokens = int(getattr(response.usage, "cached_input_tokens", 0) or 0)
+        cache_write_tokens = int(getattr(response.usage, "cache_write_tokens", 0) or 0)
+        total_cached_input_tokens += cached_tokens
+        total_cache_write_tokens += cache_write_tokens
+        if cached_tokens > 0 or cache_write_tokens > 0:
+            provider_cache_hits += 1
 
         # Collect any text from this response
         if response.content:
@@ -1152,7 +1163,11 @@ async def _run_agentic_loop(
 
         async def _exec_single_tool(tc: dict) -> tuple[dict, str]:
             """Execute a single tool call, handling spawn_subtask as a meta-tool."""
-            nonlocal total_input_tokens, total_output_tokens
+            nonlocal total_input_tokens
+            nonlocal total_output_tokens
+            nonlocal total_cached_input_tokens
+            nonlocal total_cache_write_tokens
+            nonlocal provider_cache_hits
             if tc["name"] == "spawn_subtask":
                 if not subagent_enabled:
                     result_str = json.dumps(
@@ -1207,9 +1222,15 @@ async def _run_agentic_loop(
                     )
                     sub_in = int(sub_result.get("input_tokens", 0) or 0)
                     sub_out = int(sub_result.get("output_tokens", 0) or 0)
+                    sub_cached = int(sub_result.get("cached_input_tokens", 0) or 0)
+                    sub_cache_write = int(sub_result.get("cache_write_tokens", 0) or 0)
                     subtask_token_total_ref["value"] += sub_in + sub_out
                     total_input_tokens += sub_in
                     total_output_tokens += sub_out
+                    total_cached_input_tokens += sub_cached
+                    total_cache_write_tokens += sub_cache_write
+                    if sub_cached > 0 or sub_cache_write > 0:
+                        provider_cache_hits += 1
                     events.append(
                         {
                             "type": "subtask_complete",
@@ -1217,6 +1238,8 @@ async def _run_agentic_loop(
                             "subtask_index": subtask_count_ref["value"],
                             "input_tokens": sub_in,
                             "output_tokens": sub_out,
+                            "cached_input_tokens": sub_cached,
+                            "cache_write_tokens": sub_cache_write,
                             "files_changed": len(sub_result.get("files_changed", []) or []),
                         }
                     )
@@ -1392,6 +1415,9 @@ async def _run_agentic_loop(
         {
             "subtask_count": subtask_count_ref["value"],
             "subtask_tokens": subtask_token_total_ref["value"],
+            "cached_input_tokens": total_cached_input_tokens,
+            "cache_write_tokens": total_cache_write_tokens,
+            "provider_cache_hits": provider_cache_hits,
             "execution_log": execution_log,  # Phase 14
         },
     )
@@ -1586,6 +1612,44 @@ async def execute_agent_node(
     )
 
     start_time = time.monotonic()
+    cached_input_tokens = 0
+    cache_write_tokens = 0
+    cache_source = "none"
+    cache_saved_tokens = 0
+    cache_saved_cost_usd = 0.0
+    final_input_tokens = 0
+    final_output_tokens = 0
+
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _baseline_cost_or_actual(
+        *,
+        input_tok: int,
+        output_tok: int,
+        cached_tok: int,
+        cache_write_tok: int,
+        actual_cost: float,
+    ) -> float:
+        baseline_fn = getattr(cost_calculator, "calculate_uncached_baseline", None)
+        if callable(baseline_fn):
+            try:
+                return _safe_float(
+                    baseline_fn(
+                        model=llm_model,
+                        input_tokens=input_tok,
+                        output_tokens=output_tok,
+                        cached_input_tokens=cached_tok,
+                        cache_write_tokens=cache_write_tok,
+                    ),
+                    default=actual_cost,
+                )
+            except Exception:
+                return actual_cost
+        return actual_cost
 
     try:
         if tool_defs:
@@ -1613,14 +1677,34 @@ async def execute_agent_node(
                 batch_timeout=batch_timeout,
                 max_rounds=intent_max_rounds,
             )
-            total_tokens = input_tokens + output_tokens
+            cached_input_tokens = int(subtask_metrics.get("cached_input_tokens", 0) or 0)
+            cache_write_tokens = int(subtask_metrics.get("cache_write_tokens", 0) or 0)
+            if cached_input_tokens > 0 or cache_write_tokens > 0:
+                cache_source = "provider"
+            final_input_tokens = int(input_tokens)
+            final_output_tokens = int(output_tokens)
+            total_tokens = input_tokens + output_tokens + cached_input_tokens + cache_write_tokens
 
             # Calculate cost
-            cost = cost_calculator.calculate(
-                model=llm_model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
+            cost = _safe_float(
+                cost_calculator.calculate(
+                    model=llm_model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cached_input_tokens=cached_input_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                ),
+                default=0.0,
             )
+            uncached_baseline_cost = _baseline_cost_or_actual(
+                input_tok=input_tokens,
+                output_tok=output_tokens,
+                cached_tok=cached_input_tokens,
+                cache_write_tok=cache_write_tokens,
+                actual_cost=cost,
+            )
+            cache_saved_tokens = cached_input_tokens
+            cache_saved_cost_usd = round(max(0.0, uncached_baseline_cost - cost), 6)
         elif stream_callback:
             # --- Streaming mode for text-only agents (no tools) ---
             idle_timeout = runtime_agent_config.get("idle_timeout", DEFAULT_IDLE_TIMEOUT)
@@ -1635,11 +1719,34 @@ async def execute_agent_node(
             final_text = response.content
             total_tokens = response.usage.total_tokens
             files_changed = []
-            cost = cost_calculator.calculate(
-                model=llm_model,
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
+            cached_input_tokens = int(getattr(response.usage, "cached_input_tokens", 0) or 0)
+            cache_write_tokens = int(getattr(response.usage, "cache_write_tokens", 0) or 0)
+            final_input_tokens = int(response.usage.input_tokens)
+            final_output_tokens = int(response.usage.output_tokens)
+            cache_source = (
+                str(getattr(response.usage, "cache_source", "") or "none")
+                if (cached_input_tokens > 0 or cache_write_tokens > 0)
+                else "none"
             )
+            cost = _safe_float(
+                cost_calculator.calculate(
+                    model=llm_model,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                    cached_input_tokens=cached_input_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                ),
+                default=0.0,
+            )
+            uncached_baseline_cost = _baseline_cost_or_actual(
+                input_tok=response.usage.input_tokens,
+                output_tok=response.usage.output_tokens,
+                cached_tok=cached_input_tokens,
+                cache_write_tok=cache_write_tokens,
+                actual_cost=cost,
+            )
+            cache_saved_tokens = cached_input_tokens
+            cache_saved_cost_usd = round(max(0.0, uncached_baseline_cost - cost), 6)
             subtask_metrics = {"subtask_count": 0, "subtask_tokens": 0}
         else:
             # --- Batch mode for text-only agents (no tools, no streaming) ---
@@ -1654,11 +1761,34 @@ async def execute_agent_node(
             final_text = response.content
             total_tokens = response.usage.total_tokens
             files_changed = []
-            cost = cost_calculator.calculate(
-                model=llm_model,
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
+            cached_input_tokens = int(getattr(response.usage, "cached_input_tokens", 0) or 0)
+            cache_write_tokens = int(getattr(response.usage, "cache_write_tokens", 0) or 0)
+            final_input_tokens = int(response.usage.input_tokens)
+            final_output_tokens = int(response.usage.output_tokens)
+            cache_source = (
+                str(getattr(response.usage, "cache_source", "") or "none")
+                if (cached_input_tokens > 0 or cache_write_tokens > 0)
+                else "none"
             )
+            cost = _safe_float(
+                cost_calculator.calculate(
+                    model=llm_model,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                    cached_input_tokens=cached_input_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                ),
+                default=0.0,
+            )
+            uncached_baseline_cost = _baseline_cost_or_actual(
+                input_tok=response.usage.input_tokens,
+                output_tok=response.usage.output_tokens,
+                cached_tok=cached_input_tokens,
+                cache_write_tok=cache_write_tokens,
+                actual_cost=cost,
+            )
+            cache_saved_tokens = cached_input_tokens
+            cache_saved_cost_usd = round(max(0.0, uncached_baseline_cost - cost), 6)
             subtask_metrics = {"subtask_count": 0, "subtask_tokens": 0}
 
     except asyncio.TimeoutError:
@@ -1700,11 +1830,18 @@ async def execute_agent_node(
     agent_output: AgentOutput = {
         "summary": final_text,
         "files_changed": files_changed,
+        "input_tokens": int(final_input_tokens),
+        "output_tokens": int(final_output_tokens),
         "tokens": total_tokens,
         "cost": cost,
         "duration_ms": duration_ms,
         "subtask_count": int(subtask_metrics.get("subtask_count", 0) or 0),
         "subtask_tokens": int(subtask_metrics.get("subtask_tokens", 0) or 0),
+        "cached_input_tokens": int(cached_input_tokens),
+        "cache_write_tokens": int(cache_write_tokens),
+        "cache_source": cache_source,
+        "cache_saved_tokens": int(cache_saved_tokens),
+        "cache_saved_cost_usd": float(cache_saved_cost_usd),
         "execution_log": execution_log,  # Phase 14
         "execution_verified": execution_verified,  # Phase 14
     }
@@ -1728,15 +1865,21 @@ async def execute_agent_node(
             "type": "agent_complete",
             "role": current_role,
             "instance_id": current_instance,
-            "name": agent_config["name"],
             "name": runtime_agent_config["name"],
             "specialisation": runtime_agent_config.get("specialisation", ""),
+            "input_tokens": int(final_input_tokens),
+            "output_tokens": int(final_output_tokens),
             "tokens": total_tokens,
             "cost": cost,
             "duration_ms": duration_ms,
             "files_changed": files_changed,
             "summary": final_text,
             "subtask_count": int(subtask_metrics.get("subtask_count", 0) or 0),
+            "cached_input_tokens": int(cached_input_tokens),
+            "cache_write_tokens": int(cache_write_tokens),
+            "cache_source": cache_source,
+            "cache_saved_tokens": int(cache_saved_tokens),
+            "cache_saved_cost_usd": float(cache_saved_cost_usd),
             "execution_log": execution_log,
             "execution_verified": execution_verified,
         }
@@ -1789,6 +1932,10 @@ async def execute_agent_node(
             agent_config["id"]: {
                 "tokens": total_tokens,
                 "cost": cost,
+                "cached_input_tokens": int(cached_input_tokens),
+                "cache_write_tokens": int(cache_write_tokens),
+                "cache_saved_tokens": int(cache_saved_tokens),
+                "cache_saved_cost_usd": float(cache_saved_cost_usd),
             },
         },
         "status": f"agent_{current_instance}_complete",

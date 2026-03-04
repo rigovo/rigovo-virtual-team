@@ -400,6 +400,44 @@ function ExecutionLogSection({ step }: { step: TaskStep }) {
   );
 }
 
+function CacheSection({ step }: { step: TaskStep }) {
+  const savedTokens = step.cache_saved_tokens ?? 0;
+  const savedCostUsd = step.cache_saved_cost_usd ?? 0;
+  const cachedInput = step.cached_input_tokens ?? 0;
+  const cacheWrite = step.cache_write_tokens ?? 0;
+  const source = String(step.cache_source || "none");
+  if (source === "none" && savedTokens <= 0 && savedCostUsd <= 0 && cachedInput <= 0 && cacheWrite <= 0) {
+    return null;
+  }
+
+  const sourceLabel =
+    source === "provider"
+      ? "Provider prompt cache"
+      : source === "rigovo_exact"
+        ? "Rigovo exact cache"
+        : source === "rigovo_semantic"
+          ? "Rigovo semantic cache"
+          : source;
+
+  return (
+    <div className="adp-section">
+      <div className="adp-section-hdr">
+        <span className="adp-section-icon">🗄️</span>
+        <span className="adp-section-title">Cache</span>
+      </div>
+      <p className="adp-no-output" style={{ marginTop: 6 }}>
+        {sourceLabel}
+      </p>
+      <div className="adp-file-list" style={{ marginTop: 8 }}>
+        {cachedInput > 0 && <span className="adp-file-chip">cached input {cachedInput.toLocaleString()} tok</span>}
+        {cacheWrite > 0 && <span className="adp-file-chip">cache write {cacheWrite.toLocaleString()} tok</span>}
+        {savedTokens > 0 && <span className="adp-file-chip">saved {savedTokens.toLocaleString()} tok</span>}
+        {savedCostUsd > 0 && <span className="adp-file-chip">saved ${savedCostUsd.toFixed(4)}</span>}
+      </div>
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════════════════════════ */
 /*  GateSection — gate results summary + pills                          */
 /* ═══════════════════════════════════════════════════════════════════ */
@@ -523,6 +561,7 @@ export default function AgentDetailPanel({
             </div>
           )}
           <ExecutionLogSection step={step} />
+          <CacheSection step={step} />
           <GateSection step={step} />
           <FileList
             files={step.files_changed}

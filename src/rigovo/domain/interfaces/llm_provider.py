@@ -14,10 +14,21 @@ class LLMUsage:
 
     input_tokens: int = 0
     output_tokens: int = 0
+    # Provider prompt-cache read tokens (discounted billing path)
+    cached_input_tokens: int = 0
+    # Provider cache-write/create tokens (if provider reports separately)
+    cache_write_tokens: int = 0
+    # provider | rigovo_exact | rigovo_semantic | none
+    cache_source: str = "none"
 
     @property
     def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
+        return (
+            self.input_tokens
+            + self.cached_input_tokens
+            + self.cache_write_tokens
+            + self.output_tokens
+        )
 
 
 @dataclass

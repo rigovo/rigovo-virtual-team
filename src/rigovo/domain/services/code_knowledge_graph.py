@@ -332,10 +332,83 @@ class CodeKnowledgeGraph:
             "node_count": self.node_count,
             "edge_count": self.edge_count,
             "nodes": {p: n.to_dict() for p, n in self.nodes.items()},
+            "edges": [
+                {
+                    "source": e.source,
+                    "target": e.target,
+                    "import_string": e.import_string,
+                }
+                for e in self.edges
+            ],
             "clusters": [c.to_dict() for c in self.clusters],
             "reverse_deps": dict(self.reverse_deps),
             "forward_deps": dict(self.forward_deps),
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CodeKnowledgeGraph:
+        """Rehydrate a serialized graph payload."""
+        graph = cls(project_root=str(data.get("project_root", "")))
+        raw_nodes = data.get("nodes", {})
+        if isinstance(raw_nodes, dict):
+            for path, node_data in raw_nodes.items():
+                if not isinstance(node_data, dict):
+                    continue
+                graph.nodes[str(path)] = GraphNode(
+                    path=str(node_data.get("path", path)),
+                    language=str(node_data.get("language", "")),
+                    symbols=[
+                        str(s)
+                        for s in (node_data.get("symbols", []) or [])
+                        if isinstance(s, (str, int, float))
+                    ],
+                    imports=[
+                        str(i)
+                        for i in (node_data.get("imports", []) or [])
+                        if isinstance(i, (str, int, float))
+                    ],
+                    line_count=int(node_data.get("line_count", 0) or 0),
+                    size_bytes=int(node_data.get("size_bytes", 0) or 0),
+                )
+
+        raw_edges = data.get("edges", [])
+        if isinstance(raw_edges, list):
+            for edge in raw_edges:
+                if not isinstance(edge, dict):
+                    continue
+                graph.edges.append(
+                    GraphEdge(
+                        source=str(edge.get("source", "")),
+                        target=str(edge.get("target", "")),
+                        import_string=str(edge.get("import_string", "")),
+                    )
+                )
+
+        raw_clusters = data.get("clusters", [])
+        if isinstance(raw_clusters, list):
+            for cluster in raw_clusters:
+                if not isinstance(cluster, dict):
+                    continue
+                graph.clusters.append(
+                    DomainCluster(
+                        name=str(cluster.get("name", "domain")),
+                        files=[str(f) for f in (cluster.get("files", []) or [])],
+                        key_symbols=[str(s) for s in (cluster.get("key_symbols", []) or [])],
+                    )
+                )
+
+        graph.reverse_deps = {
+            str(k): [str(vv) for vv in (v or [])]
+            for k, v in (data.get("reverse_deps", {}) or {}).items()
+            if isinstance(v, list)
+        }
+        graph.forward_deps = {
+            str(k): [str(vv) for vv in (v or [])]
+            for k, v in (data.get("forward_deps", {}) or {}).items()
+            if isinstance(v, list)
+        }
+        # Backward-compatible: if edges were not serialized, indexes can still be used.
+        return graph
 
 
 class KnowledgeGraphBuilder:

@@ -9,7 +9,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """\
 -- Schema version tracking
@@ -144,6 +144,56 @@ CREATE TABLE IF NOT EXISTS sync_queue (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Prompt cache (exact match)
+CREATE TABLE IF NOT EXISTS prompt_cache_exact (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_hash TEXT NOT NULL,
+    context_fingerprint TEXT NOT NULL,
+    response_blob TEXT NOT NULL,   -- JSON
+    usage_blob TEXT,               -- JSON
+    metadata_blob TEXT,            -- JSON
+    ttl_expires_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(workspace_id, role, model, prompt_hash, context_fingerprint)
+);
+
+-- Prompt cache (semantic)
+CREATE TABLE IF NOT EXISTS prompt_cache_semantic (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    model TEXT NOT NULL,
+    query_hash TEXT NOT NULL,
+    query_text_norm TEXT NOT NULL,
+    embedding TEXT,                -- JSON array
+    response_blob TEXT NOT NULL,   -- JSON
+    usage_blob TEXT,               -- JSON
+    metadata_blob TEXT,            -- JSON
+    quality_score REAL DEFAULT 0,
+    ttl_expires_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Artifact cache (scanner + knowledge graph)
+CREATE TABLE IF NOT EXISTS artifact_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    workspace_fingerprint TEXT NOT NULL,
+    version TEXT NOT NULL,
+    artifact_blob TEXT NOT NULL,   -- JSON
+    metadata_blob TEXT,            -- JSON
+    ttl_expires_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(workspace_id, artifact_type, workspace_fingerprint, version)
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -154,6 +204,18 @@ CREATE INDEX IF NOT EXISTS idx_audit_task ON audit_log(task_id);
 CREATE INDEX IF NOT EXISTS idx_audit_unsynced ON audit_log(synced) WHERE synced = 0;
 CREATE INDEX IF NOT EXISTS idx_memories_workspace ON memories(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_sync_queue_pending ON sync_queue(entity_type) WHERE attempts < 5;
+CREATE INDEX IF NOT EXISTS idx_prompt_cache_exact_lookup
+    ON prompt_cache_exact(workspace_id, role, model, prompt_hash, context_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_prompt_cache_exact_ttl
+    ON prompt_cache_exact(ttl_expires_at);
+CREATE INDEX IF NOT EXISTS idx_prompt_cache_semantic_lookup
+    ON prompt_cache_semantic(workspace_id, role, model, query_hash);
+CREATE INDEX IF NOT EXISTS idx_prompt_cache_semantic_ttl
+    ON prompt_cache_semantic(ttl_expires_at);
+CREATE INDEX IF NOT EXISTS idx_artifact_cache_lookup
+    ON artifact_cache(workspace_id, artifact_type, workspace_fingerprint, version);
+CREATE INDEX IF NOT EXISTS idx_artifact_cache_ttl
+    ON artifact_cache(ttl_expires_at);
 """
 
 

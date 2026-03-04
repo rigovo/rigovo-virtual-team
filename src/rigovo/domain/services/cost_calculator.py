@@ -27,18 +27,22 @@ class ModelPricing:
     prices: dict[str, dict[str, float]] = field(
         default_factory=lambda: {
             # Anthropic (Feb 2026)
-            "claude-opus-4-6": {"input": 5.00, "output": 25.00},
-            "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
-            "claude-opus-4-5-20250624": {"input": 5.00, "output": 25.00},
-            "claude-sonnet-4-5-20250929": {"input": 3.00, "output": 15.00},
-            "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
+            "claude-opus-4-6": {"input": 5.00, "output": 25.00, "cached_input": 0.50},
+            "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
+            "claude-opus-4-5-20250624": {"input": 5.00, "output": 25.00, "cached_input": 0.50},
+            "claude-sonnet-4-5-20250929": {
+                "input": 3.00,
+                "output": 15.00,
+                "cached_input": 0.30,
+            },
+            "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00, "cached_input": 0.10},
             # OpenAI (Feb 2026)
-            "gpt-5": {"input": 1.25, "output": 10.00},
-            "gpt-5-mini": {"input": 0.25, "output": 2.00},
-            "gpt-4o": {"input": 5.00, "output": 15.00},
-            "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-            "o1": {"input": 15.00, "output": 60.00},
-            "o3-mini": {"input": 1.10, "output": 4.40},
+            "gpt-5": {"input": 1.25, "output": 10.00, "cached_input": 0.625},
+            "gpt-5-mini": {"input": 0.25, "output": 2.00, "cached_input": 0.125},
+            "gpt-4o": {"input": 5.00, "output": 15.00, "cached_input": 2.50},
+            "gpt-4o-mini": {"input": 0.15, "output": 0.60, "cached_input": 0.075},
+            "o1": {"input": 15.00, "output": 60.00, "cached_input": 7.50},
+            "o3-mini": {"input": 1.10, "output": 4.40, "cached_input": 0.55},
             # Google (Feb 2026)
             "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
             "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
@@ -68,6 +72,22 @@ class ModelPricing:
             return p["input"], p["output"]
         return self.default_input, self.default_output
 
+    def get_cached_input_pricing(self, model: str) -> float | None:
+        """Return cached-input price per 1M tokens, if configured."""
+        p = self.prices.get(model)
+        if not p:
+            return None
+        raw = p.get("cached_input")
+        return float(raw) if raw is not None else None
+
+    def get_cache_write_pricing(self, model: str) -> float | None:
+        """Return cache-write/create input price per 1M tokens, if configured."""
+        p = self.prices.get(model)
+        if not p:
+            return None
+        raw = p.get("cache_write")
+        return float(raw) if raw is not None else None
+
 
 class CostCalculator:
     """
@@ -84,6 +104,8 @@ class CostCalculator:
         model: str,
         input_tokens: int,
         output_tokens: int,
+        cached_input_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> float:
         """
         Calculate the cost of a single LLM call.
@@ -97,8 +119,36 @@ class CostCalculator:
             Cost in USD, rounded to 6 decimal places.
         """
         input_price, output_price = self._pricing.get_pricing(model)
+        cached_input_price = self._pricing.get_cached_input_pricing(model)
+        cache_write_price = self._pricing.get_cache_write_pricing(model)
+
         input_cost = (input_tokens / TOKENS_PER_MILLION) * input_price
+        # If a model-specific cached-input rate is unavailable, charge at normal input rate.
+        input_cost += (cached_input_tokens / TOKENS_PER_MILLION) * (
+            cached_input_price if cached_input_price is not None else input_price
+        )
+        # If a model-specific cache-write rate is unavailable, charge at normal input rate.
+        input_cost += (cache_write_tokens / TOKENS_PER_MILLION) * (
+            cache_write_price if cache_write_price is not None else input_price
+        )
         output_cost = (output_tokens / TOKENS_PER_MILLION) * output_price
+        return round(input_cost + output_cost, COST_PRECISION)
+
+    def calculate_uncached_baseline(
+        self,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cached_input_tokens: int = 0,
+        cache_write_tokens: int = 0,
+    ) -> float:
+        """Estimate cost if provider caching gave no discount."""
+        input_price, output_price = self._pricing.get_pricing(model)
+        full_input_tokens = max(0, input_tokens) + max(0, cached_input_tokens) + max(
+            0, cache_write_tokens
+        )
+        input_cost = (full_input_tokens / TOKENS_PER_MILLION) * input_price
+        output_cost = (max(0, output_tokens) / TOKENS_PER_MILLION) * output_price
         return round(input_cost + output_cost, COST_PRECISION)
 
     def estimate_task_cost(
