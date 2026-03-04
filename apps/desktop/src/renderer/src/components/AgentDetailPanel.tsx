@@ -60,6 +60,7 @@ export interface AgentDetailPanelProps {
   totalFiles:    number;
   expectedAgents?: number;
   nextExpectedRole?: string | null;
+  nextExpectedReason?: string | null;
   replanCount:   number;
   onOpenFiles:   (agent: string, files: string[]) => void;
   onApprove?:    () => void;
@@ -72,10 +73,7 @@ export interface AgentDetailPanelProps {
 /* ═══════════════════════════════════════════════════════════════════ */
 
 function GatePill({ gate }: { gate: GateResult }) {
-  const label = gate.gate === "persona" ? "persona boundary"
-    : gate.gate === "contract" ? "output contract"
-    : gate.gate === "no-files" ? "no files"
-    : gate.gate;
+  const label = gateDisplayLabel(gate);
   return (
     <span
       className="adp-gate-pill"
@@ -93,6 +91,22 @@ function GatePill({ gate }: { gate: GateResult }) {
       )}
     </span>
   );
+}
+
+function gateDisplayLabel(gate: GateResult): string {
+  if (gate.gate === "persona") return "persona boundary";
+  if (gate.gate === "contract") return "output contract";
+  if (gate.gate === "no-files") return "no files";
+  if (gate.gate !== "rigour") return gate.gate;
+
+  const msg = String(gate.message || "").trim();
+  const fromBracket = msg.match(/^\[([^\]]+)\]/)?.[1];
+  const fromPrefix = msg.match(/^([a-z0-9_.-]+)\s*:/i)?.[1];
+  const fromRule = msg.match(/(?:rule|check)\s*[:=]\s*([a-z0-9_.-]+)/i)?.[1];
+  const raw = fromBracket || fromPrefix || fromRule || "";
+  if (raw) return raw.replace(/[_-]+/g, " ").slice(0, 40);
+  if ((gate.violation_count ?? 0) > 0) return `rigour violation`;
+  return "rigour check";
 }
 
 function FileList({ files, onOpen, agent }: { files: string[]; onOpen: () => void; agent: string }) {
@@ -396,6 +410,13 @@ function GateSection({ step }: { step: TaskStep }) {
   const hasPersona = step.gate_results.some(g => g.gate === "persona");
   const hasDeep = step.gate_results.some(g => g.deep);
   if (step.gate_results.length === 0) return null;
+  const grouped = new Map<string, { gate: GateResult; count: number }>();
+  for (const g of step.gate_results) {
+    const key = `${g.passed ? "1" : "0"}|${g.deep ? "1" : "0"}|${gateDisplayLabel(g)}`;
+    const existing = grouped.get(key);
+    if (existing) existing.count += 1;
+    else grouped.set(key, { gate: g, count: 1 });
+  }
   return (
     <div className="adp-section">
       <div className="adp-section-hdr">
@@ -415,7 +436,14 @@ function GateSection({ step }: { step: TaskStep }) {
         </span>
       </div>
       <div className="adp-gate-pills">
-        {step.gate_results.map((g, i) => <GatePill key={i} gate={g} />)}
+        {Array.from(grouped.values()).map(({ gate, count }, i) => (
+          <span key={i} className="inline-flex items-center gap-1">
+            <GatePill gate={gate} />
+            {count > 1 && (
+              <span style={{ fontSize: "0.72em", opacity: 0.7, marginLeft: -2 }}>x{count}</span>
+            )}
+          </span>
+        ))}
       </div>
     </div>
   );
@@ -434,7 +462,7 @@ function resolveActiveRole(selectedRole: string | null, steps: TaskStep[]): stri
 
 export default function AgentDetailPanel({
   steps, taskStatus, selectedRole, collab, costs,
-  totalFiles, expectedAgents, nextExpectedRole, replanCount, onOpenFiles, onApprove, onReject, isApproval,
+  totalFiles, expectedAgents, nextExpectedRole, nextExpectedReason, replanCount, onOpenFiles, onApprove, onReject, isApproval,
 }: AgentDetailPanelProps) {
 
   const activeRole = resolveActiveRole(selectedRole, steps);
@@ -487,6 +515,11 @@ export default function AgentDetailPanel({
                   Waiting for next agent{nextExpectedRole ? `: ${nextExpectedRole}` : ""}
                 </span>
               </div>
+              {nextExpectedReason && (
+                <p className="adp-no-output" style={{ marginTop: 6 }}>
+                  Reason: {nextExpectedReason}
+                </p>
+              )}
             </div>
           )}
           <ExecutionLogSection step={step} />

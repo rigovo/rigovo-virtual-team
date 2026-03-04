@@ -379,10 +379,15 @@ function GovRow({ event, index }: { event: GovTimelineEvent; index: number }) {
   );
 }
 
-function EventCard({ step, index, costUsd, onOpenFiles }: {
+function EventCard({ step, index, costUsd, tokenStats, retryCount, consultCount, debateCount, highBurn, onOpenFiles }: {
   step: TaskStep;
   index: number;
   costUsd?: number;
+  tokenStats?: { input: number; output: number; total: number };
+  retryCount?: number;
+  consultCount?: number;
+  debateCount?: number;
+  highBurn?: boolean;
   onOpenFiles?: () => void;
 }) {
   const role = roleMeta(step.agent_role || step.agent);
@@ -407,6 +412,7 @@ function EventCard({ step, index, costUsd, onOpenFiles }: {
           <span className="text-base">{role.icon}</span>
           <span className={`text-sm font-semibold ${role.color}`}>{roleLabelText}</span>
           <span className={`text-[10px] font-medium uppercase ${statusTone(step.status)}`}>{step.status}</span>
+          {highBurn && <span className="feed-pill fail">high token burn</span>}
         </div>
         <div className="flex items-center gap-2">
           <KindBadge kind={kind} />
@@ -461,6 +467,20 @@ function EventCard({ step, index, costUsd, onOpenFiles }: {
           )}
         </div>
       )}
+      {(tokenStats || retryCount || consultCount || debateCount) && (
+        <div className="feed-pills mt-2">
+          {tokenStats && tokenStats.total > 0 && (
+            <>
+              <span className="feed-pill">in {tokenStats.input.toLocaleString()}</span>
+              <span className="feed-pill">out {tokenStats.output.toLocaleString()}</span>
+              <span className="feed-pill">total {tokenStats.total.toLocaleString()}</span>
+            </>
+          )}
+          {(retryCount ?? 0) > 0 && <span className="feed-pill fail">retry {retryCount}</span>}
+          {(consultCount ?? 0) > 0 && <span className="feed-pill">consult {consultCount}</span>}
+          {(debateCount ?? 0) > 0 && <span className="feed-pill">debate {debateCount}</span>}
+        </div>
+      )}
     </article>
   );
 }
@@ -474,6 +494,26 @@ function ResolutionCard({ step, index }: { step: TaskStep; index: number }) {
   const hasDeep = gates.some((g) => g.deep);
   const hasPersona = gates.some((g) => g.gate === "persona");
   const hasContract = gates.some((g) => g.gate === "contract");
+  const gateLabel = (g: TaskStep["gate_results"][number]): string => {
+    if (g.gate === "persona") return "persona boundary";
+    if (g.gate === "contract") return "output contract";
+    if (g.gate === "no-files") return "no files produced";
+    if (g.gate !== "rigour") return g.gate;
+    const msg = String(g.message || "").trim();
+    const fromBracket = msg.match(/^\[([^\]]+)\]/)?.[1];
+    const fromPrefix = msg.match(/^([a-z0-9_.-]+)\s*:/i)?.[1];
+    const fromRule = msg.match(/(?:rule|check)\s*[:=]\s*([a-z0-9_.-]+)/i)?.[1];
+    const raw = fromBracket || fromPrefix || fromRule || "";
+    if (raw) return raw.replace(/[_-]+/g, " ").slice(0, 40);
+    return "rigour issue";
+  };
+  const grouped = new Map<string, { gate: TaskStep["gate_results"][number]; count: number }>();
+  for (const g of gates) {
+    const key = `${g.passed ? "1" : "0"}|${gateLabel(g)}`;
+    const existing = grouped.get(key);
+    if (existing) existing.count += 1;
+    else grouped.set(key, { gate: g, count: 1 });
+  }
   return (
     <div
       className={`narrative-resolution animate-fadeup ${passed ? "pass" : "fail"}`}
@@ -499,16 +539,14 @@ function ResolutionCard({ step, index }: { step: TaskStep; index: number }) {
                 : `Rigour raised ${failures.length} issue${failures.length === 1 ? "" : "s"}. Next step should address these findings.`}
       </p>
       <div className="mt-2 flex flex-wrap gap-1.5">
-        {gates.map((g, idx) => {
-          const label = g.gate === "persona" ? "persona boundary"
-            : g.gate === "contract" ? "output contract"
-            : g.gate === "no-files" ? "no files produced"
-            : g.gate;
+        {Array.from(grouped.values()).map(({ gate: g, count }, idx) => {
+          const label = gateLabel(g);
           return (
             <span key={`${g.gate}-${idx}`} className={`rounded-md px-2 py-0.5 text-[10px] ${
               g.passed ? "role-badge-emerald" : "role-badge-rose"
             }`}>
               {label}
+              {count > 1 && <span className="ml-1 opacity-75">x{count}</span>}
               {g.violation_count != null && g.violation_count > 0 && !g.passed && (
                 <span className="ml-1 opacity-75">({g.violation_count})</span>
               )}
@@ -562,6 +600,19 @@ export default function AgentTimeline({ steps, taskType, collab, gov, costs, onO
       const role = String(entry.agent_role || "").trim().toLowerCase();
       if (!role) continue;
       map[role] = (map[role] ?? 0) + (entry.cost_usd ?? 0);
+    }
+    return map;
+  }, [costs]);
+  const usageByRole = useMemo(() => {
+    const map: Record<string, { input: number; output: number; total: number }> = {};
+    const entries = Object.values(costs?.per_agent ?? {});
+    for (const entry of entries) {
+      const role = String(entry.agent_role || "").trim().toLowerCase();
+      if (!role) continue;
+      map[role] = map[role] ?? { input: 0, output: 0, total: 0 };
+      map[role].input += entry.input_tokens ?? 0;
+      map[role].output += entry.output_tokens ?? 0;
+      map[role].total += (entry.input_tokens ?? 0) + (entry.output_tokens ?? 0);
     }
     return map;
   }, [costs]);
@@ -625,6 +676,32 @@ export default function AgentTimeline({ steps, taskType, collab, gov, costs, onO
           costs?.per_agent?.[stepInstanceKey(step)]?.cost_usd ??
           costs?.per_agent?.[stepRoleKey(step)]?.cost_usd ??
           costByRole[stepRoleKey(step)];
+        const tokenStats = (() => {
+          const byInstance = costs?.per_agent?.[stepInstanceKey(step)];
+          if (byInstance) {
+            const total = (byInstance.input_tokens ?? 0) + (byInstance.output_tokens ?? 0);
+            return { input: byInstance.input_tokens ?? 0, output: byInstance.output_tokens ?? 0, total };
+          }
+          const byRole = costs?.per_agent?.[stepRoleKey(step)];
+          if (byRole) {
+            const total = (byRole.input_tokens ?? 0) + (byRole.output_tokens ?? 0);
+            return { input: byRole.input_tokens ?? 0, output: byRole.output_tokens ?? 0, total };
+          }
+          return usageByRole[stepRoleKey(step)];
+        })();
+        const retryCount = govEvents.filter((e) =>
+          String(e.action || "").toLowerCase().includes("retry") ||
+          String(e.category || "").toLowerCase().includes("retry"),
+        ).length;
+        const consultCount = collabEvents.filter((e) =>
+          e.type === "agent_consult_requested" || e.type === "agent_consult_completed",
+        ).length;
+        const debateCount = collabEvents.filter((e) => e.type === "debate_round").length;
+        const stepTokenTotal = step.tokens ?? tokenStats?.total ?? 0;
+        const totalTaskTokens = costs?.total_tokens ?? 0;
+        const highBurn =
+          stepTokenTotal > 100_000 ||
+          (totalTaskTokens > 0 && stepTokenTotal > totalTaskTokens * 0.35);
 
         return (
           <div key={`${step.agent_instance || step.agent}-${idx}`} className="narrative-block">
@@ -641,6 +718,11 @@ export default function AgentTimeline({ steps, taskType, collab, gov, costs, onO
               step={step}
               index={idx}
               costUsd={agentCost}
+              tokenStats={tokenStats}
+              retryCount={retryCount}
+              consultCount={consultCount}
+              debateCount={debateCount}
+              highBurn={highBurn}
               onOpenFiles={step.files_changed.length > 0 ? () => onOpenFiles?.(step.agent_instance || step.agent, step.files_changed) : undefined}
             />
 

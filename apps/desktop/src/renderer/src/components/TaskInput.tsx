@@ -30,6 +30,7 @@ interface TaskInputProps {
   onAddFiles: () => void;
   mentionFiles: string[];
   taskTier?: Tier;
+  effectiveTier?: Tier;
   onTierChange?: (tier: Tier) => void;
 }
 
@@ -68,6 +69,7 @@ const TaskInput = forwardRef<TaskInputHandle, TaskInputProps>(
       onOpenSettings,
       mentionFiles,
       taskTier = "auto",
+      effectiveTier,
       onTierChange,
     },
     ref,
@@ -363,6 +365,12 @@ const TaskInput = forwardRef<TaskInputHandle, TaskInputProps>(
             <span className="composer-meta-item">{effortLabel}</span>
             <span className="composer-meta-sep">·</span>
             <span className="composer-meta-item">{modelLabel}</span>
+            <span className="composer-meta-sep">·</span>
+            <span className="composer-meta-item">compose mode: {activeTier.label}</span>
+            <span className="composer-meta-sep">·</span>
+            <span className="composer-meta-item">
+              task mode: {(effectiveTier ?? taskTier).toUpperCase()}
+            </span>
           </div>
         </div>
       </div>

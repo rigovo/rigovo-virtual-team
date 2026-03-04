@@ -920,6 +920,7 @@ export default function App(): JSX.Element {
               onAddFiles={() => { void openProject(); }}
               mentionFiles={mentionFiles}
               taskTier={taskTier}
+              effectiveTier={selectedTask?.tier}
               onTierChange={setTaskTier}
             />
           </>

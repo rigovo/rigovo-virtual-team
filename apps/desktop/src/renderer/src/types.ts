@@ -213,6 +213,23 @@ export interface TaskDetail {
   confidence_score?: number;
   /** Pipeline failure reason (only present when status is "failed") */
   error?: string | null;
+  /** Backend-precomputed bridge summary for UI display (preferred over local derivation). */
+  ui_summary?: {
+    tier_requested?: Tier;
+    tier_effective?: Tier;
+    tokens_total?: number;
+    cost_total_usd?: number;
+    elapsed_ms?: number | null;
+    baseline_tokens?: number | null;
+    saved_pct?: number | null;
+    consult_count?: number;
+    debate_count?: number;
+    gates_total?: number;
+    gates_failed?: number;
+    next_expected_role?: string | null;
+    next_expected_role_name?: string | null;
+    next_expected_reason?: string | null;
+  };
 }
 
 /* ---------- Electron IPC bridge (exposed via preload) ---------- */

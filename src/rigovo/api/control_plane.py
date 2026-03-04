@@ -2361,6 +2361,110 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             task.user_feedback if task.status == TaskStatus.FAILED and task.user_feedback else None
         )
 
+        all_gate_results = [
+            g
+            for s in steps
+            if isinstance(s, dict)
+            for g in (s.get("gate_results") or [])
+            if isinstance(g, dict)
+        ]
+        gates_total = len(all_gate_results)
+        gates_failed = sum(1 for g in all_gate_results if not bool(g.get("passed", False)))
+        completed_roles = {
+            str(s.get("agent_role", "")).strip().lower()
+            for s in steps
+            if isinstance(s, dict) and str(s.get("status", "")) == "complete"
+        }
+        preferred_role_order = [
+            "planner",
+            "coder",
+            "reviewer",
+            "security",
+            "qa",
+            "devops",
+            "sre",
+            "lead",
+        ]
+        next_expected_role = next(
+            (r for r in preferred_role_order if r in planned_roles and r not in completed_roles),
+            None,
+        )
+        running_step = next(
+            (s for s in steps if isinstance(s, dict) and str(s.get("status", "")) == "running"),
+            None,
+        )
+        if task.status == TaskStatus.FAILED:
+            next_expected_reason = None
+        elif running_step is not None:
+            next_expected_reason = "awaiting current execution"
+        elif gates_failed > 0:
+            next_expected_reason = "awaiting gate remediation"
+        else:
+            next_expected_reason = "queued by planner sequence"
+
+        collab_stored = (task.approval_data or {}).get("collaboration", {})
+        collab_events = (
+            collab_stored.get("events", [])
+            if isinstance(collab_stored, dict)
+            else []
+        )
+        if not isinstance(collab_events, list):
+            collab_events = []
+        live_events = _live_task_events.get(task_id, [])
+        merged_events = [*collab_events, *(live_events if isinstance(live_events, list) else [])]
+        consult_count = sum(
+            1
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", "")) in {"agent_consult_requested", "agent_consult_completed"}
+        )
+        debate_count = sum(
+            1
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", "")) in {"debate_round", "feedback_loop"}
+        )
+
+        total_tokens = int((cost or {}).get("total_tokens") or task.total_tokens or 0)
+        total_cost_usd = float((cost or {}).get("total_cost_usd") or task.total_cost_usd or 0.0)
+        elapsed_ms = None
+        if task.started_at:
+            end_ts = task.completed_at or datetime.utcnow()
+            elapsed_ms = max(0, int((end_ts - task.started_at).total_seconds() * 1000))
+
+        raw_baseline = (task.approval_data or {}).get("baseline_tokens")
+        try:
+            baseline_tokens = int(raw_baseline) if raw_baseline is not None else None
+        except Exception:
+            baseline_tokens = None
+        if baseline_tokens is not None and baseline_tokens <= 0:
+            baseline_tokens = None
+
+        ui_summary = {
+            "tier_requested": str(getattr(task, "tier", "auto") or "auto"),
+            "tier_effective": _tier_from_task(task),
+            "tokens_total": total_tokens,
+            "cost_total_usd": total_cost_usd,
+            "elapsed_ms": elapsed_ms,
+            "baseline_tokens": baseline_tokens,
+            "saved_pct": (
+                round(max(0.0, (baseline_tokens - total_tokens) / baseline_tokens * 100.0), 2)
+                if baseline_tokens
+                else None
+            ),
+            "consult_count": consult_count,
+            "debate_count": debate_count,
+            "gates_total": gates_total,
+            "gates_failed": gates_failed,
+            "next_expected_role": next_expected_role,
+            "next_expected_role_name": (
+                _canonical_agent_identity(next_expected_role or "", "")[2]
+                if next_expected_role
+                else None
+            ),
+            "next_expected_reason": next_expected_reason,
+        }
+
         return {
             "id": str(task.id),
             "description": task.description,
@@ -2378,6 +2482,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "approval_data": task.approval_data or {},
             "confidence_score": confidence_score,
             "error": error_reason,
+            "ui_summary": ui_summary,
         }
 
     @app.post("/v1/tasks")

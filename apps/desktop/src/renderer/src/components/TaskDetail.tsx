@@ -76,6 +76,58 @@ interface MissionData {
   }>;
 }
 
+function fmtDuration(ms: number | null | undefined): string {
+  if (!ms || ms <= 0) return "--";
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  if (m <= 0) return `${s}s`;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return `${h}h ${mm}m`;
+}
+
+function ValueStrip({
+  totalTokens,
+  totalCostUsd,
+  elapsedMs,
+  baselineTokens,
+  consultCount,
+  debateCount,
+}: {
+  totalTokens: number;
+  totalCostUsd: number;
+  elapsedMs: number | null;
+  baselineTokens: number | null;
+  consultCount: number;
+  debateCount: number;
+}) {
+  const hasBaseline = baselineTokens != null && baselineTokens > 0;
+  const savedPct = hasBaseline
+    ? Math.max(0, ((baselineTokens! - totalTokens) / baselineTokens!) * 100)
+    : null;
+  return (
+    <div className="td-value-strip">
+      <span className="td-value-item"><b>{totalTokens.toLocaleString()}</b> tokens</span>
+      <span className="td-value-sep">·</span>
+      <span className="td-value-item"><b>${totalCostUsd.toFixed(4)}</b> cost</span>
+      <span className="td-value-sep">·</span>
+      <span className="td-value-item"><b>{fmtDuration(elapsedMs)}</b> time</span>
+      <span className="td-value-sep">·</span>
+      <span className="td-value-item">baseline: <b>{hasBaseline ? baselineTokens!.toLocaleString() : "pending"}</b></span>
+      <span className="td-value-sep">·</span>
+      <span className={`td-value-item ${savedPct != null ? "save" : ""}`}>saved: <b>{savedPct != null ? `${savedPct.toFixed(1)}%` : "--"}</b></span>
+      {(consultCount > 0 || debateCount > 0) && (
+        <>
+          <span className="td-value-sep">·</span>
+          <span className="td-value-item">consult {consultCount} · debate {debateCount}</span>
+        </>
+      )}
+    </div>
+  );
+}
+
 function progressFromSteps(steps: TaskStep[]): { completed: number; total: number } {
   const byRole = new Map<string, { completed: boolean }>();
   for (const s of steps) {
@@ -799,18 +851,21 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
           : (detail?.steps.length ?? 0));
   const liveStepsCost = (detail?.steps ?? []).reduce((sum, s) => sum + (s.cost_usd ?? 0), 0);
   const mapTotalCost = (costs?.total_cost_usd && costs.total_cost_usd > 0) ? costs.total_cost_usd : liveStepsCost;
-  const completedBaseRoles = new Set(
-    (detail?.steps ?? [])
-      .filter((s) => s.status === "complete")
-      .map((s) => resolveCanonicalRole(s.agent_role || s.agent))
-  );
-  const preferredRoleOrder = ["planner", "coder", "reviewer", "security", "qa", "devops", "sre", "lead"];
-  const missionRoles = (
-    mission?.team.roles?.length
-      ? mission.team.roles
-      : (detail?.planned_roles ?? [])
-  ).map(resolveCanonicalRole);
-  const nextRole = preferredRoleOrder.find((r) => missionRoles.includes(r) && !completedBaseRoles.has(r)) ?? null;
+  const summary = detail?.ui_summary ?? null;
+  const summaryMissing = hasSteps && !summary;
+  const nextRole = summary?.next_expected_role ?? null;
+  const effectiveTier = summary?.tier_effective ?? "auto";
+  const requestedTier = summary?.tier_requested ?? "auto";
+  const tierMismatch = effectiveTier !== requestedTier;
+  const missionTokens = summary?.tokens_total ?? 0;
+  const missionCost = summary?.cost_total_usd ?? 0;
+  const runElapsedMs = summary?.elapsed_ms ?? null;
+  const baselineTokens = summary?.baseline_tokens ?? null;
+  const consultCount = summary?.consult_count ?? 0;
+  const debateCount = summary?.debate_count ?? 0;
+  const nextExpectedReason = summary?.next_expected_reason ?? null;
+  const gatesFailedSummary = summary?.gates_failed ?? gatesFailed;
+  const gatesTotalSummary = summary?.gates_total ?? allGates.length;
 
   return (
     <div className="animate-fadeup h-full flex flex-col">
@@ -820,7 +875,9 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
         <div className="td-header-left">
           <h2 className="td-title">{task.title}</h2>
           <div className="td-badges">
-            <span className={tierClass(task.tier)}>{task.tier}</span>
+            <span className={tierClass(effectiveTier)}>{effectiveTier}</span>
+            {tierMismatch && <span className="td-type-badge">requested: {requestedTier}</span>}
+            <span className="td-type-badge">mode: {effectiveTier}</span>
             <span className={statusClass(task.status)}>{task.status}</span>
             {detail?.task_type && (
               <span className="td-type-badge">{detail.task_type}</span>
@@ -852,8 +909,17 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
             {replanCount > 0 && (
               <span className="td-replan-chip">↺ {replanCount} replan{replanCount !== 1 ? "s" : ""}</span>
             )}
-            {gatesFailed > 0 && (
-              <span className="td-gate-fail-chip">⚡ {gatesFailed} gate{gatesFailed !== 1 ? "s" : ""} failed</span>
+            {gatesFailedSummary > 0 && (
+              <span className="td-gate-fail-chip">⚡ {gatesFailedSummary} gate{gatesFailedSummary !== 1 ? "s" : ""} failed</span>
+            )}
+            {(consultCount > 0 || debateCount > 0) && (
+              <span className="td-type-badge">consult {consultCount} · debate {debateCount}</span>
+            )}
+            {isActive && nextRole && (
+              <span className="td-type-badge">next: {canonicalAgentLabel(nextRole)}</span>
+            )}
+            {summaryMissing && (
+              <span className="td-gate-fail-chip">bridge summary missing</span>
             )}
           </div>
         </div>
@@ -905,6 +971,16 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
           {actionMsg && <span className="text-[10px] text-[var(--ui-text-muted)]">{actionMsg}</span>}
         </div>
       </div>
+      {hasSteps && (
+        <ValueStrip
+          totalTokens={missionTokens}
+          totalCostUsd={missionCost}
+          elapsedMs={runElapsedMs}
+          baselineTokens={baselineTokens}
+          consultCount={consultCount}
+          debateCount={debateCount}
+        />
+      )}
 
       {/* ── Live status strip (running) ── */}
       {isActive && hasSteps && <NowStrip steps={detail!.steps} />}
@@ -963,8 +1039,8 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
                 expectedAgents={expectedAgents}
                 nextExpectedRole={nextRole ? canonicalAgentLabel(nextRole) : null}
                 replanCount={replanCount}
-                gatesTotal={allGates.length}
-                gatesFailed={gatesFailed}
+                gatesTotal={gatesTotalSummary}
+                gatesFailed={gatesFailedSummary}
                 selectedAgent={selectedAgent}
                 onSelectAgent={setSelectedAgent}
               />
@@ -1013,6 +1089,7 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
             totalFiles={totalFiles}
             expectedAgents={expectedAgents}
             nextExpectedRole={nextRole ? canonicalAgentLabel(nextRole) : null}
+            nextExpectedReason={nextExpectedReason}
             replanCount={replanCount}
             onOpenFiles={openFilesDrawer}
             isApproval={isApproval}
