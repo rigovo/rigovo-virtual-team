@@ -7,13 +7,14 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from uuid import UUID, uuid4
 
 import httpx
@@ -30,6 +31,7 @@ from rigovo.domain.entities.task import TaskStatus
 from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
 from rigovo.infrastructure.persistence.sqlite_settings_repo import SqliteSettingsRepository
 from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
+from rigovo.infrastructure.plugins.manifest import PluginManifest
 
 # ── Module-level refs set by create_api() ──────────────────────────
 # These are assigned inside create_api() so that module-level event
@@ -84,6 +86,61 @@ _ROLE_KEYWORDS: dict[str, str] = {
     "trinity": "trinity",
 }
 _SINGLETON_ROLES = {"master", "memory", "rigour", "trinity"}
+
+_MARKETPLACE_INTEGRATIONS: list[dict[str, Any]] = [
+    {
+        "id": "figma-read",
+        "name": "Figma Read",
+        "summary": "Inspect frames and design metadata from Figma.",
+        "kind": "connector",
+        "trust_level": "verified",
+        "connector": {
+            "id": "figma",
+            "provider": "figma",
+            "kind": "api",
+            "outbound_actions": ["figma.read", "figma.comment"],
+        },
+    },
+    {
+        "id": "miro-board-read",
+        "name": "Miro Board Read",
+        "summary": "Read board context for planning and architecture synthesis.",
+        "kind": "connector",
+        "trust_level": "verified",
+        "connector": {
+            "id": "miro",
+            "provider": "miro",
+            "kind": "api",
+            "outbound_actions": ["miro.read"],
+        },
+    },
+    {
+        "id": "gdrive-search",
+        "name": "Google Drive Search",
+        "summary": "Search and read docs from Google Drive.",
+        "kind": "connector",
+        "trust_level": "verified",
+        "connector": {
+            "id": "gdrive",
+            "provider": "gdrive",
+            "kind": "api",
+            "outbound_actions": ["gdrive.search", "gdrive.read"],
+        },
+    },
+    {
+        "id": "figma-mcp",
+        "name": "Figma MCP Server",
+        "summary": "MCP server for frame-level reads and file listing.",
+        "kind": "mcp",
+        "trust_level": "verified",
+        "mcp_server": {
+            "id": "figma-mcp",
+            "transport": "stdio",
+            "command": "npx -y @acme/figma-mcp",
+            "operations": ["figma.read_frame", "figma.list_files"],
+        },
+    },
+]
 
 
 def _normalize_step_status(raw: str | None) -> str:
@@ -573,6 +630,53 @@ class UpdateSettingsRequest(BaseModel):
     db_backend: str | None = None  # sqlite|postgres
     local_db_path: str | None = None  # Used when backend=sqlite
     db_url: str | None = None  # Postgres DSN (persisted to .env)
+
+
+class CustomConnectorRequest(BaseModel):
+    id: str
+    provider: str = ""
+    kind: str = "api"  # webhook|api|socket
+    inbound_events: list[str] = Field(default_factory=list)
+    outbound_actions: list[str] = Field(default_factory=list)
+
+
+class CustomMCPServerRequest(BaseModel):
+    id: str
+    transport: str = "stdio"  # stdio|sse|http
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str = ""
+    operations: list[str] = Field(default_factory=list)
+
+
+class AddCustomIntegrationRequest(BaseModel):
+    plugin_id: str
+    name: str = ""
+    description: str = ""
+    trust_level: str = "verified"  # community|verified|internal
+    connector: CustomConnectorRequest | None = None
+    mcp_server: CustomMCPServerRequest | None = None
+    enable_plugin: bool = True
+    enable_tools: bool = True
+    allow_operations: bool = True
+
+
+class MarketplaceInstallRequest(BaseModel):
+    integration_id: str
+    plugin_id: str | None = None
+    enable_plugin: bool = True
+    enable_tools: bool = True
+    allow_operations: bool = True
+
+
+class GitHubInstallRequest(BaseModel):
+    github_url: str
+    ref: str = "main"
+    plugin_id: str | None = None
+    enable_plugin: bool = True
+    enable_tools: bool = True
+    allow_operations: bool = True
 
 
 class PersonaMember(BaseModel):
@@ -1562,6 +1666,375 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "blocked_plugins": blocked_plugins,
             },
         }
+
+    @app.post("/v1/integrations/custom")
+    async def add_custom_integration(req: AddCustomIntegrationRequest) -> dict[str, Any]:
+        """Register or update a custom connector/MCP plugin end-to-end.
+
+        Writes a plugin manifest under `.rigovo/plugins/<plugin_id>/plugin.yml`,
+        updates `rigovo.yml.plugins` policy/enabled list, and hot-reloads config.
+        """
+        await asyncio.sleep(0)
+        if req.connector is None and req.mcp_server is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide at least one integration target: connector or mcp_server.",
+            )
+
+        def _slug(value: str, fallback: str) -> str:
+            s = re.sub(r"[^a-z0-9._-]+", "-", str(value or "").strip().lower()).strip("-")
+            return s or fallback
+
+        def _merge_unique(base: list[str], extra: list[str]) -> list[str]:
+            return list(dict.fromkeys([*(base or []), *(extra or [])]))
+
+        plugin_id = _slug(req.plugin_id, "custom-plugin")
+        trust_level = str(req.trust_level or "verified").strip().lower()
+        if trust_level not in {"community", "verified", "internal"}:
+            raise HTTPException(
+                status_code=400,
+                detail="trust_level must be one of: community|verified|internal",
+            )
+
+        plugin_root = root / ".rigovo" / "plugins" / plugin_id
+        plugin_root.mkdir(parents=True, exist_ok=True)
+        manifest_path = plugin_root / "plugin.yml"
+
+        if manifest_path.exists():
+            raw_existing = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        else:
+            raw_existing = {
+                "schema_version": "rigovo.plugin.v1",
+                "id": plugin_id,
+                "name": req.name.strip() or plugin_id.replace("-", " ").title(),
+                "version": "0.1.0",
+                "description": req.description.strip(),
+                "author": "workspace",
+                "enabled": True,
+                "trust_level": trust_level,
+                "capabilities": [],
+                "connectors": [],
+                "mcp_servers": [],
+                "actions": [],
+                "skills": [],
+                "hooks": [],
+            }
+
+        raw_existing["id"] = plugin_id
+        raw_existing["name"] = req.name.strip() or raw_existing.get("name") or plugin_id
+        raw_existing["description"] = req.description.strip() or raw_existing.get("description", "")
+        raw_existing["enabled"] = bool(req.enable_plugin)
+        raw_existing["trust_level"] = trust_level
+        raw_existing.setdefault("connectors", [])
+        raw_existing.setdefault("mcp_servers", [])
+        raw_existing.setdefault("actions", [])
+        raw_existing.setdefault("skills", [])
+        raw_existing.setdefault("hooks", [])
+
+        created_connector_id = ""
+        created_mcp_id = ""
+
+        if req.connector is not None:
+            cid = _slug(req.connector.id, "connector")
+            created_connector_id = cid
+            connectors = list(raw_existing.get("connectors") or [])
+            next_connector = {
+                "id": cid,
+                "provider": (req.connector.provider or cid).strip(),
+                "kind": (req.connector.kind or "api").strip(),
+                "inbound_events": [e.strip() for e in req.connector.inbound_events if str(e).strip()],
+                "outbound_actions": [a.strip() for a in req.connector.outbound_actions if str(a).strip()],
+                "config_schema": {},
+            }
+            replaced = False
+            for idx, existing in enumerate(connectors):
+                if str(existing.get("id", "")).strip().lower() == cid:
+                    connectors[idx] = next_connector
+                    replaced = True
+                    break
+            if not replaced:
+                connectors.append(next_connector)
+            raw_existing["connectors"] = connectors
+
+        if req.mcp_server is not None:
+            mid = _slug(req.mcp_server.id, "mcp")
+            created_mcp_id = mid
+            mcp_servers = list(raw_existing.get("mcp_servers") or [])
+            next_mcp = {
+                "id": mid,
+                "transport": (req.mcp_server.transport or "stdio").strip(),
+                "command": (req.mcp_server.command or "").strip(),
+                "args": [a.strip() for a in req.mcp_server.args if str(a).strip()],
+                "env": {str(k): str(v) for k, v in (req.mcp_server.env or {}).items()},
+                "url": (req.mcp_server.url or "").strip(),
+                "operations": [o.strip() for o in req.mcp_server.operations if str(o).strip()],
+            }
+            replaced = False
+            for idx, existing in enumerate(mcp_servers):
+                if str(existing.get("id", "")).strip().lower() == mid:
+                    mcp_servers[idx] = next_mcp
+                    replaced = True
+                    break
+            if not replaced:
+                mcp_servers.append(next_mcp)
+            raw_existing["mcp_servers"] = mcp_servers
+
+        caps = set(str(c).strip().lower() for c in (raw_existing.get("capabilities") or []))
+        if raw_existing.get("connectors"):
+            caps.add("connector")
+        if raw_existing.get("mcp_servers"):
+            caps.add("mcp")
+        raw_existing["capabilities"] = sorted(c for c in caps if c)
+
+        manifest = PluginManifest.model_validate(raw_existing)
+        manifest_path.write_text(
+            yaml.dump(manifest.model_dump(), default_flow_style=False, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        yml_path = root / "rigovo.yml"
+        yml_data: dict[str, Any] = {}
+        if yml_path.exists():
+            yml_data = yaml.safe_load(yml_path.read_text(encoding="utf-8")) or {}
+        plugins_section = yml_data.setdefault("plugins", {})
+        if not isinstance(plugins_section, dict):
+            plugins_section = {}
+            yml_data["plugins"] = plugins_section
+
+        paths = list(plugins_section.get("paths") or [])
+        if ".rigovo/plugins" not in paths:
+            paths.append(".rigovo/plugins")
+        plugins_section["paths"] = paths
+
+        if req.enable_plugin:
+            enabled_plugins = set(plugins_section.get("enabled_plugins") or [])
+            enabled_plugins.add(plugin_id)
+            plugins_section["enabled_plugins"] = sorted(enabled_plugins)
+
+        if req.enable_tools and req.connector is not None:
+            plugins_section["enable_connector_tools"] = True
+        if req.enable_tools and req.mcp_server is not None:
+            plugins_section["enable_mcp_tools"] = True
+
+        allowed_plugin_ids = list(plugins_section.get("allowed_plugin_ids") or [])
+        if allowed_plugin_ids:
+            plugins_section["allowed_plugin_ids"] = _merge_unique(allowed_plugin_ids, [plugin_id])
+
+        if req.allow_operations and req.connector is not None:
+            plugins_section["allowed_connector_operations"] = _merge_unique(
+                list(plugins_section.get("allowed_connector_operations") or []),
+                [a.strip() for a in req.connector.outbound_actions if str(a).strip()],
+            )
+        if req.allow_operations and req.mcp_server is not None:
+            plugins_section["allowed_mcp_operations"] = _merge_unique(
+                list(plugins_section.get("allowed_mcp_operations") or []),
+                [o.strip() for o in req.mcp_server.operations if str(o).strip()],
+            )
+
+        yml_path.write_text(
+            yaml.dump(yml_data, default_flow_style=False, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        try:
+            container.reload_config()
+        except Exception as exc:
+            logger.warning("Config reload failed after custom integration add: %s", exc)
+
+        return {
+            "status": "ok",
+            "plugin_id": plugin_id,
+            "connector_id": created_connector_id,
+            "mcp_server_id": created_mcp_id,
+            "manifest_path": str(manifest_path.relative_to(root)),
+        }
+
+    @app.post("/v1/integrations/github/install")
+    async def install_github_integration(req: GitHubInstallRequest) -> dict[str, Any]:
+        """Install plugin manifest directly from a GitHub repository URL."""
+        await asyncio.sleep(0)
+
+        def _slug(value: str, fallback: str) -> str:
+            s = re.sub(r"[^a-z0-9._-]+", "-", str(value or "").strip().lower()).strip("-")
+            return s or fallback
+
+        def _merge_unique(base: list[str], extra: list[str]) -> list[str]:
+            return list(dict.fromkeys([*(base or []), *(extra or [])]))
+
+        parsed = urlparse(req.github_url.strip())
+        if parsed.scheme not in {"https", "http"} or parsed.netloc.lower() not in {
+            "github.com",
+            "www.github.com",
+        }:
+            raise HTTPException(status_code=400, detail="github_url must be a valid github.com URL.")
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) < 2:
+            raise HTTPException(status_code=400, detail="github_url must include owner/repo.")
+        owner, repo = parts[0], parts[1].removesuffix(".git")
+        if not owner or not repo:
+            raise HTTPException(status_code=400, detail="Invalid owner/repo in github_url.")
+
+        ref = (req.ref or "main").strip() or "main"
+        candidates = [
+            "plugin.yml",
+            "plugin.yaml",
+            "plugin.json",
+            "manifest.yml",
+            "manifest.yaml",
+            "manifest.json",
+        ]
+        manifest_raw: dict[str, Any] | None = None
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            for candidate in candidates:
+                raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{candidate}"
+                try:
+                    resp = await client.get(raw_url)
+                except Exception:
+                    continue
+                if resp.status_code != 200 or not resp.text.strip():
+                    continue
+                try:
+                    if candidate.endswith(".json"):
+                        payload = json.loads(resp.text)
+                    else:
+                        payload = yaml.safe_load(resp.text) or {}
+                except Exception:
+                    continue
+                if isinstance(payload, dict):
+                    manifest_raw = payload
+                    break
+        if manifest_raw is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No plugin manifest found in repository root (plugin.yml/plugin.json).",
+            )
+
+        manifest = PluginManifest.model_validate(manifest_raw)
+        plugin_id = _slug(req.plugin_id or manifest.id, "github-plugin")
+        manifest.id = plugin_id
+        if not manifest.name:
+            manifest.name = plugin_id
+
+        plugin_root = root / ".rigovo" / "plugins" / plugin_id
+        plugin_root.mkdir(parents=True, exist_ok=True)
+        manifest_path = plugin_root / "plugin.yml"
+        manifest_path.write_text(
+            yaml.dump(manifest.model_dump(), default_flow_style=False, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        yml_path = root / "rigovo.yml"
+        yml_data: dict[str, Any] = {}
+        if yml_path.exists():
+            yml_data = yaml.safe_load(yml_path.read_text(encoding="utf-8")) or {}
+        plugins_section = yml_data.setdefault("plugins", {})
+        if not isinstance(plugins_section, dict):
+            plugins_section = {}
+            yml_data["plugins"] = plugins_section
+
+        paths = list(plugins_section.get("paths") or [])
+        if ".rigovo/plugins" not in paths:
+            paths.append(".rigovo/plugins")
+        plugins_section["paths"] = paths
+
+        if req.enable_plugin:
+            enabled_plugins = set(plugins_section.get("enabled_plugins") or [])
+            enabled_plugins.add(plugin_id)
+            plugins_section["enabled_plugins"] = sorted(enabled_plugins)
+
+        connector_ops: list[str] = []
+        mcp_ops: list[str] = []
+        action_ops: list[str] = []
+        if req.enable_tools:
+            if manifest.connectors:
+                plugins_section["enable_connector_tools"] = True
+                for c in manifest.connectors:
+                    connector_ops.extend([str(a).strip() for a in (c.outbound_actions or []) if str(a).strip()])
+            if manifest.mcp_servers:
+                plugins_section["enable_mcp_tools"] = True
+                for m in manifest.mcp_servers:
+                    mcp_ops.extend([str(o).strip() for o in (m.operations or []) if str(o).strip()])
+            if manifest.actions:
+                plugins_section["enable_action_tools"] = True
+                for a in manifest.actions:
+                    action_ops.append(str(a.id).strip())
+
+        allowed_plugin_ids = list(plugins_section.get("allowed_plugin_ids") or [])
+        if allowed_plugin_ids:
+            plugins_section["allowed_plugin_ids"] = _merge_unique(allowed_plugin_ids, [plugin_id])
+
+        if req.allow_operations:
+            plugins_section["allowed_connector_operations"] = _merge_unique(
+                list(plugins_section.get("allowed_connector_operations") or []),
+                connector_ops,
+            )
+            plugins_section["allowed_mcp_operations"] = _merge_unique(
+                list(plugins_section.get("allowed_mcp_operations") or []),
+                mcp_ops,
+            )
+            plugins_section["allowed_action_operations"] = _merge_unique(
+                list(plugins_section.get("allowed_action_operations") or []),
+                action_ops,
+            )
+
+        yml_path.write_text(
+            yaml.dump(yml_data, default_flow_style=False, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        try:
+            container.reload_config()
+        except Exception as exc:
+            logger.warning("Config reload failed after GitHub integration install: %s", exc)
+
+        return {
+            "status": "ok",
+            "source": "github",
+            "github_repo": f"{owner}/{repo}",
+            "ref": ref,
+            "plugin_id": plugin_id,
+            "manifest_path": str(manifest_path.relative_to(root)),
+        }
+
+    @app.get("/v1/integrations/marketplace/catalog")
+    async def integrations_marketplace_catalog() -> dict[str, Any]:
+        await asyncio.sleep(0)
+        return {"items": list(_MARKETPLACE_INTEGRATIONS)}
+
+    @app.post("/v1/integrations/marketplace/install")
+    async def install_marketplace_integration(req: MarketplaceInstallRequest) -> dict[str, Any]:
+        await asyncio.sleep(0)
+        selected = next(
+            (item for item in _MARKETPLACE_INTEGRATIONS if item.get("id") == req.integration_id),
+            None,
+        )
+        if not selected:
+            raise HTTPException(status_code=404, detail="Marketplace integration not found.")
+
+        derived_plugin_id = req.plugin_id or f"market-{req.integration_id}"
+        mapped = AddCustomIntegrationRequest(
+            plugin_id=derived_plugin_id,
+            name=str(selected.get("name", req.integration_id)),
+            description=str(selected.get("summary", "")),
+            trust_level=str(selected.get("trust_level", "verified")),
+            connector=(
+                CustomConnectorRequest.model_validate(selected["connector"])
+                if selected.get("connector")
+                else None
+            ),
+            mcp_server=(
+                CustomMCPServerRequest.model_validate(selected["mcp_server"])
+                if selected.get("mcp_server")
+                else None
+            ),
+            enable_plugin=req.enable_plugin,
+            enable_tools=req.enable_tools,
+            allow_operations=req.allow_operations,
+        )
+        result = await add_custom_integration(mapped)
+        result["source"] = "marketplace"
+        result["integration_id"] = req.integration_id
+        return result
 
     @app.get("/v1/observability/slo")
     async def observability_slo(

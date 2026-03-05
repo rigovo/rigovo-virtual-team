@@ -141,6 +141,11 @@ class TaskState(TypedDict, total=False):
     cost_accumulator: dict[str, dict[str, float]]  # {agent_id: {tokens, cost}}
     budget_max_cost_per_task: float
     budget_max_tokens_per_task: int
+    adaptive_token_budget_by_intent: dict[
+        str, dict[str, int]
+    ]  # Workspace history-derived p50/p75/p95
+    adaptive_budget_user_cap: bool  # True when max_tokens_per_task is explicitly user-defined
+    adaptive_budget_min_sample: int  # Minimum sample size required for adaptive application
     consultation_policy: dict[str, Any]  # Runtime consultation policy from rigovo.yml
     subagent_policy: dict[str, Any]  # Runtime sub-agent spawn policy from rigovo.yml
     replan_policy: dict[str, Any]  # Runtime replanning policy from rigovo.yml

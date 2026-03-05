@@ -280,9 +280,29 @@ async def intent_gate_node(state: TaskState) -> dict[str, Any]:
 
     profile = detect_intent(description, class_hint)
     configured_budget_cap = int(state.get("budget_max_tokens_per_task", 0) or 0)
+    adaptive_profiles = state.get("adaptive_token_budget_by_intent") or {}
+    adaptive_profile = (
+        adaptive_profiles.get(profile.intent, {}) if isinstance(adaptive_profiles, dict) else {}
+    )
+    adaptive_budget = int(adaptive_profile.get("recommended_budget", 0) or 0)
+    adaptive_sample_size = int(adaptive_profile.get("sample_size", 0) or 0)
+    adaptive_min_sample = int(state.get("adaptive_budget_min_sample", 12) or 12)
+    adaptive_applied = False
+    budget_source = "intent_default"
+    budget_user_cap = bool(state.get("adaptive_budget_user_cap", False))
+
     effective_token_budget = profile.token_budget
-    if configured_budget_cap > 0:
+    if adaptive_budget > 0 and adaptive_sample_size >= adaptive_min_sample:
+        if configured_budget_cap > 0 and budget_user_cap:
+            effective_token_budget = min(adaptive_budget, configured_budget_cap)
+            budget_source = "adaptive_clamped_by_user_cap"
+        else:
+            effective_token_budget = max(profile.token_budget, adaptive_budget)
+            budget_source = "adaptive"
+        adaptive_applied = effective_token_budget != profile.token_budget
+    elif configured_budget_cap > 0:
         effective_token_budget = min(profile.token_budget, configured_budget_cap)
+        budget_source = "configured_cap"
 
     events = list(state.get("events", []))
     events.append(
@@ -296,6 +316,11 @@ async def intent_gate_node(state: TaskState) -> dict[str, Any]:
             "max_file_reads": profile.max_file_reads,
             "token_budget": effective_token_budget,
             "configured_budget_cap": configured_budget_cap,
+            "budget_source": budget_source,
+            "adaptive_budget_applied": adaptive_applied,
+            "adaptive_sample_size": adaptive_sample_size,
+            "adaptive_p75": int(adaptive_profile.get("p75", 0) or 0),
+            "adaptive_p95": int(adaptive_profile.get("p95", 0) or 0),
             "planner_mode": profile.planner_mode,
         }
     )

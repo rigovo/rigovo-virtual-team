@@ -30,6 +30,18 @@ type SettingsSnapshot = {
   default_model?: string;
   plugins_policy?: { min_trust_level?: string };
 };
+type SettingsIntent = {
+  initialTab?: "capabilities";
+  capabilitiesFocus?: string | null;
+  capabilitiesSource?: "marketplace" | "github";
+};
+type MarketplaceCatalogItem = {
+  id: string;
+  name: string;
+  summary: string;
+  kind: "connector" | "mcp";
+  trust_level: string;
+};
 
 /* ---- Utility: derive a short label from a filesystem path ---- */
 function pathLabel(p: string): string {
@@ -248,6 +260,9 @@ export default function App(): JSX.Element {
   const [actionMsg, setActionMsg] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [workspacePage, setWorkspacePage] = useState<WorkspacePage>("threads");
+  const [settingsIntent, setSettingsIntent] = useState<SettingsIntent | null>(
+    null,
+  );
   const [workspaceMeta, setWorkspaceMeta] = useState<{ org: string; users: number }>({ org: "", users: 0 });
   const [controlState, setControlState] = useState<ControlStatePayload | null>(null);
   const [settingsSnapshot, setSettingsSnapshot] = useState<SettingsSnapshot | null>(null);
@@ -571,6 +586,257 @@ export default function App(): JSX.Element {
     }
   }, []);
 
+  const saveRoleConfig = useCallback(
+    async (role: string, model: string, tools: string[]): Promise<string | null> => {
+      const nextModels = { ...(settingsSnapshot?.agent_models || {}), [role]: model };
+      const nextTools = { ...(settingsSnapshot?.agent_tools || {}), [role]: tools };
+      try {
+        const res = await fetch(`${API_BASE}/v1/settings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            agent_models: nextModels,
+            agent_tools: nextTools,
+          }),
+        });
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try {
+            const err = await res.json();
+            if (typeof err?.detail === "string") detail = err.detail;
+          } catch {
+            /* keep fallback detail */
+          }
+          return `Save failed: ${detail}`;
+        }
+        setSettingsSnapshot((prev) => ({
+          ...(prev || {}),
+          agent_models: nextModels,
+          agent_tools: nextTools,
+        }));
+        return null;
+      } catch (e) {
+        return `Cannot reach API (${e instanceof Error ? e.message : "unknown"})`;
+      }
+    },
+    [settingsSnapshot],
+  );
+
+  const refreshControlState = useCallback(async (): Promise<string | null> => {
+    try {
+      const state = await readJson<ControlStatePayload>(
+        `${API_BASE}/v1/control/state`,
+      );
+      setControlState(state || null);
+      return null;
+    } catch (e) {
+      return `Cannot reach API (${e instanceof Error ? e.message : "unknown"})`;
+    }
+  }, []);
+
+  const inferToolGrantsForConnector = useCallback((connectorName: string) => {
+    const lower = connectorName.toLowerCase();
+    if (lower.includes("figma")) {
+      return ["connector.figma.read", "mcp.figma.read_frame"];
+    }
+    if (lower.includes("miro")) {
+      return ["connector.miro.read", "mcp.miro.get_board"];
+    }
+    if (lower.includes("gdrive") || lower.includes("google drive") || lower.includes("drive")) {
+      return ["connector.gdrive.search", "mcp.gdrive.search"];
+    }
+    if (lower.includes("slack")) {
+      return ["connector.slack.read", "connector.slack.post"];
+    }
+    if (lower.includes("workos") || lower.includes("auth")) {
+      return ["connector.workos.read"];
+    }
+    const slug = lower.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    return slug ? [`connector.${slug}.read`] : ["invoke_integration"];
+  }, []);
+
+  const assignConnectorToolsToRole = useCallback(
+    async (connectorName: string, role: string): Promise<string | null> => {
+      const currentTools = settingsSnapshot?.agent_tools?.[role] || [];
+      const mergedTools = Array.from(
+        new Set([...currentTools, ...inferToolGrantsForConnector(connectorName)]),
+      );
+      const modelForRole =
+        settingsSnapshot?.agent_models?.[role] ||
+        settingsSnapshot?.default_model ||
+        "";
+      return saveRoleConfig(role, modelForRole, mergedTools);
+    },
+    [inferToolGrantsForConnector, saveRoleConfig, settingsSnapshot],
+  );
+
+  const installAndAssignConnectorTools = useCallback(
+    async (
+      connectorName: string,
+      role: string,
+    ): Promise<{ ok: boolean; message: string }> => {
+      const normalize = (v: string): string =>
+        v
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim();
+      const base = normalize(connectorName);
+      const aliasMap: Record<string, string[]> = {
+        figma: ["figma", "design", "frames"],
+        miro: ["miro", "board", "whiteboard"],
+        gdrive: ["gdrive", "google drive", "drive", "google docs", "gdocs"],
+        slack: ["slack", "chat", "messaging"],
+        workos: ["workos", "authkit", "identity", "sso"],
+        n8n: ["n8n", "workflow", "automation"],
+        kb: ["kb", "knowledge", "wiki", "docs"],
+      };
+      const queryTerms = new Set<string>([...base.split(/\s+/).filter(Boolean)]);
+      for (const [key, aliases] of Object.entries(aliasMap)) {
+        if (base.includes(key) || aliases.some((a) => base.includes(a))) {
+          queryTerms.add(key);
+          for (const alias of aliases) queryTerms.add(alias);
+        }
+      }
+      try {
+        const catalog = await readJson<{ items: MarketplaceCatalogItem[] }>(
+          `${API_BASE}/v1/integrations/marketplace/catalog`,
+        );
+        const items = catalog?.items || [];
+        if (items.length === 0) {
+          return { ok: false, message: "No marketplace items available." };
+        }
+
+        const scoreItem = (item: MarketplaceCatalogItem): number => {
+          const hayRaw = `${item.id} ${item.name} ${item.summary}`;
+          const hay = normalize(hayRaw);
+          let score = 0;
+          if (hay.includes(base) && base.length > 2) score += 12;
+          for (const term of queryTerms) {
+            if (term.length < 2) continue;
+            if (hay.includes(term)) score += term.length > 5 ? 4 : 2;
+          }
+          if (item.kind === "connector") score += 2;
+          return score;
+        };
+        const ranked = items
+          .map((item) => ({ item, score: scoreItem(item) }))
+          .sort((a, b) => b.score - a.score);
+        const top = ranked[0];
+        const second = ranked[1];
+        const hasConfidentMatch =
+          Boolean(top) &&
+          top.score >= 6 &&
+          (!second || top.score - second.score >= 2);
+        const match = hasConfidentMatch ? top.item : null;
+        if (!match) {
+          if (top && second && top.score > 0 && second.score > 0) {
+            return {
+              ok: false,
+              message: `Ambiguous marketplace match for "${connectorName}". Use Connect to choose manually.`,
+            };
+          }
+          return {
+            ok: false,
+            message: `No marketplace integration found for "${connectorName}". Use Connect to install manually.`,
+          };
+        }
+
+        const installRes = await fetch(
+          `${API_BASE}/v1/integrations/marketplace/install`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ integration_id: match.id }),
+          },
+        );
+        if (!installRes.ok) {
+          let detail = `HTTP ${installRes.status}`;
+          try {
+            const err = await installRes.json();
+            if (typeof err?.detail === "string") detail = err.detail;
+          } catch {
+            /* keep fallback detail */
+          }
+          return { ok: false, message: `Install failed: ${detail}` };
+        }
+
+        const assignErr = await assignConnectorToolsToRole(connectorName, role);
+        if (assignErr) return { ok: false, message: assignErr };
+
+        const refreshErr = await refreshControlState();
+        if (refreshErr) return { ok: false, message: refreshErr };
+        return {
+          ok: true,
+          message: `Installed "${match.name}" (${match.id}) and assigned grants to ${role}.`,
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          message: `Cannot complete install+assign (${e instanceof Error ? e.message : "unknown"})`,
+        };
+      }
+    },
+    [assignConnectorToolsToRole, refreshControlState],
+  );
+
+  const savePersonas = useCallback(
+    async (personas: ControlStatePayload["personas"]): Promise<string | null> => {
+      try {
+        const res = await fetch(`${API_BASE}/v1/control/personas`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(personas),
+        });
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try {
+            const err = await res.json();
+            if (typeof err?.detail === "string") detail = err.detail;
+          } catch {
+            /* keep fallback detail */
+          }
+          return `Save failed: ${detail}`;
+        }
+        setControlState((prev) =>
+          prev
+            ? {
+                ...prev,
+                personas,
+              }
+            : prev,
+        );
+        setWorkspaceMeta((prev) => ({ ...prev, users: personas.length }));
+        return null;
+      } catch (e) {
+        return `Cannot reach API (${e instanceof Error ? e.message : "unknown"})`;
+      }
+    },
+    [],
+  );
+
+  const refreshQueueData = useCallback(async (): Promise<string | null> => {
+    try {
+      const [tasks, queue] = await Promise.all([
+        readJson<InboxTask[]>(`${API_BASE}/v1/ui/inbox`),
+        readJson<ApprovalItem[]>(`${API_BASE}/v1/ui/approvals`),
+      ]);
+      if (tasks) {
+        setInbox((prev) => {
+          const serverIds = new Set(tasks.map((t) => t.id));
+          const optimistic = prev.filter(
+            (t) => !serverIds.has(t.id) && t.updatedAt === "just now",
+          );
+          return [...optimistic, ...tasks];
+        });
+      }
+      if (queue) setApprovals(queue);
+      setApiReachable(Boolean(tasks || queue));
+      return null;
+    } catch (e) {
+      return `Cannot refresh queue (${e instanceof Error ? e.message : "unknown"})`;
+    }
+  }, []);
+
   /* ---- Create task ---- */
   const createTask = async (e: FormEvent) => {
     e.preventDefault();
@@ -798,7 +1064,11 @@ export default function App(): JSX.Element {
         projectLoading={projectLoading}
         onSignOut={signOut}
         apiReachable={apiReachable}
-        onOpenSettings={() => { setShowSettings(true); setWorkspacePage("settings"); }}
+        onOpenSettings={() => {
+          setShowSettings(true);
+          setWorkspacePage("settings");
+          setSettingsIntent(null);
+        }}
         onOpenAutomations={() => { setShowSettings(false); setNewThreadMode(false); setWorkspacePage("automations"); setSelected(""); }}
         onOpenSkills={() => { setShowSettings(false); setNewThreadMode(false); setWorkspacePage("skills"); setSelected(""); }}
         onOpenDocuments={() => { setShowSettings(false); setNewThreadMode(false); setWorkspacePage("documents"); setSelected(""); }}
@@ -836,11 +1106,31 @@ export default function App(): JSX.Element {
 
         {showSettings || workspacePage === "settings" ? (
           <div className="content-area flush">
-            <Settings onBack={() => { setShowSettings(false); setWorkspacePage("threads"); }} />
+            <Settings
+              onBack={() => {
+                setShowSettings(false);
+                setWorkspacePage("threads");
+                setSettingsIntent(null);
+              }}
+              initialTab={settingsIntent?.initialTab}
+              capabilitiesFocus={settingsIntent?.capabilitiesFocus}
+              capabilitiesSource={settingsIntent?.capabilitiesSource}
+            />
           </div>
         ) : workspacePage === "automations" ? (
           <div className="content-area">
-            <AutomationsPage inbox={inbox} approvals={approvals} policy={controlState?.policy || null} />
+            <AutomationsPage
+              inbox={inbox}
+              approvals={approvals}
+              policy={controlState?.policy || null}
+              onOpenTask={(taskId) => {
+                setShowSettings(false);
+                setNewThreadMode(false);
+                setWorkspacePage("threads");
+                setSelected(taskId);
+              }}
+              onRefreshQueue={refreshQueueData}
+            />
           </div>
         ) : workspacePage === "skills" ? (
           <div className="content-area">
@@ -849,6 +1139,30 @@ export default function App(): JSX.Element {
               agentTools={settingsSnapshot?.agent_tools || {}}
               personas={controlState?.personas || []}
               connectors={controlState?.connectors || []}
+              onOpenSettings={() => {
+                setShowSettings(true);
+                setWorkspacePage("settings");
+                setSettingsIntent(null);
+              }}
+              onOpenAutomations={() => {
+                setShowSettings(false);
+                setWorkspacePage("automations");
+                setSelected("");
+              }}
+              onSaveRoleConfig={saveRoleConfig}
+              onOpenCapabilitiesForConnector={(connectorName, source) => {
+                setShowSettings(true);
+                setWorkspacePage("settings");
+                setSettingsIntent({
+                  initialTab: "capabilities",
+                  capabilitiesFocus: connectorName,
+                  capabilitiesSource: source || "marketplace",
+                });
+              }}
+              onAssignConnectorTools={assignConnectorToolsToRole}
+              onInstallAndAssignConnectorTools={installAndAssignConnectorTools}
+              onRefreshIntegrations={refreshControlState}
+              onSavePersonas={savePersonas}
             />
           </div>
         ) : workspacePage === "documents" ? (
@@ -916,7 +1230,11 @@ export default function App(): JSX.Element {
               permissionsLabel={workspaceControls.permissions}
               modelLabel={workspaceControls.model}
               effortLabel={workspaceControls.effort}
-              onOpenSettings={() => { setShowSettings(true); setWorkspacePage("settings"); }}
+              onOpenSettings={() => {
+                setShowSettings(true);
+                setWorkspacePage("settings");
+                setSettingsIntent(null);
+              }}
               onAddFiles={() => { void openProject(); }}
               mentionFiles={mentionFiles}
               taskTier={taskTier}

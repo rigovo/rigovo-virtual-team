@@ -3,11 +3,19 @@
 /*  Left: Map (graph) or Timeline toggle | Right: agent detail panel   */
 /* ------------------------------------------------------------------ */
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { InboxTask, TaskDetail as TaskDetailType, TaskStep } from "../types";
+import type {
+  InboxTask,
+  TaskDetail as TaskDetailType,
+  TaskStep,
+} from "../types";
 import { tierClass, statusClass } from "../defaults";
 import { API_BASE, readJson } from "../api";
 import AgentTimeline from "./AgentTimeline";
-import type { CollaborationData, GovernanceData, CostData } from "./AgentTimeline";
+import type {
+  CollaborationData,
+  GovernanceData,
+  CostData,
+} from "./AgentTimeline";
 import NeuralCalibrationMap from "./NeuralCalibrationMap";
 import FileViewer from "./FileViewer";
 import AgentDetailPanel from "./AgentDetailPanel";
@@ -29,8 +37,17 @@ interface TaskDetailProps {
 }
 
 /* ---- Inline types ---- */
-interface AuditEntry { id: string; action: string; agent_role: string; summary: string; created_at: string | null }
-interface FilesData { files: string[]; by_agent: Record<string, string[]> }
+interface AuditEntry {
+  id: string;
+  action: string;
+  agent_role: string;
+  summary: string;
+  created_at: string | null;
+}
+interface FilesData {
+  files: string[];
+  by_agent: Record<string, string[]>;
+}
 interface MissionData {
   task_id: string;
   task_status: string;
@@ -109,42 +126,85 @@ function ValueStrip({
   cacheSavedCostUsd: number;
   cacheHitRate: number | null;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const hasBaseline = baselineTokens != null && baselineTokens > 0;
   const savedPct = hasBaseline
     ? Math.max(0, ((baselineTokens! - totalTokens) / baselineTokens!) * 100)
     : null;
+  const hasDetails = true;
   return (
     <div className="td-value-strip">
-      <span className="td-value-item"><b>{totalTokens.toLocaleString()}</b> tokens</span>
+      <span className="td-value-item">
+        <b>{totalTokens.toLocaleString()}</b> tokens
+      </span>
       <span className="td-value-sep">·</span>
-      <span className="td-value-item"><b>${totalCostUsd.toFixed(4)}</b> cost</span>
+      <span className="td-value-item">
+        <b>${totalCostUsd.toFixed(4)}</b> cost
+      </span>
       <span className="td-value-sep">·</span>
-      <span className="td-value-item"><b>{fmtDuration(elapsedMs)}</b> time</span>
-      <span className="td-value-sep">·</span>
-      <span className="td-value-item">baseline: <b>{hasBaseline ? baselineTokens!.toLocaleString() : "pending"}</b></span>
-      <span className="td-value-sep">·</span>
-      <span className={`td-value-item ${savedPct != null ? "save" : ""}`}>saved: <b>{savedPct != null ? `${savedPct.toFixed(1)}%` : "--"}</b></span>
-      {(consultCount > 0 || debateCount > 0) && (
-        <>
-          <span className="td-value-sep">·</span>
-          <span className="td-value-item">consult {consultCount} · debate {debateCount}</span>
-        </>
+      <span className="td-value-item">
+        <b>{fmtDuration(elapsedMs)}</b> time
+      </span>
+      {hasDetails && (
+        <button
+          type="button"
+          className="td-value-toggle"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? "Less details" : "More details"}
+        </button>
       )}
-      {(cacheSavedTokens > 0 || cacheSavedCostUsd > 0 || (cacheHitRate != null && cacheHitRate > 0)) && (
+      {expanded && (
         <>
           <span className="td-value-sep">·</span>
           <span className="td-value-item">
-            cache: <b>{cacheSavedTokens.toLocaleString()}</b> tok
-            {cacheSavedCostUsd > 0 ? <> · <b>${cacheSavedCostUsd.toFixed(4)}</b></> : null}
-            {cacheHitRate != null ? <> · hit <b>{cacheHitRate.toFixed(1)}%</b></> : null}
+            baseline:{" "}
+            <b>{hasBaseline ? baselineTokens!.toLocaleString() : "pending"}</b>
           </span>
+          <span className="td-value-sep">·</span>
+          <span className={`td-value-item ${savedPct != null ? "save" : ""}`}>
+            saved: <b>{savedPct != null ? `${savedPct.toFixed(1)}%` : "--"}</b>
+          </span>
+          {(consultCount > 0 || debateCount > 0) && (
+            <>
+              <span className="td-value-sep">·</span>
+              <span className="td-value-item">
+                consult {consultCount} · debate {debateCount}
+              </span>
+            </>
+          )}
+          {(cacheSavedTokens > 0 ||
+            cacheSavedCostUsd > 0 ||
+            (cacheHitRate != null && cacheHitRate > 0)) && (
+            <>
+              <span className="td-value-sep">·</span>
+              <span className="td-value-item">
+                cache: <b>{cacheSavedTokens.toLocaleString()}</b> tok
+                {cacheSavedCostUsd > 0 ? (
+                  <>
+                    {" "}
+                    · <b>${cacheSavedCostUsd.toFixed(4)}</b>
+                  </>
+                ) : null}
+                {cacheHitRate != null ? (
+                  <>
+                    {" "}
+                    · hit <b>{cacheHitRate.toFixed(1)}%</b>
+                  </>
+                ) : null}
+              </span>
+            </>
+          )}
         </>
       )}
     </div>
   );
 }
 
-function progressFromSteps(steps: TaskStep[]): { completed: number; total: number } {
+function progressFromSteps(steps: TaskStep[]): {
+  completed: number;
+  total: number;
+} {
   const byRole = new Map<string, { completed: boolean }>();
   for (const s of steps) {
     const role = resolveCanonicalRole(s.agent_role || s.agent);
@@ -153,7 +213,9 @@ function progressFromSteps(steps: TaskStep[]): { completed: number; total: numbe
     if (s.status === "complete") prev.completed = true;
     byRole.set(role, prev);
   }
-  const completed = Array.from(byRole.values()).filter((v) => v.completed).length;
+  const completed = Array.from(byRole.values()).filter(
+    (v) => v.completed,
+  ).length;
   return { completed, total: byRole.size };
 }
 
@@ -161,8 +223,12 @@ function progressFromSteps(steps: TaskStep[]): { completed: number; total: numbe
 function useElapsed(startedAt: string | null): string | null {
   const [secs, setSecs] = useState<number | null>(null);
   useEffect(() => {
-    if (!startedAt) { setSecs(null); return; }
-    const update = () => setSecs(Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
+    if (!startedAt) {
+      setSecs(null);
+      return;
+    }
+    const update = () =>
+      setSecs(Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
     update();
     const t = setInterval(update, 1000);
     return () => clearInterval(t);
@@ -174,18 +240,41 @@ function useElapsed(startedAt: string | null): string | null {
 }
 
 /* ---- Pipeline phase info (for processing state) ---- */
-const PHASE_INFO: Record<string, { icon: string; title: string; desc: string }> = {
-  classifying: { icon: "\uD83E\uDDE0", title: "Analyzing your request", desc: "Reading your task and determining the type of work — feature, bugfix, refactor, infra..." },
-  routing:     { icon: "\uD83D\uDDFA\uFE0F", title: "Assembling the right team", desc: "Selecting which agents to involve based on task complexity and type." },
-  assembling:  { icon: "\u2699\uFE0F", title: "Setting up the pipeline", desc: "Building the execution plan — which agents run in sequence, which in parallel." },
-  pending:     { icon: "\u23F3", title: "Queued", desc: "Your task is in the queue and will start shortly." },
+const PHASE_INFO: Record<
+  string,
+  { icon: string; title: string; desc: string }
+> = {
+  classifying: {
+    icon: "\uD83E\uDDE0",
+    title: "Analyzing your request",
+    desc: "Reading your task and determining the type of work — feature, bugfix, refactor, infra...",
+  },
+  routing: {
+    icon: "\uD83D\uDDFA\uFE0F",
+    title: "Assembling the right team",
+    desc: "Selecting which agents to involve based on task complexity and type.",
+  },
+  assembling: {
+    icon: "\u2699\uFE0F",
+    title: "Setting up the pipeline",
+    desc: "Building the execution plan — which agents run in sequence, which in parallel.",
+  },
+  pending: {
+    icon: "\u23F3",
+    title: "Queued",
+    desc: "Your task is in the queue and will start shortly.",
+  },
 };
 
 function getPhase(status: string) {
   for (const [key, info] of Object.entries(PHASE_INFO)) {
     if (status.includes(key)) return info;
   }
-  return { icon: "\uD83D\uDD04", title: "Processing", desc: "Your task is being processed..." };
+  return {
+    icon: "\uD83D\uDD04",
+    title: "Processing",
+    desc: "Your task is being processed...",
+  };
 }
 
 /* ================================================================== */
@@ -203,9 +292,9 @@ function ProcessingState({
   startedAt?: string | null;
 }) {
   const st = status.toLowerCase();
-  const isFailed    = st.includes("fail") || st.includes("reject");
+  const isFailed = st.includes("fail") || st.includes("reject");
   const isCompleted = st.includes("complete");
-  const isTerminal  = isFailed || isCompleted;
+  const isTerminal = isFailed || isCompleted;
 
   /* Live elapsed timer (stable across remounts when startedAt is provided) */
   const startRef = useRef(Date.now());
@@ -214,7 +303,10 @@ function ProcessingState({
   useEffect(() => {
     if (isTerminal) return;
     if (startedAt) return; // useElapsed handles the timer when backend timestamp exists
-    const id = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)), 1000);
+    const id = setInterval(
+      () => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)),
+      1000,
+    );
     return () => clearInterval(id);
   }, [isTerminal, startedAt]);
   const mins = Math.floor(elapsed / 60);
@@ -226,16 +318,26 @@ function ProcessingState({
     return (
       <div className="animate-fadeup rounded-2xl border border-[var(--border)] bg-[rgba(0,0,0,0.02)] p-5">
         <div className="flex items-center gap-3">
-          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl text-lg ${isFailed ? "bg-rose-500/15" : "bg-emerald-500/15"}`}>
+          <div
+            className={`flex h-10 w-10 items-center justify-center rounded-2xl text-lg ${isFailed ? "bg-rose-500/15" : "bg-emerald-500/15"}`}
+          >
             {isFailed ? "✕" : "✓"}
           </div>
           <div>
-            <p className="text-sm font-semibold" style={{ color: "var(--t1)" }}>Master Brain</p>
-            <p className="text-[11px]" style={{ color: "var(--t3)" }}>{isFailed ? "Run ended with failures" : "Run finished successfully"}</p>
+            <p className="text-sm font-semibold" style={{ color: "var(--t1)" }}>
+              Master Brain
+            </p>
+            <p className="text-[11px]" style={{ color: "var(--t3)" }}>
+              {isFailed
+                ? "Run ended with failures"
+                : "Run finished successfully"}
+            </p>
           </div>
         </div>
         <p className="mt-3 text-[13px]" style={{ color: "var(--t3)" }}>
-          {isFailed ? "Review evidence and retry from the failed phase." : "All queued agents completed and governance checks passed."}
+          {isFailed
+            ? "Review evidence and retry from the failed phase."
+            : "All queued agents completed and governance checks passed."}
         </p>
       </div>
     );
@@ -250,18 +352,40 @@ function ProcessingState({
         </div>
         <div className="flex-1">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold" style={{ color: "var(--t1)" }}>Master Brain</p>
-            <span className="text-[11px] font-mono tabular-nums" style={{ color: "var(--t3)" }}>{elapsedStr}</span>
+            <p className="text-sm font-semibold" style={{ color: "var(--t1)" }}>
+              Master Brain
+            </p>
+            <span
+              className="text-[11px] font-mono tabular-nums"
+              style={{ color: "var(--t3)" }}
+            >
+              {elapsedStr}
+            </span>
           </div>
-          <p className="text-[11px]" style={{ color: "var(--t3)" }}>Coordinating virtual team</p>
+          <p className="text-[11px]" style={{ color: "var(--t3)" }}>
+            Coordinating virtual team
+          </p>
         </div>
       </div>
       <div className="mt-4 rounded-xl border border-[var(--border)] bg-[rgba(0,0,0,0.03)] p-4">
-        <h3 className="text-sm font-semibold" style={{ color: "var(--t1)" }}>{phase.title}</h3>
-        <p className="mt-1 text-[13px] leading-relaxed" style={{ color: "var(--t3)" }}>{phase.desc}</p>
+        <h3 className="text-sm font-semibold" style={{ color: "var(--t1)" }}>
+          {phase.title}
+        </h3>
+        <p
+          className="mt-1 text-[13px] leading-relaxed"
+          style={{ color: "var(--t3)" }}
+        >
+          {phase.desc}
+        </p>
         {taskType && taskType !== "unclassified" && (
           <p className="mt-2 text-[11px]" style={{ color: "var(--t3)" }}>
-            Intent detected: <span className="font-semibold capitalize" style={{ color: "var(--t2)" }}>{taskType}</span>
+            Intent detected:{" "}
+            <span
+              className="font-semibold capitalize"
+              style={{ color: "var(--t2)" }}
+            >
+              {taskType}
+            </span>
           </p>
         )}
         {latestDecision && (
@@ -273,25 +397,51 @@ function ProcessingState({
       {/* Progress steps — show which phases are done */}
       <div className="mt-3 flex items-center gap-3">
         {["classifying", "routing", "assembling"].map((p) => {
-          const done = st.includes(p) ? false : (
-            p === "classifying" ? (st.includes("routing") || st.includes("assembl") || st.includes("running")) :
-            p === "routing" ? (st.includes("assembl") || st.includes("running")) :
-            st.includes("running")
-          );
+          const done = st.includes(p)
+            ? false
+            : p === "classifying"
+              ? st.includes("routing") ||
+                st.includes("assembl") ||
+                st.includes("running")
+              : p === "routing"
+                ? st.includes("assembl") || st.includes("running")
+                : st.includes("running");
           const active = st.includes(p);
           return (
             <div key={p} className="flex items-center gap-1.5">
-              <span className={`inline-block h-2 w-2 rounded-full ${done ? "bg-emerald-500" : active ? "bg-[var(--accent)] animate-pulse" : "bg-[rgba(0,0,0,0.1)]"}`} />
-              <span className="text-[10px] capitalize" style={{ color: done ? "var(--s-complete)" : active ? "var(--accent)" : "var(--t4)" }}>{p === "assembling" ? "setup" : p === "classifying" ? "analyze" : "staff"}</span>
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${done ? "bg-emerald-500" : active ? "bg-[var(--accent)] animate-pulse" : "bg-[rgba(0,0,0,0.1)]"}`}
+              />
+              <span
+                className="text-[10px] capitalize"
+                style={{
+                  color: done
+                    ? "var(--s-complete)"
+                    : active
+                      ? "var(--accent)"
+                      : "var(--t4)",
+                }}
+              >
+                {p === "assembling"
+                  ? "setup"
+                  : p === "classifying"
+                    ? "analyze"
+                    : "staff"}
+              </span>
             </div>
           );
         })}
       </div>
-      <div className="mt-2 flex items-center gap-2" style={{ color: "var(--t3)" }}>
+      <div
+        className="mt-2 flex items-center gap-2"
+        style={{ color: "var(--t3)" }}
+      >
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-typing-1" />
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-typing-2" />
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-typing-3" />
-        <span className="text-[11px] italic">{phase.desc.split("—")[0].trim()}…</span>
+        <span className="text-[11px] italic">
+          {phase.desc.split("—")[0].trim()}…
+        </span>
       </div>
     </div>
   );
@@ -303,33 +453,54 @@ function ProcessingState({
 function MissionControl({ mission }: { mission: MissionData | null }) {
   if (!mission) return null;
   const riskColor =
-    mission.risk.level === "high" ? "#b91c1c" :
-    mission.risk.level === "medium" ? "#b45309" : "#15803d";
+    mission.risk.level === "high"
+      ? "#b91c1c"
+      : mission.risk.level === "medium"
+        ? "#b45309"
+        : "#15803d";
   const riskBg =
-    mission.risk.level === "high" ? "rgba(220,38,38,0.08)" :
-    mission.risk.level === "medium" ? "rgba(217,119,6,0.08)" : "rgba(22,163,74,0.08)";
+    mission.risk.level === "high"
+      ? "rgba(220,38,38,0.08)"
+      : mission.risk.level === "medium"
+        ? "rgba(217,119,6,0.08)"
+        : "rgba(22,163,74,0.08)";
 
   return (
     <div className="mb-4 animate-fadeup flex-shrink-0">
       <div className="flex flex-wrap gap-1.5 mb-3">
-        <span className="mission-stat" style={{ color: riskColor, background: riskBg }}>
+        <span
+          className="mission-stat"
+          style={{ color: riskColor, background: riskBg }}
+        >
           Risk: {mission.risk.level}
         </span>
         <span className="mission-stat">
-          {mission.team.size} agent{mission.team.size === 1 ? "" : "s"} · {mission.team.roles.slice(0, 4).join(", ")}
-          {mission.team.roles.length > 4 ? ` +${mission.team.roles.length - 4}` : ""}
+          {mission.team.size} agent{mission.team.size === 1 ? "" : "s"} ·{" "}
+          {mission.team.roles.slice(0, 4).join(", ")}
+          {mission.team.roles.length > 4
+            ? ` +${mission.team.roles.length - 4}`
+            : ""}
         </span>
-        <span className="mission-stat" style={{ color: "#15803d", background: "rgba(22,163,74,0.07)" }}>
-          ${mission.cost.total_cost_usd.toFixed(4)} · {mission.cost.total_tokens.toLocaleString()} tokens
+        <span
+          className="mission-stat"
+          style={{ color: "#15803d", background: "rgba(22,163,74,0.07)" }}
+        >
+          ${mission.cost.total_cost_usd.toFixed(4)} ·{" "}
+          {mission.cost.total_tokens.toLocaleString()} tokens
         </span>
         {mission.workflow.approvals_requested > 0 && (
           <span className="mission-stat">
-            {mission.workflow.approvals_granted}/{mission.workflow.approvals_requested} approved
+            {mission.workflow.approvals_granted}/
+            {mission.workflow.approvals_requested} approved
           </span>
         )}
         {mission.workflow.replan_triggered > 0 && (
-          <span className="mission-stat" style={{ color: "#b45309", background: "rgba(217,119,6,0.07)" }}>
-            {mission.workflow.replan_triggered} replan{mission.workflow.replan_triggered === 1 ? "" : "s"}
+          <span
+            className="mission-stat"
+            style={{ color: "#b45309", background: "rgba(217,119,6,0.07)" }}
+          >
+            {mission.workflow.replan_triggered} replan
+            {mission.workflow.replan_triggered === 1 ? "" : "s"}
           </span>
         )}
       </div>
@@ -340,14 +511,24 @@ function MissionControl({ mission }: { mission: MissionData | null }) {
             Recent decisions
           </p>
           {mission.decision_trace.slice(-4).map((evt, idx) => (
-            <div key={`${evt.action}-${idx}`} className="flex items-start gap-2 py-1.5 text-[11px] border-b border-[var(--border)] last:border-0">
+            <div
+              key={`${evt.action}-${idx}`}
+              className="flex items-start gap-2 py-1.5 text-[11px] border-b border-[var(--border)] last:border-0"
+            >
               <span className="text-[var(--t4)] w-10 flex-shrink-0 tabular-nums font-mono">
-                {evt.ts ? new Date(evt.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--:--"}
+                {evt.ts
+                  ? new Date(evt.ts).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  : "--:--"}
               </span>
               <span className="text-[10px] rounded bg-[rgba(0,0,0,0.04)] px-1.5 py-0.5 text-[var(--t3)] flex-shrink-0">
                 {evt.actor || "system"}
               </span>
-              <span className="text-[var(--t2)] leading-snug">{evt.summary || evt.action}</span>
+              <span className="text-[var(--t2)] leading-snug">
+                {evt.summary || evt.action}
+              </span>
             </div>
           ))}
         </div>
@@ -369,27 +550,38 @@ function AgentStatusStrip({ steps }: { steps: TaskStep[] }) {
         return (
           <div key={i} className="flex items-center gap-0">
             {i > 0 && (
-              <span className={`pipeline-arrow ${prevComplete ? "complete" : ""}`} />
+              <span
+                className={`pipeline-arrow ${prevComplete ? "complete" : ""}`}
+              />
             )}
             <div
               className={`pipeline-node ${isRunning ? "running pipeline-running" : step.status}`}
               title={`${step.agent_name || step.agent}: ${step.status}`}
             >
               <span className="pipeline-dot" />
-              <span>{step.agent_name || canonicalAgentLabel(step.agent_role || step.agent)}</span>
+              <span>
+                {step.agent_name ||
+                  canonicalAgentLabel(step.agent_role || step.agent)}
+              </span>
             </div>
           </div>
         );
       })}
-      {runningIdx >= 0 && runningIdx < steps.length - 1 && (() => {
-        const queuedCount = steps.slice(runningIdx + 1).filter((s) => s.status === "pending").length;
-        return queuedCount > 0 ? (
-          <div className="flex items-center gap-0">
-            <span className="pipeline-arrow" />
-            <span className="text-[10px] text-[var(--t4)] px-2">+{queuedCount} queued</span>
-          </div>
-        ) : null;
-      })()}
+      {runningIdx >= 0 &&
+        runningIdx < steps.length - 1 &&
+        (() => {
+          const queuedCount = steps
+            .slice(runningIdx + 1)
+            .filter((s) => s.status === "pending").length;
+          return queuedCount > 0 ? (
+            <div className="flex items-center gap-0">
+              <span className="pipeline-arrow" />
+              <span className="text-[10px] text-[var(--t4)] px-2">
+                +{queuedCount} queued
+              </span>
+            </div>
+          ) : null;
+        })()}
     </div>
   );
 }
@@ -409,9 +601,9 @@ function InlineLogViewer({ steps, taskStatus }: InlineLogViewerProps) {
 
   // Auto-expand the currently running step; auto-scroll to bottom while running
   useEffect(() => {
-    const runningStep = steps.find(s => s.status === "running");
+    const runningStep = steps.find((s) => s.status === "running");
     if (runningStep) {
-      setExpanded(prev => ({ ...prev, [runningStep.agent]: true }));
+      setExpanded((prev) => ({ ...prev, [runningStep.agent]: true }));
     }
   }, [steps]);
 
@@ -421,7 +613,7 @@ function InlineLogViewer({ steps, taskStatus }: InlineLogViewerProps) {
     }
   }, [steps, isRunning]);
 
-  const allExpanded = steps.every(s => expanded[s.agent]);
+  const allExpanded = steps.every((s) => expanded[s.agent]);
 
   return (
     <div className="inline-log-viewer">
@@ -432,15 +624,18 @@ function InlineLogViewer({ steps, taskStatus }: InlineLogViewerProps) {
           Agent Logs
         </span>
         <div className="ilv-toolbar-actions">
-          {isRunning && (
-            <span className="ilv-live-badge">● LIVE</span>
-          )}
+          {isRunning && <span className="ilv-live-badge">● LIVE</span>}
           <button
             type="button"
             className="ilv-toggle-all"
             onClick={() => {
               const next = !allExpanded;
-              setExpanded(steps.reduce<Record<string, boolean>>((a, s) => { a[s.agent] = next; return a; }, {}));
+              setExpanded(
+                steps.reduce<Record<string, boolean>>((a, s) => {
+                  a[s.agent] = next;
+                  return a;
+                }, {}),
+              );
             }}
           >
             {allExpanded ? "Collapse all" : "Expand all"}
@@ -454,45 +649,80 @@ function InlineLogViewer({ steps, taskStatus }: InlineLogViewerProps) {
           <div className="ilv-empty">No agent output yet.</div>
         )}
         {steps.map((step, i) => {
-          const isOpen = expanded[step.agent] !== false && (
-            step.status === "running" || step.status === "complete" || step.status === "failed" || expanded[step.agent] === true
-          );
-          const statusIcon = step.status === "complete" ? "✓" :
-                             step.status === "failed"   ? "✗" :
-                             step.status === "running"  ? "▶" :
-                             step.status === "skipped"  ? "○" : "·";
-          const statusColor = step.status === "complete" ? "var(--color-success, #22c55e)" :
-                              step.status === "failed"   ? "var(--color-error, #ef4444)" :
-                              step.status === "running"  ? "var(--accent, #6366f1)" :
-                              "var(--t4)";
-          const gatesFailed = step.gate_results.filter(g => !g.passed).length;
-          const durationSec = step.duration_ms != null ? (step.duration_ms / 1000).toFixed(1) : null;
+          const isOpen =
+            expanded[step.agent] !== false &&
+            (step.status === "running" ||
+              step.status === "complete" ||
+              step.status === "failed" ||
+              expanded[step.agent] === true);
+          const statusIcon =
+            step.status === "complete"
+              ? "✓"
+              : step.status === "failed"
+                ? "✗"
+                : step.status === "running"
+                  ? "▶"
+                  : step.status === "skipped"
+                    ? "○"
+                    : "·";
+          const statusColor =
+            step.status === "complete"
+              ? "var(--color-success, #22c55e)"
+              : step.status === "failed"
+                ? "var(--color-error, #ef4444)"
+                : step.status === "running"
+                  ? "var(--accent, #6366f1)"
+                  : "var(--t4)";
+          const gatesFailed = step.gate_results.filter((g) => !g.passed).length;
+          const durationSec =
+            step.duration_ms != null
+              ? (step.duration_ms / 1000).toFixed(1)
+              : null;
 
           return (
-            <div key={`${step.agent}-${i}`} className={`ilv-block ${step.status}`}>
+            <div
+              key={`${step.agent}-${i}`}
+              className={`ilv-block ${step.status}`}
+            >
               {/* block header (clickable) */}
               <button
                 type="button"
                 className="ilv-block-header"
-                onClick={() => setExpanded(prev => ({ ...prev, [step.agent]: !isOpen }))}
+                onClick={() =>
+                  setExpanded((prev) => ({ ...prev, [step.agent]: !isOpen }))
+                }
                 aria-expanded={isOpen}
               >
                 <span className="ilv-chevron">{isOpen ? "▾" : "▸"}</span>
-                <span className="ilv-status-icon" style={{ color: statusColor }}>{statusIcon}</span>
+                <span
+                  className="ilv-status-icon"
+                  style={{ color: statusColor }}
+                >
+                  {statusIcon}
+                </span>
                 <span className="ilv-agent-name">
                   {canonicalStepLabel(step)}
                 </span>
                 <div className="ilv-block-meta">
                   {gatesFailed > 0 && (
-                    <span className="ilv-gate-badge">⚡ {gatesFailed} gate{gatesFailed > 1 ? "s" : ""}</span>
+                    <span className="ilv-gate-badge">
+                      ⚡ {gatesFailed} gate{gatesFailed > 1 ? "s" : ""}
+                    </span>
                   )}
                   {step.tokens != null && (
-                    <span className="ilv-tokens">{step.tokens.toLocaleString()} tok</span>
+                    <span className="ilv-tokens">
+                      {step.tokens.toLocaleString()} tok
+                    </span>
                   )}
                   {durationSec && (
                     <span className="ilv-duration">{durationSec}s</span>
                   )}
-                  <span className="ilv-step-status" style={{ color: statusColor }}>{step.status}</span>
+                  <span
+                    className="ilv-step-status"
+                    style={{ color: statusColor }}
+                  >
+                    {step.status}
+                  </span>
                 </div>
               </button>
 
@@ -503,8 +733,13 @@ function InlineLogViewer({ steps, taskStatus }: InlineLogViewerProps) {
                   {step.gate_results.length > 0 && (
                     <div className="ilv-gates">
                       {step.gate_results.map((g, gi) => (
-                        <div key={gi} className={`ilv-gate-row ${g.passed ? "passed" : "failed"}`}>
-                          <span className="ilv-gate-icon">{g.passed ? "✓" : "✗"}</span>
+                        <div
+                          key={gi}
+                          className={`ilv-gate-row ${g.passed ? "passed" : "failed"}`}
+                        >
+                          <span className="ilv-gate-icon">
+                            {g.passed ? "✓" : "✗"}
+                          </span>
                           <span className="ilv-gate-name">{g.gate}</span>
                           {!g.passed && (
                             <span className="ilv-gate-msg">{g.message}</span>
@@ -517,10 +752,15 @@ function InlineLogViewer({ steps, taskStatus }: InlineLogViewerProps) {
                   {step.execution_log && step.execution_log.length > 0 && (
                     <div className="ilv-exec-log">
                       {step.execution_log.map((entry, ei) => (
-                        <div key={ei} className={`ilv-exec-entry ${entry.exit_code === 0 ? "ok" : "err"}`}>
+                        <div
+                          key={ei}
+                          className={`ilv-exec-entry ${entry.exit_code === 0 ? "ok" : "err"}`}
+                        >
                           <span className="ilv-exec-prompt">$</span>
                           <span className="ilv-exec-cmd">{entry.command}</span>
-                          <span className={`ilv-exec-code ${entry.exit_code === 0 ? "ok" : "err"}`}>
+                          <span
+                            className={`ilv-exec-code ${entry.exit_code === 0 ? "ok" : "err"}`}
+                          >
                             [{entry.exit_code}]
                           </span>
                         </div>
@@ -529,11 +769,17 @@ function InlineLogViewer({ steps, taskStatus }: InlineLogViewerProps) {
                   )}
                   {/* main agent output text */}
                   {step.output ? (
-                    <ResponseRenderer output={step.output} maxHeightClass="max-h-[420px]" />
+                    <ResponseRenderer
+                      output={step.output}
+                      maxHeightClass="max-h-[420px]"
+                    />
+                  ) : step.status === "running" ? (
+                    <div className="ilv-running-pulse">
+                      Running
+                      <span className="ilv-dots" />
+                    </div>
                   ) : (
-                    step.status === "running"
-                      ? <div className="ilv-running-pulse">Running<span className="ilv-dots" /></div>
-                      : <div className="ilv-no-output">No output recorded.</div>
+                    <div className="ilv-no-output">No output recorded.</div>
                   )}
                 </div>
               )}
@@ -557,20 +803,34 @@ interface FilesDrawerProps {
   onClose: () => void;
 }
 
-function FilesDrawer({ taskId, agent, files, byAgent, onClose }: FilesDrawerProps) {
+function FilesDrawer({
+  taskId,
+  agent,
+  files,
+  byAgent,
+  onClose,
+}: FilesDrawerProps) {
   return (
     <>
       <div className="files-drawer-overlay" onClick={onClose} />
       <div className="files-drawer">
         <div className="files-drawer-header">
           <span className="text-base">📁</span>
-          <span className="text-[11px] font-semibold" style={{ color: "var(--t1)" }}>
+          <span
+            className="text-[11px] font-semibold"
+            style={{ color: "var(--t1)" }}
+          >
             Files changed by {agent.charAt(0).toUpperCase() + agent.slice(1)}
           </span>
           <span className="text-[10px] rounded-full px-2 py-0.5 bg-[rgba(0,0,0,0.05)] text-[var(--t3)]">
             {files.length} file{files.length !== 1 ? "s" : ""}
           </span>
-          <button type="button" className="files-drawer-close" onClick={onClose} aria-label="Close files">
+          <button
+            type="button"
+            className="files-drawer-close"
+            onClick={onClose}
+            aria-label="Close files"
+          >
             ×
           </button>
         </div>
@@ -586,12 +846,33 @@ function FilesDrawer({ taskId, agent, files, byAgent, onClose }: FilesDrawerProp
 /*  OpenInEditor — small dropdown for opening project in editor       */
 /* ================================================================== */
 const EDITORS = [
-  { id: "vscode",  label: "VS Code",  icon: "⬡", scheme: (p: string) => `vscode://file/${encodeURIComponent(p)}` },
-  { id: "cursor",  label: "Cursor",   icon: "◈", scheme: (p: string) => `cursor://file/${encodeURIComponent(p)}` },
-  { id: "zed",     label: "Zed",      icon: "◆", scheme: (p: string) => `zed://file/${encodeURIComponent(p)}` },
+  {
+    id: "vscode",
+    label: "VS Code",
+    icon: "⬡",
+    scheme: (p: string) => `vscode://file/${encodeURIComponent(p)}`,
+  },
+  {
+    id: "cursor",
+    label: "Cursor",
+    icon: "◈",
+    scheme: (p: string) => `cursor://file/${encodeURIComponent(p)}`,
+  },
+  {
+    id: "zed",
+    label: "Zed",
+    icon: "◆",
+    scheme: (p: string) => `zed://file/${encodeURIComponent(p)}`,
+  },
 ];
 
-function OpenInEditorBtn({ projectPath, onOpen }: { projectPath: string; onOpen: (url: string) => void }) {
+function OpenInEditorBtn({
+  projectPath,
+  onOpen,
+}: {
+  projectPath: string;
+  onOpen: (url: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string>("");
 
@@ -601,7 +882,7 @@ function OpenInEditorBtn({ projectPath, onOpen }: { projectPath: string; onOpen:
 
   const handleEditorClick = async (editorId: string) => {
     try {
-      const editor = EDITORS.find(e => e.id === editorId);
+      const editor = EDITORS.find((e) => e.id === editorId);
       if (!editor) return;
       const url = editor.scheme(projectPath);
       onOpen(url);
@@ -622,12 +903,29 @@ function OpenInEditorBtn({ projectPath, onOpen }: { projectPath: string; onOpen:
         title="Open project in editor"
         disabled={error !== ""}
       >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
           <rect x="1" y="1.5" width="10" height="9" rx="1.5" />
           <path d="M4 4.5l2 1.5-2 1.5M7 7.5h2" />
         </svg>
         Open in editor
-        <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
+        <svg
+          width="8"
+          height="8"
+          viewBox="0 0 8 8"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.2"
+          strokeLinecap="round"
+        >
           <path d="M2 3l2 2 2-2" />
         </svg>
       </button>
@@ -662,7 +960,7 @@ function OpenInEditorBtn({ projectPath, onOpen }: { projectPath: string; onOpen:
 /*  NowStrip — live "what is happening right now" bar                 */
 /* ================================================================== */
 function NowStrip({ steps }: { steps: TaskStep[] }) {
-  const running = steps.find(s => s.status === "running") ?? null;
+  const running = steps.find((s) => s.status === "running") ?? null;
   const elapsed = useElapsed(running?.started_at ?? null);
   if (!running) return null;
 
@@ -670,10 +968,18 @@ function NowStrip({ steps }: { steps: TaskStep[] }) {
 
   return (
     <div className="td-now-strip">
-      <span className="td-now-pulse"><span /><span /><span /></span>
-      <span className="td-now-agent">{canonicalAgentLabel(running.agent_role || running.agent).toUpperCase()}</span>
+      <span className="td-now-pulse">
+        <span />
+        <span />
+        <span />
+      </span>
+      <span className="td-now-agent">
+        {canonicalAgentLabel(running.agent_role || running.agent).toUpperCase()}
+      </span>
       <span className="td-now-sep">·</span>
-      <span className="td-now-progress">{done} of {total} agents done</span>
+      <span className="td-now-progress">
+        {done} of {total} agents done
+      </span>
       {elapsed && (
         <>
           <span className="td-now-sep">·</span>
@@ -687,33 +993,49 @@ function NowStrip({ steps }: { steps: TaskStep[] }) {
 /* ================================================================== */
 /*  FailureBar — prominent failure reason when task fails             */
 /* ================================================================== */
-function FailureBar({ steps, mission, onSelect, pipelineError }: {
+function FailureBar({
+  steps,
+  mission,
+  onSelect,
+  pipelineError,
+}: {
   steps: TaskStep[];
   mission: MissionData | null;
   onSelect: (agent: string) => void;
   pipelineError?: string | null;
 }) {
-  const failedStep = steps.find(s => s.status === "failed");
+  const failedStep = steps.find((s) => s.status === "failed");
 
   // Case 1: A specific agent step failed
   if (failedStep) {
     let reason = "";
-    const failedGates = failedStep.gate_results.filter(g => !g.passed);
+    const failedGates = failedStep.gate_results.filter((g) => !g.passed);
     if (failedGates.length > 0) {
-      reason = failedGates.map(g => g.message || g.gate).join(" · ");
+      reason = failedGates.map((g) => g.message || g.gate).join(" · ");
     } else if (failedStep.output.trim()) {
-      const lines = failedStep.output.split("\n").filter(l => l.trim());
+      const lines = failedStep.output.split("\n").filter((l) => l.trim());
       reason = lines[lines.length - 1] ?? "";
     } else if (mission?.decision_trace.length) {
-      reason = mission.decision_trace[mission.decision_trace.length - 1]?.summary ?? "";
+      reason =
+        mission.decision_trace[mission.decision_trace.length - 1]?.summary ??
+        "";
     }
 
     return (
-      <button type="button" className="td-failure-bar" onClick={() => onSelect(failedStep.agent)}>
+      <button
+        type="button"
+        className="td-failure-bar"
+        onClick={() => onSelect(failedStep.agent)}
+      >
         <span className="td-failure-icon">✕</span>
         <div className="td-failure-body">
-          <span className="td-failure-who">{canonicalAgentLabel(failedStep.agent_role || failedStep.agent)} failed</span>
-          {reason && <span className="td-failure-reason">{reason.slice(0, 160)}</span>}
+          <span className="td-failure-who">
+            {canonicalAgentLabel(failedStep.agent_role || failedStep.agent)}{" "}
+            failed
+          </span>
+          {reason && (
+            <span className="td-failure-reason">{reason.slice(0, 160)}</span>
+          )}
         </div>
         <span className="td-failure-cta">Inspect →</span>
       </button>
@@ -727,7 +1049,9 @@ function FailureBar({ steps, mission, onSelect, pipelineError }: {
         <span className="td-failure-icon">✕</span>
         <div className="td-failure-body">
           <span className="td-failure-who">Pipeline failed</span>
-          <span className="td-failure-reason">{pipelineError.slice(0, 200)}</span>
+          <span className="td-failure-reason">
+            {pipelineError.slice(0, 200)}
+          </span>
         </div>
       </div>
     );
@@ -739,22 +1063,27 @@ function FailureBar({ steps, mission, onSelect, pipelineError }: {
 /* ================================================================== */
 /*  QualitySummaryBar — compact quality metrics after NowStrip        */
 /* ================================================================== */
-function QualitySummaryBar({ steps, detail }: {
+function QualitySummaryBar({
+  steps,
+  detail,
+}: {
   steps: TaskStep[];
   detail: TaskDetailType | null;
 }) {
   if (!detail) return null;
 
-  const allGates = steps.flatMap(s => s.gate_results ?? []);
-  const gatesPassed = allGates.filter(g => g.passed).length;
+  const allGates = steps.flatMap((s) => s.gate_results ?? []);
+  const gatesPassed = allGates.filter((g) => g.passed).length;
   const gatesTotal = allGates.length;
-  const hasDeep = allGates.some(g => g.deep);
+  const hasDeep = allGates.some((g) => g.deep);
 
   return (
     <div className="td-quality-bar">
       <div className="quality-bar-item">
         <span className="quality-label">Gates:</span>
-        <span className={`quality-value ${gatesPassed === gatesTotal && gatesTotal > 0 ? "pass" : "neutral"}`}>
+        <span
+          className={`quality-value ${gatesPassed === gatesTotal && gatesTotal > 0 ? "pass" : "neutral"}`}
+        >
           {gatesPassed}/{gatesTotal}
         </span>
       </div>
@@ -767,11 +1096,15 @@ function QualitySummaryBar({ steps, detail }: {
       {detail.confidence_score !== undefined && (
         <div className="quality-bar-item">
           <span className="quality-label">Confidence:</span>
-          <span className={`quality-value ${
-            detail.confidence_score >= 80 ? "high" :
-            detail.confidence_score >= 60 ? "medium" :
-            "low"
-          }`}>
+          <span
+            className={`quality-value ${
+              detail.confidence_score >= 80
+                ? "high"
+                : detail.confidence_score >= 60
+                  ? "medium"
+                  : "low"
+            }`}
+          >
             {detail.confidence_score.toFixed(0)}%
           </span>
         </div>
@@ -781,69 +1114,137 @@ function QualitySummaryBar({ steps, detail }: {
 }
 
 /* ================================================================== */
+/*  ControlSummaryBar — first-glance control-plane summary            */
+/* ================================================================== */
+function ControlSummaryBar({
+  nowLabel,
+  healthLabel,
+  healthTone,
+  actionLabel,
+}: {
+  nowLabel: string;
+  healthLabel: string;
+  healthTone: "neutral" | "good" | "risk";
+  actionLabel: string;
+}) {
+  return (
+    <div className="td-control-summary">
+      <div className="td-control-item">
+        <span className="td-control-label">Now</span>
+        <span className="td-control-value">{nowLabel}</span>
+      </div>
+      <div className="td-control-divider" />
+      <div className="td-control-item">
+        <span className="td-control-label">Health</span>
+        <span className={`td-control-value ${healthTone}`}>{healthLabel}</span>
+      </div>
+      <div className="td-control-divider" />
+      <div className="td-control-item">
+        <span className="td-control-label">Action</span>
+        <span className="td-control-value">{actionLabel}</span>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
 /*  TaskDetail — main export                                           */
 /* ================================================================== */
-export default function TaskDetail({ task, detail, onAction, actionMsg, projectPath, onOpenInEditor }: TaskDetailProps) {
-  const [mission, setMission]   = useState<MissionData | null>(null);
-  const [collab, setCollab]     = useState<CollaborationData | null>(null);
-  const [gov, setGov]           = useState<GovernanceData | null>(null);
-  const [costs, setCosts]       = useState<CostData | null>(null);
-  const [files, setFiles]       = useState<FilesData | null>(null);
-  const [viewMode, setViewMode]           = useState<"map" | "timeline" | "logs">("map");
+export default function TaskDetail({
+  task,
+  detail,
+  onAction,
+  actionMsg,
+  projectPath,
+  onOpenInEditor,
+}: TaskDetailProps) {
+  const [mission, setMission] = useState<MissionData | null>(null);
+  const [collab, setCollab] = useState<CollaborationData | null>(null);
+  const [gov, setGov] = useState<GovernanceData | null>(null);
+  const [costs, setCosts] = useState<CostData | null>(null);
+  const [files, setFiles] = useState<FilesData | null>(null);
+  const [uiMode, setUiMode] = useState<"focus" | "full">("focus");
+  const [viewMode, setViewMode] = useState<"map" | "timeline" | "logs">("map");
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
-  const [leftOpen, setLeftOpen]           = useState(true);
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [showAdvancedMeta, setShowAdvancedMeta] = useState(false);
+  const [showInsights, setShowInsights] = useState(false);
 
-  const [drawer, setDrawer] = useState<{ agent: string; files: string[]; byAgent: Record<string, string[]> } | null>(null);
+  const [drawer, setDrawer] = useState<{
+    agent: string;
+    files: string[];
+    byAgent: Record<string, string[]>;
+  } | null>(null);
 
-  const st          = task.status.toLowerCase();
-  const isApproval  = st.includes("approval");
+  const st = task.status.toLowerCase();
+  const isApproval = st.includes("approval");
   const isCompleted = st.includes("complete");
-  const isFailed    = st.includes("fail") || st.includes("reject");
-  const isActive    = !isApproval && !isCompleted && !isFailed;
-  const canResume   = isFailed;
-  const hasSteps    = detail && detail.steps.length > 0;
+  const isFailed = st.includes("fail") || st.includes("reject");
+  const isActive = !isApproval && !isCompleted && !isFailed;
+  const canResume = isFailed;
+  const hasSteps = detail && detail.steps.length > 0;
   const isProcessing = !detail || !hasSteps;
 
   /* Fetch mission data */
   useEffect(() => {
-    if (task.id.startsWith("demo-")) { setMission(null); return; }
+    if (task.id.startsWith("demo-")) {
+      setMission(null);
+      return;
+    }
     let alive = true;
     void (async () => {
       try {
-        const data = await readJson<MissionData>(`${API_BASE}/v1/tasks/${task.id}/mission`);
+        const data = await readJson<MissionData>(
+          `${API_BASE}/v1/tasks/${task.id}/mission`,
+        );
         if (alive) setMission(data);
-      } catch { /* mission fetch failed */ }
+      } catch {
+        /* mission fetch failed */
+      }
     })();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, [task.id, detail?.steps.length]);
 
   /* Fetch side data (collab, gov, costs, files) */
   const fetchSideData = useCallback(async () => {
     if (task.id.startsWith("demo-")) return;
     const [cb, gv, c, f] = await Promise.all([
-      readJson<CollaborationData>(`${API_BASE}/v1/tasks/${task.id}/collaboration`),
+      readJson<CollaborationData>(
+        `${API_BASE}/v1/tasks/${task.id}/collaboration`,
+      ),
       readJson<GovernanceData>(`${API_BASE}/v1/tasks/${task.id}/governance`),
       readJson<CostData>(`${API_BASE}/v1/tasks/${task.id}/costs`),
       readJson<FilesData>(`${API_BASE}/v1/tasks/${task.id}/files`),
     ]);
     if (cb) setCollab(cb);
-    if (gv) setGov(gv);  // retained for future governance panel
-    if (c)  setCosts(c);
-    if (f)  setFiles(f);
+    if (gv) setGov(gv); // retained for future governance panel
+    if (c) setCosts(c);
+    if (f) setFiles(f);
   }, [task.id]);
 
-  useEffect(() => { void fetchSideData(); }, [fetchSideData]);
-  useEffect(() => { void fetchSideData(); }, [detail?.steps.length, fetchSideData]);
+  useEffect(() => {
+    void fetchSideData();
+  }, [fetchSideData]);
+  useEffect(() => {
+    void fetchSideData();
+  }, [detail?.steps.length, fetchSideData]);
 
   /* Build file data for drawer */
   const allFilesData = files?.files.length
     ? files
     : {
-        files: [...new Set((detail?.steps ?? []).flatMap((s) => s.files_changed))],
-        by_agent: (detail?.steps ?? []).reduce<Record<string, string[]>>((acc, s) => {
-          if (s.files_changed.length) acc[s.agent] = s.files_changed;
-          return acc;
-        }, {}),
+        files: [
+          ...new Set((detail?.steps ?? []).flatMap((s) => s.files_changed)),
+        ],
+        by_agent: (detail?.steps ?? []).reduce<Record<string, string[]>>(
+          (acc, s) => {
+            if (s.files_changed.length) acc[s.agent] = s.files_changed;
+            return acc;
+          },
+          {},
+        ),
       };
 
   function openFilesDrawer(agent: string, agentFiles: string[]) {
@@ -855,18 +1256,24 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
   }
 
   /* ── Derived stats ── */
-  const totalFiles  = allFilesData.files.length;
+  const totalFiles = allFilesData.files.length;
   const replanCount = mission?.workflow.replan_triggered ?? 0;
-  const allGates    = detail?.steps.flatMap(s => s.gate_results) ?? [];
-  const gatesFailed = allGates.filter(g => !g.passed).length;
+  const allGates = detail?.steps.flatMap((s) => s.gate_results) ?? [];
+  const gatesFailed = allGates.filter((g) => !g.passed).length;
   const expectedAgents =
     mission?.team.size && mission.team.size > 0
       ? mission.team.size
-      : (detail?.planned_roles?.length && detail.planned_roles.length > 0
-          ? detail.planned_roles.length
-          : (detail?.steps.length ?? 0));
-  const liveStepsCost = (detail?.steps ?? []).reduce((sum, s) => sum + (s.cost_usd ?? 0), 0);
-  const mapTotalCost = (costs?.total_cost_usd && costs.total_cost_usd > 0) ? costs.total_cost_usd : liveStepsCost;
+      : detail?.planned_roles?.length && detail.planned_roles.length > 0
+        ? detail.planned_roles.length
+        : (detail?.steps.length ?? 0);
+  const liveStepsCost = (detail?.steps ?? []).reduce(
+    (sum, s) => sum + (s.cost_usd ?? 0),
+    0,
+  );
+  const mapTotalCost =
+    costs?.total_cost_usd && costs.total_cost_usd > 0
+      ? costs.total_cost_usd
+      : liveStepsCost;
   const summary = detail?.ui_summary ?? null;
   const summaryMissing = hasSteps && !summary;
   const nextRole = summary?.next_expected_role ?? null;
@@ -885,72 +1292,192 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
   const nextExpectedReason = summary?.next_expected_reason ?? null;
   const gatesFailedSummary = summary?.gates_failed ?? gatesFailed;
   const gatesTotalSummary = summary?.gates_total ?? allGates.length;
+  const hasAdvancedMeta =
+    tierMismatch ||
+    replanCount > 0 ||
+    consultCount > 0 ||
+    debateCount > 0 ||
+    cacheSavedTokens > 0 ||
+    cacheSavedCostUsd > 0 ||
+    (isActive && Boolean(nextRole)) ||
+    summaryMissing;
+  const progress = progressFromSteps(detail?.steps ?? []);
+  const nowLabel = isApproval
+    ? "Awaiting approval"
+    : isFailed
+      ? "Execution failed"
+      : isCompleted
+        ? "Run completed"
+        : nextRole
+          ? `Running · next ${canonicalAgentLabel(nextRole)}`
+          : `Running · ${progress.completed}/${progress.total || expectedAgents || 0} done`;
+  const healthTone: "neutral" | "good" | "risk" =
+    isFailed || gatesFailedSummary > 0
+      ? "risk"
+      : isCompleted && gatesFailedSummary === 0
+        ? "good"
+        : "neutral";
+  const healthLabel =
+    isFailed || gatesFailedSummary > 0
+      ? "At risk"
+      : isCompleted
+        ? "Healthy"
+        : detail?.confidence_score != null
+          ? `Confidence ${detail.confidence_score.toFixed(0)}%`
+          : "Monitoring";
+  const actionLabel = isApproval
+    ? "Approve or reject"
+    : isFailed
+      ? "Inspect and resume"
+      : isCompleted
+        ? "Review outputs"
+        : "Monitor execution";
+
+  useEffect(() => {
+    setShowAdvancedMeta(false);
+    setShowInsights(false);
+    setUiMode("focus");
+  }, [task.id]);
+
+  useEffect(() => {
+    if (uiMode === "focus") {
+      setViewMode("map");
+      setShowInsights(false);
+      setShowAdvancedMeta(false);
+    }
+  }, [uiMode]);
 
   return (
     <div className="animate-fadeup h-full flex flex-col">
-
       {/* ── Compact header ── */}
       <div className="td-header flex-shrink-0">
         <div className="td-header-left">
           <h2 className="td-title">{task.title}</h2>
           <div className="td-badges">
             <span className={tierClass(effectiveTier)}>{effectiveTier}</span>
-            {tierMismatch && <span className="td-type-badge">requested: {requestedTier}</span>}
-            <span className="td-type-badge">mode: {effectiveTier}</span>
             <span className={statusClass(task.status)}>{task.status}</span>
-            {detail?.task_type && (
+            {uiMode === "full" && detail?.task_type && (
               <span className="td-type-badge">{detail.task_type}</span>
             )}
-            {detail?.complexity && (
-              <span className={`td-type-badge ${
-                detail.complexity === "critical" ? "td-complexity-critical" :
-                detail.complexity === "high" ? "td-complexity-high" :
-                detail.complexity === "medium" ? "td-complexity-medium" :
-                "td-complexity-low"
-              }`}>{detail.complexity}</span>
-            )}
-            {detail?.confidence_score !== undefined && detail.status !== "running" && detail.status !== "pending" && (
-              <span className={`td-confidence-badge ${
-                detail.confidence_score >= 80 ? "confidence-high" :
-                detail.confidence_score >= 60 ? "confidence-medium" :
-                "confidence-low"
-              }`}>
-                <span className="confidence-icon">
-                  {detail.confidence_score >= 80 ? "🛡" : detail.confidence_score >= 60 ? "⚠" : "❌"}
-                </span>
-                {detail.confidence_score.toFixed(0)}% Confidence
+            {uiMode === "full" && detail?.complexity && (
+              <span
+                className={`td-type-badge ${
+                  detail.complexity === "critical"
+                    ? "td-complexity-critical"
+                    : detail.complexity === "high"
+                      ? "td-complexity-high"
+                      : detail.complexity === "medium"
+                        ? "td-complexity-medium"
+                        : "td-complexity-low"
+                }`}
+              >
+                {detail.complexity}
               </span>
             )}
-            <span className="td-updated">{task.updatedAt}</span>
+            {detail?.confidence_score !== undefined &&
+              uiMode === "full" &&
+              detail.status !== "running" &&
+              detail.status !== "pending" && (
+                <span
+                  className={`td-confidence-badge ${
+                    detail.confidence_score >= 80
+                      ? "confidence-high"
+                      : detail.confidence_score >= 60
+                        ? "confidence-medium"
+                        : "confidence-low"
+                  }`}
+                >
+                  <span className="confidence-icon">
+                    {detail.confidence_score >= 80
+                      ? "🛡"
+                      : detail.confidence_score >= 60
+                        ? "⚠"
+                        : "❌"}
+                  </span>
+                  {detail.confidence_score.toFixed(0)}% Confidence
+                </span>
+              )}
+            {uiMode === "full" && (
+              <span className="td-updated">{task.updatedAt}</span>
+            )}
             {isApproval && (
               <span className="td-approval-chip">✋ Awaiting approval</span>
             )}
-            {replanCount > 0 && (
-              <span className="td-replan-chip">↺ {replanCount} replan{replanCount !== 1 ? "s" : ""}</span>
-            )}
             {gatesFailedSummary > 0 && (
-              <span className="td-gate-fail-chip">⚡ {gatesFailedSummary} gate{gatesFailedSummary !== 1 ? "s" : ""} failed</span>
-            )}
-            {(consultCount > 0 || debateCount > 0) && (
-              <span className="td-type-badge">consult {consultCount} · debate {debateCount}</span>
-            )}
-            {(cacheSavedTokens > 0 || cacheSavedCostUsd > 0) && (
-              <span className="td-type-badge">
-                cache saved {cacheSavedTokens.toLocaleString()} tok
-                {cacheSavedCostUsd > 0 ? ` · $${cacheSavedCostUsd.toFixed(4)}` : ""}
+              <span className="td-gate-fail-chip">
+                ⚡ {gatesFailedSummary} gate
+                {gatesFailedSummary !== 1 ? "s" : ""} failed
               </span>
             )}
-            {isActive && nextRole && (
-              <span className="td-type-badge">next: {canonicalAgentLabel(nextRole)}</span>
+            {hasAdvancedMeta && (
+              <button
+                type="button"
+                className="td-meta-toggle"
+                onClick={() => setShowAdvancedMeta((v) => !v)}
+              >
+                {showAdvancedMeta ? "Less details" : "More details"}
+              </button>
             )}
-            {summaryMissing && (
-              <span className="td-gate-fail-chip">bridge summary missing</span>
+            {showAdvancedMeta && (
+              <>
+                {tierMismatch && (
+                  <span className="td-type-badge">
+                    requested: {requestedTier}
+                  </span>
+                )}
+                {replanCount > 0 && (
+                  <span className="td-replan-chip">
+                    ↺ {replanCount} replan{replanCount !== 1 ? "s" : ""}
+                  </span>
+                )}
+                {(consultCount > 0 || debateCount > 0) && (
+                  <span className="td-type-badge">
+                    consult {consultCount} · debate {debateCount}
+                  </span>
+                )}
+                {(cacheSavedTokens > 0 || cacheSavedCostUsd > 0) && (
+                  <span className="td-type-badge">
+                    cache saved {cacheSavedTokens.toLocaleString()} tok
+                    {cacheSavedCostUsd > 0
+                      ? ` · $${cacheSavedCostUsd.toFixed(4)}`
+                      : ""}
+                  </span>
+                )}
+                {isActive && nextRole && (
+                  <span className="td-type-badge">
+                    next: {canonicalAgentLabel(nextRole)}
+                  </span>
+                )}
+                {summaryMissing && (
+                  <span className="td-gate-fail-chip">
+                    bridge summary missing
+                  </span>
+                )}
+              </>
             )}
           </div>
         </div>
         <div className="td-header-right">
+          <div className="td-view-toggle">
+            <button
+              type="button"
+              className={`td-view-btn ${uiMode === "focus" ? "active" : ""}`}
+              onClick={() => setUiMode("focus")}
+              title="Focus mode"
+            >
+              Focus
+            </button>
+            <button
+              type="button"
+              className={`td-view-btn ${uiMode === "full" ? "active" : ""}`}
+              onClick={() => setUiMode("full")}
+              title="Full mode"
+            >
+              Full
+            </button>
+          </div>
           {/* View toggle: Map ↔ Timeline ↔ Logs */}
-          {hasSteps && (
+          {hasSteps && uiMode === "full" && (
             <div className="td-view-toggle">
               <button
                 type="button"
@@ -979,21 +1506,49 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
             </div>
           )}
           {projectPath && onOpenInEditor && (
-            <OpenInEditorBtn projectPath={projectPath} onOpen={onOpenInEditor} />
+            <OpenInEditorBtn
+              projectPath={projectPath}
+              onOpen={onOpenInEditor}
+            />
+          )}
+          {uiMode === "full" && (
+            <button
+              type="button"
+              className="ghost-btn text-xs py-1.5 px-3"
+              onClick={() => setShowInsights((v) => !v)}
+            >
+              {showInsights ? "Hide insights" : "Show insights"}
+            </button>
           )}
           {isActive && (
-            <button type="button" className="warn-btn text-xs py-1.5 px-3"
-              onClick={() => onAction(`/v1/tasks/${task.id}/abort`, { reason: "Aborted by user" })}>
+            <button
+              type="button"
+              className="warn-btn text-xs py-1.5 px-3"
+              onClick={() =>
+                onAction(`/v1/tasks/${task.id}/abort`, {
+                  reason: "Aborted by user",
+                })
+              }
+            >
               Abort
             </button>
           )}
           {canResume && (
-            <button type="button" className="ghost-btn text-xs py-1.5 px-3"
-              onClick={() => onAction(`/v1/tasks/${task.id}/resume`, { resume_now: true })}>
+            <button
+              type="button"
+              className="ghost-btn text-xs py-1.5 px-3"
+              onClick={() =>
+                onAction(`/v1/tasks/${task.id}/resume`, { resume_now: true })
+              }
+            >
               Resume
             </button>
           )}
-          {actionMsg && <span className="text-[10px] text-[var(--ui-text-muted)]">{actionMsg}</span>}
+          {actionMsg && (
+            <span className="text-[10px] text-[var(--ui-text-muted)]">
+              {actionMsg}
+            </span>
+          )}
         </div>
       </div>
       {hasSteps && (
@@ -1023,19 +1578,32 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
         />
       )}
 
-      {/* ── Quality summary bar ── */}
-      {hasSteps && <QualitySummaryBar steps={detail!.steps} detail={detail} />}
-      {mission && <MissionControl mission={mission} />}
+      {/* ── First-glance control summary ── */}
+      {hasSteps && (
+        <ControlSummaryBar
+          nowLabel={nowLabel}
+          healthLabel={healthLabel}
+          healthTone={healthTone}
+          actionLabel={actionLabel}
+        />
+      )}
+
+      {/* ── Secondary analytics (collapsed by default) ── */}
+      {showInsights && hasSteps && (
+        <QualitySummaryBar steps={detail!.steps} detail={detail} />
+      )}
+      {showInsights && mission && <MissionControl mission={mission} />}
 
       {/* ── Split layout: map or timeline (left) + agent detail (right) ── */}
-      <div className={`td-map-layout flex-1 min-h-0 ${leftOpen ? "" : "td-map-layout--collapsed"}`}>
-
+      <div
+        className={`td-map-layout flex-1 min-h-0 ${leftOpen ? "" : "td-map-layout--collapsed"}`}
+      >
         {/* Panel collapse/expand toggle — sits on the divider */}
         {hasSteps && (
           <button
             type="button"
             className="td-panel-toggle"
-            onClick={() => setLeftOpen(v => !v)}
+            onClick={() => setLeftOpen((v) => !v)}
             title={leftOpen ? "Collapse panel" : "Expand panel"}
             aria-label={leftOpen ? "Collapse left panel" : "Expand left panel"}
           >
@@ -1051,7 +1619,9 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
                 <ProcessingState
                   status={task.status}
                   taskType={detail?.task_type || mission?.task_type}
-                  latestDecision={mission?.decision_trace?.slice(-1)[0]?.summary}
+                  latestDecision={
+                    mission?.decision_trace?.slice(-1)[0]?.summary
+                  }
                   startedAt={detail?.started_at ?? detail?.created_at ?? null}
                 />
               </div>
@@ -1065,7 +1635,9 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
                 totalFiles={totalFiles}
                 totalCost={mapTotalCost}
                 expectedAgents={expectedAgents}
-                nextExpectedRole={nextRole ? canonicalAgentLabel(nextRole) : null}
+                nextExpectedRole={
+                  nextRole ? canonicalAgentLabel(nextRole) : null
+                }
                 replanCount={replanCount}
                 gatesTotal={gatesTotalSummary}
                 gatesFailed={gatesFailedSummary}
@@ -1075,13 +1647,17 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
             )}
           </div>
         ) : viewMode === "timeline" ? (
-          <div className={`td-timeline-left ${leftOpen ? "" : "td-panel-hidden"}`}>
+          <div
+            className={`td-timeline-left ${leftOpen ? "" : "td-panel-hidden"}`}
+          >
             {isProcessing ? (
               <div className="p-4">
                 <ProcessingState
                   status={task.status}
                   taskType={detail?.task_type || mission?.task_type}
-                  latestDecision={mission?.decision_trace?.slice(-1)[0]?.summary}
+                  latestDecision={
+                    mission?.decision_trace?.slice(-1)[0]?.summary
+                  }
                   startedAt={detail?.started_at ?? detail?.created_at ?? null}
                 />
               </div>
@@ -1121,8 +1697,17 @@ export default function TaskDetail({ task, detail, onAction, actionMsg, projectP
             replanCount={replanCount}
             onOpenFiles={openFilesDrawer}
             isApproval={isApproval}
-            onApprove={() => onAction(`/v1/tasks/${task.id}/approve`, { action: "approve", resume_now: true })}
-            onReject={()  => onAction(`/v1/tasks/${task.id}/deny`,    { reason: "Rejected by operator" })}
+            onApprove={() =>
+              onAction(`/v1/tasks/${task.id}/approve`, {
+                action: "approve",
+                resume_now: true,
+              })
+            }
+            onReject={() =>
+              onAction(`/v1/tasks/${task.id}/deny`, {
+                reason: "Rejected by operator",
+              })
+            }
           />
         </div>
       </div>

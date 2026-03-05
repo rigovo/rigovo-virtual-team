@@ -30,7 +30,7 @@ from rigovo.application.master.evaluator import AgentEvaluator
 from rigovo.application.master.router import TeamRouter
 from rigovo.domain.entities.agent import Agent
 from rigovo.domain.entities.audit_entry import AuditAction, AuditEntry
-from rigovo.domain.entities.task import PipelineStep, Task, TaskComplexity, TaskType
+from rigovo.domain.entities.task import PipelineStep, Task, TaskComplexity, TaskStatus, TaskType
 from rigovo.domain.interfaces.domain_plugin import DomainPlugin
 from rigovo.domain.interfaces.embedding_provider import EmbeddingProvider
 from rigovo.domain.interfaces.event_emitter import EventEmitter
@@ -51,6 +51,70 @@ from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskReposit
 from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_TOKEN_BUDGET_CAP = 200_000
+ADAPTIVE_BUDGET_MIN_SAMPLE = 12
+ADAPTIVE_BUDGET_HISTORY_LIMIT = 250
+ADAPTIVE_BUDGET_CEILINGS: dict[str, int] = {
+    "brainstorm": 100_000,
+    "research": 300_000,
+    "fix": 600_000,
+    "build": 900_000,
+}
+
+
+def _percentile(sorted_values: list[int], percentile: float) -> int:
+    """Linear-interpolated percentile over already-sorted positive integers."""
+    if not sorted_values:
+        return 0
+    if len(sorted_values) == 1:
+        return int(sorted_values[0])
+    rank = (len(sorted_values) - 1) * percentile
+    lower = int(rank)
+    upper = min(len(sorted_values) - 1, lower + 1)
+    if lower == upper:
+        return int(sorted_values[lower])
+    weight = rank - lower
+    value = sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * weight
+    return int(round(value))
+
+
+def _derive_adaptive_budget_profiles(
+    tokens_by_intent: dict[str, list[int]],
+) -> dict[str, dict[str, int]]:
+    """Derive per-intent adaptive budgets from recent token history."""
+    from rigovo.application.graph.nodes.intent_gate import INTENT_PROFILES
+
+    profiles: dict[str, dict[str, int]] = {}
+    for intent, tokens in tokens_by_intent.items():
+        positive = sorted(int(t) for t in tokens if int(t) > 0)
+        sample_size = len(positive)
+        if sample_size < ADAPTIVE_BUDGET_MIN_SAMPLE:
+            continue
+
+        p50 = _percentile(positive, 0.50)
+        p75 = _percentile(positive, 0.75)
+        p95 = _percentile(positive, 0.95)
+
+        floor_budget = int(INTENT_PROFILES.get(intent, INTENT_PROFILES["build"]).token_budget)
+        ceiling_budget = int(
+            ADAPTIVE_BUDGET_CEILINGS.get(intent, ADAPTIVE_BUDGET_CEILINGS["build"])
+        )
+
+        # Bias toward completion reliability: use p75 with guard band, bounded by p95.
+        recommended = int(max(floor_budget, min(int(p75 * 1.15), int(p95 * 1.05))))
+        recommended = int(min(recommended, ceiling_budget))
+
+        profiles[intent] = {
+            "sample_size": sample_size,
+            "p50": p50,
+            "p75": p75,
+            "p95": p95,
+            "floor_budget": floor_budget,
+            "ceiling_budget": ceiling_budget,
+            "recommended_budget": recommended,
+        }
+    return profiles
 
 
 def _write_failure_log(
@@ -235,6 +299,44 @@ class RunTaskCommand:
         self._cost_repo = SqliteCostRepository(db) if db else None
         self._cache_repo = SqliteCacheRepository(db) if db else None
 
+    async def _build_adaptive_token_budget_by_intent(self) -> dict[str, dict[str, int]]:
+        """Build workspace-specific adaptive token budget profiles by intent."""
+        if not self._task_repo:
+            return {}
+
+        try:
+            tasks = await self._task_repo.list_by_workspace(
+                self._workspace_id, limit=ADAPTIVE_BUDGET_HISTORY_LIMIT
+            )
+        except Exception:
+            logger.debug("Adaptive budget history lookup failed", exc_info=True)
+            return {}
+
+        from rigovo.application.graph.nodes.intent_gate import detect_intent
+
+        tokens_by_intent: dict[str, list[int]] = {
+            "brainstorm": [],
+            "research": [],
+            "fix": [],
+            "build": [],
+        }
+        terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.REJECTED}
+
+        for item in tasks:
+            if item.status not in terminal:
+                continue
+            token_count = int(getattr(item, "total_tokens", 0) or 0)
+            if token_count <= 0:
+                continue
+            hint = {"task_type": getattr(getattr(item, "task_type", None), "value", "")}
+            profile = detect_intent(str(getattr(item, "description", "") or ""), hint)
+            intent = str(getattr(profile, "intent", "build") or "build")
+            if intent not in tokens_by_intent:
+                intent = "build"
+            tokens_by_intent[intent].append(token_count)
+
+        return _derive_adaptive_budget_profiles(tokens_by_intent)
+
     async def execute(
         self,
         description: str,
@@ -337,6 +439,11 @@ class RunTaskCommand:
             if self._task_repo:
                 await self._task_repo.save(task)
 
+        adaptive_budget_profiles = await self._build_adaptive_token_budget_by_intent()
+        budget_user_cap = (
+            self._budget_max_tokens > 0 and self._budget_max_tokens != DEFAULT_TOKEN_BUDGET_CAP
+        )
+
         initial_state: TaskState = {
             "task_id": str(task_id),
             "workspace_id": str(self._workspace_id),
@@ -380,6 +487,9 @@ class RunTaskCommand:
             "total_cost_usd": 0.0,
             "budget_max_cost_per_task": self._budget_max_cost,
             "budget_max_tokens_per_task": self._budget_max_tokens,
+            "adaptive_token_budget_by_intent": adaptive_budget_profiles,
+            "adaptive_budget_user_cap": budget_user_cap,
+            "adaptive_budget_min_sample": ADAPTIVE_BUDGET_MIN_SAMPLE,
             "memories_to_store": [],
             "memory_context_by_role": {},
             "memory_retrieval_log": {},
