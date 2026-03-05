@@ -35,9 +35,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
-          # Use glob so cache setup doesn't fail when path resolution differs across runners.
-          cache-dependency-path: "**/package-lock.json"
 
       - name: Install dependencies
         working-directory: apps/desktop
