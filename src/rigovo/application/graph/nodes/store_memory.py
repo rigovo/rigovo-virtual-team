@@ -8,8 +8,9 @@ import time
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from rigovo.application.context.memory_runtime import RigourMemoryRuntime
 from rigovo.application.graph.state import TaskState
-from rigovo.domain.entities.memory import Memory, MemoryType
+from rigovo.domain.entities.memory import MemoryType
 from rigovo.domain.interfaces.embedding_provider import EmbeddingProvider
 from rigovo.domain.interfaces.llm_provider import LLMProvider
 from rigovo.domain.interfaces.repositories import MemoryRepository
@@ -149,6 +150,7 @@ async def store_memory_node(
     agent_learning_updates: dict[str, list[dict[str, Any]]] = {}
     behavior_change_audit: list[dict[str, Any]] = []
     memory_snapshots: list[dict[str, Any]] = []
+    memory_promotion_records: list[dict[str, Any]] = []
 
     if memory_repo and embedding_provider and workspace_id:
         existing = await memory_repo.list_by_workspace(workspace_id, limit=500)
@@ -219,36 +221,63 @@ async def store_memory_node(
                             "content": f"[layer:agent_skill_memory][role:{role}] {content}",
                             "type": MemoryType.AGENT_SKILL_MEMORY.value,
                             "layer": "agent_skill_memory",
+                            "role": role,
+                            "promotion_score": scored,
+                            "promotion_reason": "curated_task_learning",
+                            "promotion_summary": content[:220],
                         }
                     )
 
         memory_texts = [m["content"] for m in deduped_memories]
-        embeddings = await embedding_provider.embed_batch(memory_texts) if memory_texts else []
-        for mem_data, embedding in zip(deduped_memories, embeddings):
-            mem_type = _coerce_memory_type(mem_data["type"])
-            memory = Memory(
-                workspace_id=workspace_id,
-                source_project_id=source_project_id,
-                source_task_id=source_task_id,
-                content=mem_data["content"],
-                memory_type=mem_type,
-                embedding=embedding,
-            )
-            await memory_repo.save(memory)
+        runtime = RigourMemoryRuntime(
+            memory_repo=memory_repo,
+            embedding_provider=embedding_provider,
+        )
+        saved_memories = await runtime.rigour_remember(
+            workspace_id=workspace_id,
+            source_project_id=source_project_id,
+            source_task_id=source_task_id,
+            entries=deduped_memories,
+        )
+        for mem_data, memory in zip(deduped_memories, saved_memories):
+            mem_type = memory.memory_type
             persisted_count += 1
             layer = str(mem_data.get("layer", "")).strip()
             if layer == "task_memory" or mem_type == MemoryType.TASK_MEMORY:
                 memory_layer_counters["task_memory"] += 1
             elif layer == "agent_skill_memory" or mem_type == MemoryType.AGENT_SKILL_MEMORY:
                 memory_layer_counters["agent_skill_memory"] += 1
+                memory_promotion_records.append(
+                    {
+                        "memory_id": str(memory.id),
+                        "role": str(mem_data.get("role", "")).strip() or "unknown",
+                        "score": float(mem_data.get("promotion_score", 0.0) or 0.0),
+                        "reason": str(mem_data.get("promotion_reason", "unknown")),
+                        "summary": str(mem_data.get("promotion_summary", ""))[:220],
+                        "created_at": time.time(),
+                    }
+                )
             else:
                 memory_layer_counters["workspace_memory"] += 1
 
+        snapshot_basis = {
+            "memory_ids": sorted(
+                [str(record.get("memory_id", "")) for record in memory_promotion_records if record]
+            ),
+            "layer_counters": memory_layer_counters,
+            "safe_mode": bool(memory_layer_policy.get("safe_mode", True)),
+            "promotion_threshold": float(
+                (state.get("learning_policy", {}) or {}).get("promotion_threshold", 0.75)
+            ),
+        }
         memory_snapshots.append(
             {
                 "version": int(time.time()),
                 "persisted_count": int(persisted_count),
                 "layer_counters": dict(memory_layer_counters),
+                "snapshot_hash": str(
+                    uuid5(NAMESPACE_URL, json.dumps(snapshot_basis, sort_keys=True))
+                ),
             }
         )
 
@@ -270,6 +299,7 @@ async def store_memory_node(
         "agent_learning_updates": agent_learning_updates,
         "behavior_change_audit": behavior_change_audit,
         "memory_snapshots": memory_snapshots,
+        "memory_promotion_records": memory_promotion_records,
         "status": "memories_extracted",
         "events": events,
     }
@@ -282,13 +312,6 @@ def _parse_uuid(value: Any) -> UUID | None:
         return UUID(str(value))
     except (ValueError, TypeError):
         return None
-
-
-def _coerce_memory_type(raw: str) -> MemoryType:
-    try:
-        return MemoryType(raw)
-    except ValueError:
-        return MemoryType.PATTERN
 
 
 def _normalize_memory_text(text: str) -> str:

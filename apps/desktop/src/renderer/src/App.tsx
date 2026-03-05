@@ -2,7 +2,8 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 
 import type {
   Route, AuthSession, InboxTask, ApprovalItem,
-  EngineStatus, Project, TaskDetail as TaskDetailType, ControlStatePayload
+  EngineStatus, Project, TaskDetail as TaskDetailType, ControlStatePayload, AdaptiveMetrics,
+  MemoryPromotionRecord,
 } from "./types";
 
 import { API_BASE, readJson, isApiHealthy, isUuid } from "./api";
@@ -266,6 +267,8 @@ export default function App(): JSX.Element {
   const [workspaceMeta, setWorkspaceMeta] = useState<{ org: string; users: number }>({ org: "", users: 0 });
   const [controlState, setControlState] = useState<ControlStatePayload | null>(null);
   const [settingsSnapshot, setSettingsSnapshot] = useState<SettingsSnapshot | null>(null);
+  const [adaptiveMetrics, setAdaptiveMetrics] = useState<AdaptiveMetrics | null>(null);
+  const [memoryPromotions, setMemoryPromotions] = useState<MemoryPromotionRecord[]>([]);
   const [uiLanguage, setUiLanguage] = useState("en-US");
   const [newThreadMode, setNewThreadMode] = useState(true);
   const [taskTier, setTaskTier] = useState<"auto" | "notify" | "approve">("auto");
@@ -432,6 +435,66 @@ export default function App(): JSX.Element {
     const id = window.setInterval(() => { void load(); }, 4000);
     return () => { active = false; window.clearInterval(id); };
   }, [route, newThreadMode, workspacePage]);
+
+  useEffect(() => {
+    if (route !== "control") return;
+    let active = true;
+    const load = async () => {
+      const [metrics, promotions] = await Promise.all([
+        readJson<AdaptiveMetrics>(`${API_BASE}/v1/adaptive/metrics`),
+        readJson<{ items: MemoryPromotionRecord[] }>(`${API_BASE}/v1/memory/promotions?limit=200`),
+      ]);
+      if (!active) return;
+      if (metrics) setAdaptiveMetrics(metrics);
+      if (promotions?.items) setMemoryPromotions(promotions.items);
+    };
+    void load();
+    const id = window.setInterval(() => {
+      void load();
+    }, 10000);
+    return () => {
+      active = false;
+      window.clearInterval(id);
+    };
+  }, [route]);
+
+  const rollbackMemoryPromotion = useCallback(
+    async (promotionId: string, reason = "operator_requested"): Promise<string | null> => {
+      try {
+        const actor =
+          reason === "operator_from_skills"
+            ? "skills_operator"
+            : reason === "operator_from_automations"
+              ? "automations_operator"
+              : "operator";
+        const res = await fetch(`${API_BASE}/v1/memory/promotions/${promotionId}/rollback`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason, actor }),
+        });
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try {
+            const body = await res.json();
+            if (typeof body?.detail === "string") detail = body.detail;
+          } catch {
+            /* keep fallback detail */
+          }
+          return `Rollback failed: ${detail}`;
+        }
+        const refreshed = await readJson<{ items: MemoryPromotionRecord[] }>(
+          `${API_BASE}/v1/memory/promotions?limit=200`,
+        );
+        if (refreshed?.items) setMemoryPromotions(refreshed.items);
+        const metrics = await readJson<AdaptiveMetrics>(`${API_BASE}/v1/adaptive/metrics`);
+        if (metrics) setAdaptiveMetrics(metrics);
+        return null;
+      } catch (e) {
+        return `Rollback failed: ${e instanceof Error ? e.message : "network error"}`;
+      }
+    },
+    [],
+  );
 
   /* ---- Workspace controls (mode, permission profile, model) ---- */
   useEffect(() => {
@@ -1123,6 +1186,9 @@ export default function App(): JSX.Element {
               inbox={inbox}
               approvals={approvals}
               policy={controlState?.policy || null}
+              adaptiveMetrics={adaptiveMetrics}
+              memoryPromotions={memoryPromotions}
+              onRollbackPromotion={rollbackMemoryPromotion}
               onOpenTask={(taskId) => {
                 setShowSettings(false);
                 setNewThreadMode(false);
@@ -1139,6 +1205,9 @@ export default function App(): JSX.Element {
               agentTools={settingsSnapshot?.agent_tools || {}}
               personas={controlState?.personas || []}
               connectors={controlState?.connectors || []}
+              adaptiveMetrics={adaptiveMetrics}
+              memoryPromotions={memoryPromotions}
+              onRollbackPromotion={rollbackMemoryPromotion}
               onOpenSettings={() => {
                 setShowSettings(true);
                 setWorkspacePage("settings");

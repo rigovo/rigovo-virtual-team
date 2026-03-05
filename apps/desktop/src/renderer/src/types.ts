@@ -235,12 +235,56 @@ export interface TaskDetail {
     cache_saved_tokens?: number;
     cache_saved_cost_usd?: number;
     provider_cached_input_tokens?: number;
+    budget_soft_extensions_used?: number;
+    budget_auto_compactions?: number;
+    checkpoint_policy_hash?: string;
+    checkpoint_memory_snapshot_hash?: string;
     gates_total?: number;
     gates_failed?: number;
     next_expected_role?: string | null;
     next_expected_role_name?: string | null;
     next_expected_reason?: string | null;
   };
+}
+
+export interface AdaptiveMetrics {
+  budget: {
+    adaptive_budget_applied_tasks: number;
+    adaptive_budget_sources: Record<string, number>;
+  };
+  compaction: {
+    soft_extensions_total: number;
+    auto_compactions_total: number;
+    compaction_checkpoint_total: number;
+  };
+  learning: {
+    promoted_by_role: Record<string, number>;
+    rolled_back_by_role: Record<string, number>;
+    promoted_total: number;
+    rolled_back_total: number;
+    avg_promoted_score: number;
+    recent: Array<{
+      role: string;
+      status: string;
+      score: number;
+      created_at: string;
+    }>;
+  };
+}
+
+export interface MemoryPromotionRecord {
+  id: string;
+  task_id: string;
+  role: string;
+  memory_id: string;
+  score: number;
+  status: string;
+  summary: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  rolled_back_at?: string | null;
+  rollback_reason?: string | null;
+  rollback_actor?: string | null;
 }
 
 /* ---------- Electron IPC bridge (exposed via preload) ---------- */

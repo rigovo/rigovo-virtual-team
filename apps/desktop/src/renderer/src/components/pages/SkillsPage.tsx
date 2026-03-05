@@ -1,11 +1,19 @@
 import { useEffect, useState } from "react";
-import type { ConnectorStatus, PersonaMember } from "../../types";
+import type {
+  AdaptiveMetrics,
+  ConnectorStatus,
+  MemoryPromotionRecord,
+  PersonaMember,
+} from "../../types";
 
 interface SkillsPageProps {
   agentModels: Record<string, string>;
   agentTools: Record<string, string[]>;
   personas: PersonaMember[];
   connectors: ConnectorStatus[];
+  adaptiveMetrics?: AdaptiveMetrics | null;
+  memoryPromotions?: MemoryPromotionRecord[];
+  onRollbackPromotion?: (promotionId: string, reason?: string) => Promise<string | null>;
   onOpenSettings?: () => void;
   onOpenAutomations?: () => void;
   onSaveRoleConfig?: (
@@ -894,6 +902,9 @@ export default function SkillsPage({
   agentTools,
   personas,
   connectors,
+  adaptiveMetrics,
+  memoryPromotions = [],
+  onRollbackPromotion,
   onOpenSettings,
   onOpenAutomations,
   onSaveRoleConfig,
@@ -919,6 +930,12 @@ export default function SkillsPage({
   const [personaTeam, setPersonaTeam] = useState("");
   const [personaSaving, setPersonaSaving] = useState(false);
   const [personaError, setPersonaError] = useState("");
+  const [rollbackBusy, setRollbackBusy] = useState<Record<string, boolean>>({});
+  const [rollbackMsg, setRollbackMsg] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const rollbackHistory = memoryPromotions
+    .filter((item) => item.status === "rolled_back")
+    .sort((a, b) => String(b.rolled_back_at || "").localeCompare(String(a.rolled_back_at || "")));
 
   const openAddPersona = () => {
     setPersonaEditorOpen(true);
@@ -981,6 +998,20 @@ export default function SkillsPage({
     if (err) {
       setPersonaError(err);
     }
+  };
+
+  const rollbackPromotion = async (promotion: MemoryPromotionRecord) => {
+    if (!onRollbackPromotion) return;
+    const ok = window.confirm(
+      `Rollback learning for ${ROLE_META[promotion.role]?.label || promotion.role}?`,
+    );
+    if (!ok) return;
+    setRollbackBusy((prev) => ({ ...prev, [promotion.id]: true }));
+    setRollbackMsg("");
+    const err = await onRollbackPromotion(promotion.id, "operator_from_skills");
+    setRollbackBusy((prev) => ({ ...prev, [promotion.id]: false }));
+    setRollbackMsg(err || "Learning rollback applied.");
+    window.setTimeout(() => setRollbackMsg(""), 2200);
   };
 
   return (
@@ -1094,6 +1125,266 @@ export default function SkillsPage({
           </div>
         </div>
       </div>
+
+      <div
+        style={{
+          marginBottom: 20,
+          border: "1px solid var(--border)",
+          borderRadius: 12,
+          background: "var(--canvas)",
+          padding: "12px 14px",
+        }}
+      >
+        {!adaptiveMetrics ? (
+          <div>
+            <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: "var(--t2)" }}>
+              Adaptive Cost & Learning
+            </p>
+            <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--t4)" }}>
+              Metrics are not available yet. Run a task or refresh the engine.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              <div>
+                <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: "var(--t2)" }}>
+                  Adaptive Cost & Learning
+                </p>
+                <p style={{ margin: "2px 0 0", fontSize: 11, color: "var(--t4)" }}>
+                  Live compaction pressure and role-learning promotions.
+                </p>
+              </div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, color: "var(--t3)" }}>
+                  soft extensions:{" "}
+                  <strong style={{ color: "var(--t1)" }}>
+                    {adaptiveMetrics.compaction.soft_extensions_total}
+                  </strong>
+                </span>
+                <span style={{ fontSize: 11, color: "var(--t3)" }}>
+                  auto compactions:{" "}
+                  <strong style={{ color: "var(--t1)" }}>
+                    {adaptiveMetrics.compaction.auto_compactions_total}
+                  </strong>
+                </span>
+                <span style={{ fontSize: 11, color: "var(--t3)" }}>
+                  promoted learnings:{" "}
+                  <strong style={{ color: "var(--t1)" }}>
+                    {adaptiveMetrics.learning.promoted_total}
+                  </strong>
+                </span>
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  style={{ fontSize: 11, padding: "4px 8px" }}
+                  onClick={() => setHistoryOpen(true)}
+                >
+                  Rollback history
+                </button>
+              </div>
+            </div>
+          <div
+            style={{
+              marginTop: 8,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
+              gap: 6,
+            }}
+          >
+            {Object.entries(adaptiveMetrics.learning.promoted_by_role).length > 0 ? (
+              Object.entries(adaptiveMetrics.learning.promoted_by_role)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 6)
+                .map(([role, count]) => (
+                  <div
+                    key={role}
+                    style={{
+                      border: "1px solid var(--border)",
+                      borderRadius: 8,
+                      padding: "6px 8px",
+                      fontSize: 11,
+                      color: "var(--t3)",
+                      display: "flex",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <span>{ROLE_META[role]?.label || role}</span>
+                    <strong style={{ color: "var(--t1)" }}>{count}</strong>
+                  </div>
+                ))
+            ) : (
+              <p style={{ margin: 0, fontSize: 11, color: "var(--t4)" }}>
+                No promoted role learnings yet.
+              </p>
+            )}
+          </div>
+          {rollbackMsg && (
+            <p style={{ margin: "8px 0 0", fontSize: 11, color: "var(--t3)" }}>
+              {rollbackMsg}
+            </p>
+          )}
+            {memoryPromotions.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <p style={{ margin: "0 0 6px", fontSize: 11, color: "var(--t4)" }}>
+                Recent promoted learnings
+              </p>
+              <div style={{ display: "grid", gap: 6 }}>
+                {memoryPromotions
+                  .filter((item) => item.status !== "rolled_back")
+                  .slice(0, 5)
+                  .map((item) => (
+                    <div
+                      key={item.id}
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        padding: "7px 9px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <p
+                          style={{
+                            margin: 0,
+                            fontSize: 11,
+                            color: "var(--t2)",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {ROLE_META[item.role]?.label || item.role} · score {item.score.toFixed(2)}
+                        </p>
+                        <p
+                          style={{
+                            margin: "2px 0 0",
+                            fontSize: 10,
+                            color: "var(--t4)",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            maxWidth: 560,
+                          }}
+                        >
+                          {item.summary || "Promoted role memory"}
+                        </p>
+                      </div>
+                      {onRollbackPromotion && (
+                        <button
+                          type="button"
+                          className="ghost-btn"
+                          onClick={() => void rollbackPromotion(item)}
+                          disabled={Boolean(rollbackBusy[item.id])}
+                          style={{ fontSize: 11, padding: "4px 8px" }}
+                        >
+                          {rollbackBusy[item.id] ? "Rolling back..." : "Rollback"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {historyOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            zIndex: 1200,
+            display: "flex",
+            justifyContent: "flex-end",
+          }}
+          onClick={() => setHistoryOpen(false)}
+        >
+          <aside
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: 420,
+              maxWidth: "92vw",
+              height: "100%",
+              background: "var(--canvas)",
+              borderLeft: "1px solid var(--border)",
+              padding: "14px 14px 18px",
+              overflowY: "auto",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 10,
+              }}
+            >
+              <h3 style={{ margin: 0, fontSize: 14, color: "var(--t1)" }}>Rollback history</h3>
+              <button
+                type="button"
+                className="ghost-btn"
+                style={{ fontSize: 11, padding: "4px 8px" }}
+                onClick={() => setHistoryOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            {rollbackHistory.length === 0 ? (
+              <p style={{ margin: 0, fontSize: 12, color: "var(--t4)" }}>
+                No rollback events yet.
+              </p>
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {rollbackHistory.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      border: "1px solid var(--border)",
+                      borderRadius: 8,
+                      padding: "8px 9px",
+                      background: "var(--canvas)",
+                    }}
+                  >
+                    <p style={{ margin: 0, fontSize: 11, color: "var(--t2)" }}>
+                      {ROLE_META[item.role]?.label || item.role} · {item.score.toFixed(2)}
+                    </p>
+                    <p
+                      style={{
+                        margin: "3px 0 0",
+                        fontSize: 10,
+                        color: "var(--t4)",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {item.summary || "Promoted role memory"}
+                    </p>
+                    <p style={{ margin: "6px 0 0", fontSize: 10, color: "var(--t3)" }}>
+                      by {item.rollback_actor || "operator"} · {item.rolled_back_at || "-"} ·{" "}
+                      {item.rollback_reason || "operator_requested"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </aside>
+        </div>
+      )}
 
       {/* ── Agent roster ────────────────────────────────────────── */}
       <div style={{ marginBottom: 28 }}>

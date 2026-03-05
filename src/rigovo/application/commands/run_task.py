@@ -14,6 +14,7 @@ Features:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -518,6 +519,7 @@ class RunTaskCommand:
             "agent_learning_updates": {},
             "behavior_change_audit": [],
             "memory_snapshots": [],
+            "memory_promotion_records": [],
             "integration_policy": self._integration_policy,
             "integration_catalog": self._build_integration_catalog(),
             "status": "running",
@@ -852,6 +854,44 @@ class RunTaskCommand:
                 "messages": collaboration_messages[-200:],
                 "debate_round": int(final_state.get("debate_round", 0) or 0),
             },
+            "adaptive_runtime": {
+                "budget_soft_extensions_used": int(
+                    final_state.get("budget_soft_extensions_used", 0) or 0
+                ),
+                "budget_auto_compactions": int(final_state.get("budget_auto_compactions", 0) or 0),
+                "compaction_checkpoints": list(final_state.get("compaction_checkpoints", []) or [])[
+                    -10:
+                ],
+            },
+            "learning_runtime": {
+                "agent_learning_updates": final_state.get("agent_learning_updates", {}) or {},
+                "behavior_change_audit": final_state.get("behavior_change_audit", []) or [],
+                "memory_snapshots": final_state.get("memory_snapshots", []) or [],
+                "memory_promotion_records": final_state.get("memory_promotion_records", []) or [],
+            },
+            "checkpoint_contract": {
+                "policy_hash": str(
+                    uuid5(
+                        NAMESPACE_DNS,
+                        json.dumps(
+                            {
+                                "budget_policy": self._budget_policy,
+                                "learning_policy": self._learning_policy,
+                                "integration_policy": self._integration_policy,
+                            },
+                            sort_keys=True,
+                        ),
+                    )
+                ),
+                "memory_snapshot_hash": (
+                    str(
+                        (final_state.get("memory_snapshots", []) or [])[-1].get("snapshot_hash", "")
+                    )
+                    if isinstance(final_state.get("memory_snapshots", []), list)
+                    and final_state.get("memory_snapshots", [])
+                    else ""
+                ),
+            },
         }
 
         # Persist checkpoint timeline from graph state (history states)
@@ -861,6 +901,7 @@ class RunTaskCommand:
 
         if self._task_repo:
             await self._task_repo.save(task)
+        await self._persist_memory_promotion_ledger(task_id=task_id, final_state=final_state)
 
         # --- 7. Audit log ---
         if self._audit_repo:
@@ -923,6 +964,73 @@ class RunTaskCommand:
             else list(agent_outputs.keys()),
             "files_changed": self._extract_files_changed(agent_outputs),
         }
+
+    async def _persist_memory_promotion_ledger(
+        self,
+        task_id: UUID,
+        final_state: dict[str, Any],
+    ) -> None:
+        """Persist role-specific learning promotions for audit and rollback."""
+        if not self._db:
+            return
+        raw_records = final_state.get("memory_promotion_records", []) or []
+        if not isinstance(raw_records, list) or not raw_records:
+            return
+
+        rows: list[tuple[Any, ...]] = []
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for item in raw_records:
+            if not isinstance(item, dict):
+                continue
+            memory_id = str(item.get("memory_id", "")).strip()
+            role = str(item.get("role", "")).strip() or "unknown"
+            if not memory_id:
+                continue
+            score = float(item.get("score", 0.0) or 0.0)
+            reason = str(item.get("reason", "unknown")).strip() or "unknown"
+            summary = str(item.get("summary", "")).strip()[:240]
+            created_at = float(item.get("created_at", 0.0) or 0.0)
+            created_at_iso = (
+                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(created_at))
+                if created_at > 0
+                else now_iso
+            )
+            ledger_id = str(uuid4())
+            metadata = {
+                "reason": reason,
+                "memory_snapshot_count": len(final_state.get("memory_snapshots", []) or []),
+                "task_status": str(final_state.get("status", "unknown")),
+            }
+            rows.append(
+                (
+                    ledger_id,
+                    str(self._workspace_id),
+                    str(task_id),
+                    role,
+                    memory_id,
+                    score,
+                    "promoted",
+                    summary,
+                    json.dumps(metadata),
+                    created_at_iso,
+                    None,
+                    None,
+                    None,
+                )
+            )
+        if not rows:
+            return
+        try:
+            self._db.executemany(
+                """INSERT INTO memory_promotion_ledger
+                (id, workspace_id, task_id, role, memory_id, score, status,
+                 summary, metadata, created_at, rolled_back_at, rollback_reason, rollback_actor)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
+            self._db.commit()
+        except Exception:
+            logger.warning("Failed to persist memory promotion ledger", exc_info=True)
 
     def _resolve_effective_project_root(self, task_id: UUID, workspace_path: str) -> Path:
         """Choose execution root for this task.

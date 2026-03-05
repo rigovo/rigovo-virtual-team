@@ -1,5 +1,10 @@
 import { useCallback, useState } from "react";
-import type { ApprovalItem, InboxTask } from "../../types";
+import type {
+  AdaptiveMetrics,
+  ApprovalItem,
+  InboxTask,
+  MemoryPromotionRecord,
+} from "../../types";
 import { API_BASE } from "../../api";
 
 type PolicySnapshot = {
@@ -14,6 +19,9 @@ interface AutomationsPageProps {
   inbox: InboxTask[];
   approvals: ApprovalItem[];
   policy: PolicySnapshot | null;
+  adaptiveMetrics?: AdaptiveMetrics | null;
+  memoryPromotions?: MemoryPromotionRecord[];
+  onRollbackPromotion?: (promotionId: string, reason?: string) => Promise<string | null>;
   onOpenTask?: (taskId: string) => void;
   onRefreshQueue?: () => Promise<string | null>;
 }
@@ -454,6 +462,9 @@ export default function AutomationsPage({
   inbox,
   approvals,
   policy,
+  adaptiveMetrics,
+  memoryPromotions = [],
+  onRollbackPromotion,
   onOpenTask,
   onRefreshQueue,
 }: AutomationsPageProps): JSX.Element {
@@ -461,6 +472,8 @@ export default function AutomationsPage({
   const [lane, setLane] = useState<"all" | "approve" | "notify">("all");
   const [refreshing, setRefreshing] = useState(false);
   const [pageMsg, setPageMsg] = useState("");
+  const [rollbackBusy, setRollbackBusy] = useState<Record<string, boolean>>({});
+  const [historyOpen, setHistoryOpen] = useState(false);
   const dismiss = useCallback(
     (id: string) => setDismissed((prev) => new Set([...prev, id])),
     [],
@@ -491,6 +504,24 @@ export default function AutomationsPage({
   );
   const completedToday = inbox.length - activeTasks.length;
   const totalPending = pendingApprove.length + pendingNotify.length;
+  const rollbackHistory = memoryPromotions
+    .filter((item) => item.status === "rolled_back")
+    .sort((a, b) => String(b.rolled_back_at || "").localeCompare(String(a.rolled_back_at || "")));
+  const rollbackNow = useCallback(
+    async (promotion: MemoryPromotionRecord) => {
+      if (!onRollbackPromotion || rollbackBusy[promotion.id]) return;
+      const ok = window.confirm(
+        `Rollback promoted learning for ${promotion.role}?`,
+      );
+      if (!ok) return;
+      setRollbackBusy((prev) => ({ ...prev, [promotion.id]: true }));
+      const err = await onRollbackPromotion(promotion.id, "operator_from_automations");
+      setRollbackBusy((prev) => ({ ...prev, [promotion.id]: false }));
+      setPageMsg(err || "Promotion rolled back.");
+      window.setTimeout(() => setPageMsg(""), 2200);
+    },
+    [onRollbackPromotion, rollbackBusy],
+  );
 
   return (
     <section className="workspace-page">
@@ -544,6 +575,178 @@ export default function AutomationsPage({
           </div>
         </div>
       </div>
+      <div
+        style={{
+          marginBottom: 14,
+          border: "1px solid var(--border)",
+          borderRadius: 10,
+          background: "var(--canvas)",
+          padding: "10px 12px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        {!adaptiveMetrics ? (
+          <span style={{ fontSize: 12, color: "var(--t4)" }}>
+            Adaptive Cost & Learning metrics are not available yet. Run a task or refresh queue.
+          </span>
+        ) : (
+          <>
+          <span style={{ fontSize: 12, color: "var(--t3)" }}>
+            Adaptive budget applied on{" "}
+            <strong style={{ color: "var(--t1)" }}>
+              {adaptiveMetrics.budget.adaptive_budget_applied_tasks}
+            </strong>{" "}
+            recent tasks
+          </span>
+          <span style={{ fontSize: 12, color: "var(--t3)" }}>
+            checkpoint compactions:{" "}
+            <strong style={{ color: "var(--t1)" }}>
+              {adaptiveMetrics.compaction.compaction_checkpoint_total}
+            </strong>
+          </span>
+          <span style={{ fontSize: 12, color: "var(--t3)" }}>
+            promotions rolled back:{" "}
+            <strong style={{ color: "var(--t1)" }}>
+              {adaptiveMetrics.learning.rolled_back_total}
+            </strong>
+          </span>
+          <button
+            type="button"
+            className="ghost-btn"
+            style={{ fontSize: 11, padding: "4px 8px" }}
+            onClick={() => setHistoryOpen(true)}
+          >
+            Rollback history
+          </button>
+          {memoryPromotions.length > 0 && (
+            <div style={{ width: "100%", marginTop: 6 }}>
+              <div style={{ display: "grid", gap: 6 }}>
+                {memoryPromotions
+                  .filter((item) => item.status !== "rolled_back")
+                  .slice(0, 3)
+                  .map((item) => (
+                    <div
+                      key={item.id}
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        padding: "6px 8px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                      }}
+                    >
+                      <span style={{ fontSize: 11, color: "var(--t3)" }}>
+                        {item.role} · score {item.score.toFixed(2)}
+                      </span>
+                      {onRollbackPromotion && (
+                        <button
+                          type="button"
+                          className="ghost-btn"
+                          onClick={() => void rollbackNow(item)}
+                          disabled={Boolean(rollbackBusy[item.id])}
+                          style={{ fontSize: 11, padding: "4px 8px" }}
+                        >
+                          {rollbackBusy[item.id] ? "Rolling back..." : "Rollback"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+          </>
+        )}
+      </div>
+      {historyOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            zIndex: 1200,
+            display: "flex",
+            justifyContent: "flex-end",
+          }}
+          onClick={() => setHistoryOpen(false)}
+        >
+          <aside
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: 420,
+              maxWidth: "92vw",
+              height: "100%",
+              background: "var(--canvas)",
+              borderLeft: "1px solid var(--border)",
+              padding: "14px 14px 18px",
+              overflowY: "auto",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 10,
+              }}
+            >
+              <h3 style={{ margin: 0, fontSize: 14, color: "var(--t1)" }}>Rollback history</h3>
+              <button
+                type="button"
+                className="ghost-btn"
+                style={{ fontSize: 11, padding: "4px 8px" }}
+                onClick={() => setHistoryOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            {rollbackHistory.length === 0 ? (
+              <p style={{ margin: 0, fontSize: 12, color: "var(--t4)" }}>
+                No rollback events yet.
+              </p>
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {rollbackHistory.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      border: "1px solid var(--border)",
+                      borderRadius: 8,
+                      padding: "8px 9px",
+                      background: "var(--canvas)",
+                    }}
+                  >
+                    <p style={{ margin: 0, fontSize: 11, color: "var(--t2)" }}>
+                      {item.role} · {item.score.toFixed(2)}
+                    </p>
+                    <p
+                      style={{
+                        margin: "3px 0 0",
+                        fontSize: 10,
+                        color: "var(--t4)",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {item.summary || "Promoted role memory"}
+                    </p>
+                    <p style={{ margin: "6px 0 0", fontSize: 10, color: "var(--t3)" }}>
+                      by {item.rollback_actor || "operator"} · {item.rolled_back_at || "-"} ·{" "}
+                      {item.rollback_reason || "operator_requested"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </aside>
+        </div>
+      )}
       {pageMsg && (
         <div
           style={{

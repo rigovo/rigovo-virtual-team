@@ -185,6 +185,9 @@ class TaskState(TypedDict, total=False):
     ]  # Proposed/promoted role-level learning deltas
     behavior_change_audit: list[dict[str, Any]]  # Why agent behavior changed (promotion trail)
     memory_snapshots: list[dict[str, Any]]  # Versioned memory snapshots for rollback
+    memory_promotion_records: list[
+        dict[str, Any]
+    ]  # Persisted role-promotion entries with memory ids
     integration_policy: dict[str, Any]  # Runtime policy for plugin/connector/MCP tooling
     integration_catalog: dict[str, Any]  # Loaded plugin capability catalog
 

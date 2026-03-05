@@ -93,6 +93,23 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Memory promotion ledger (role tuning promotions + rollback trail)
+CREATE TABLE IF NOT EXISTS memory_promotion_ledger (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    score REAL DEFAULT 0,
+    status TEXT DEFAULT 'promoted',
+    summary TEXT,
+    metadata TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    rolled_back_at TEXT,
+    rollback_reason TEXT,
+    rollback_actor TEXT
+);
+
 -- Team config cache (synced from cloud, used offline)
 CREATE TABLE IF NOT EXISTS team_cache (
     id TEXT PRIMARY KEY,
@@ -203,6 +220,10 @@ CREATE INDEX IF NOT EXISTS idx_audit_workspace ON audit_log(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_task ON audit_log(task_id);
 CREATE INDEX IF NOT EXISTS idx_audit_unsynced ON audit_log(synced) WHERE synced = 0;
 CREATE INDEX IF NOT EXISTS idx_memories_workspace ON memories(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_memory_promotion_workspace
+    ON memory_promotion_ledger(workspace_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_promotion_status
+    ON memory_promotion_ledger(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_queue_pending ON sync_queue(entity_type) WHERE attempts < 5;
 CREATE INDEX IF NOT EXISTS idx_prompt_cache_exact_lookup
     ON prompt_cache_exact(workspace_id, role, model, prompt_hash, context_fingerprint);
@@ -268,6 +289,42 @@ class LocalDatabase:
                 conn.commit()
             except Exception:
                 pass  # Column already exists — safe to ignore
+
+        # v5 — role-learning promotions + rollback ledger
+        try:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS memory_promotion_ledger (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    memory_id TEXT NOT NULL,
+                    score REAL DEFAULT 0,
+                    status TEXT DEFAULT 'promoted',
+                    summary TEXT,
+                    metadata TEXT,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    rolled_back_at TEXT,
+                    rollback_reason TEXT,
+                    rollback_actor TEXT
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_promotion_workspace "
+                "ON memory_promotion_ledger(workspace_id, created_at DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_promotion_status "
+                "ON memory_promotion_ledger(status, created_at DESC)"
+            )
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE memory_promotion_ledger ADD COLUMN rollback_actor TEXT")
+            conn.commit()
+        except Exception:
+            pass
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:

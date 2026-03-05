@@ -632,6 +632,11 @@ class UpdateSettingsRequest(BaseModel):
     db_url: str | None = None  # Postgres DSN (persisted to .env)
 
 
+class RollbackPromotionRequest(BaseModel):
+    reason: str = Field(default="operator_requested", max_length=240)
+    actor: str = Field(default="operator", max_length=64)
+
+
 class CustomConnectorRequest(BaseModel):
     id: str
     provider: str = ""
@@ -1556,6 +1561,220 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "cross_project_usage_total": cross_project_total,
             "avg_usage_per_memory": round(total_usage / total, 3) if total else 0.0,
             "utilization_rate": round(used / total, 3) if total else 0.0,
+        }
+
+    @app.get("/v1/memory/promotions")
+    async def memory_promotions(
+        limit: int = 100, role: str = "", status: str = ""
+    ) -> dict[str, Any]:
+        """List role-learning promotion ledger entries."""
+        limit = min(max(int(limit or 100), 1), 500)
+        db = container.get_db()
+        clauses = ["workspace_id = ?"]
+        params: list[Any] = [str(_workspace_id())]
+        if role.strip():
+            clauses.append("role = ?")
+            params.append(role.strip())
+        if status.strip():
+            clauses.append("status = ?")
+            params.append(status.strip())
+        where_sql = " AND ".join(clauses)
+        try:
+            rows = db.fetchall(
+                f"""SELECT id, task_id, role, memory_id, score, status, summary, metadata,
+                           created_at, rolled_back_at, rollback_reason, rollback_actor
+                    FROM memory_promotion_ledger
+                    WHERE {where_sql}
+                    ORDER BY created_at DESC
+                    LIMIT ?""",
+                tuple([*params, limit]),
+            )
+        except Exception:
+            rows = []
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            raw_meta = row["metadata"]
+            try:
+                meta = json.loads(raw_meta) if raw_meta else {}
+            except Exception:
+                meta = {}
+            items.append(
+                {
+                    "id": row["id"],
+                    "task_id": row["task_id"],
+                    "role": row["role"],
+                    "memory_id": row["memory_id"],
+                    "score": float(row["score"] or 0.0),
+                    "status": row["status"],
+                    "summary": row["summary"] or "",
+                    "metadata": meta,
+                    "created_at": row["created_at"],
+                    "rolled_back_at": row["rolled_back_at"],
+                    "rollback_reason": row["rollback_reason"],
+                    "rollback_actor": row["rollback_actor"],
+                }
+            )
+        return {"items": items}
+
+    @app.post("/v1/memory/promotions/{promotion_id}/rollback")
+    async def rollback_memory_promotion(
+        promotion_id: str,
+        req: RollbackPromotionRequest,
+    ) -> dict[str, Any]:
+        """Rollback promoted learning memory and mark ledger row."""
+        db = container.get_db()
+        try:
+            row = db.fetchone(
+                """SELECT id, workspace_id, memory_id, status
+                   FROM memory_promotion_ledger
+                   WHERE id = ?""",
+                (promotion_id,),
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Promotion ledger unavailable: {exc}"
+            ) from exc
+        if not row or str(row["workspace_id"]) != str(_workspace_id()):
+            raise HTTPException(status_code=404, detail="Promotion record not found")
+        if str(row["status"] or "") == "rolled_back":
+            return {"ok": True, "already_rolled_back": True}
+
+        now_iso = _now_utc().isoformat()
+        db.execute(
+            "DELETE FROM memories WHERE id = ? AND workspace_id = ?",
+            (str(row["memory_id"]), str(_workspace_id())),
+        )
+        db.execute(
+            """UPDATE memory_promotion_ledger
+               SET status = ?, rolled_back_at = ?, rollback_reason = ?, rollback_actor = ?
+               WHERE id = ?""",
+            (
+                "rolled_back",
+                now_iso,
+                req.reason.strip() or "operator_requested",
+                req.actor.strip() or "operator",
+                promotion_id,
+            ),
+        )
+        db.commit()
+
+        try:
+            audit_repo = SqliteAuditRepository(container.get_db())
+            await audit_repo.append(
+                AuditEntry(
+                    workspace_id=_workspace_id(),
+                    action=AuditAction.PATTERN_DETECTED,
+                    agent_role="operator",
+                    summary="Rolled back promoted learning memory",
+                    metadata={
+                        "promotion_id": promotion_id,
+                        "memory_id": str(row["memory_id"]),
+                        "reason": req.reason.strip() or "operator_requested",
+                        "actor": req.actor.strip() or "operator",
+                    },
+                )
+            )
+        except Exception:
+            logger.warning("Failed to append rollback audit entry", exc_info=True)
+
+        return {"ok": True, "promotion_id": promotion_id, "rolled_back_at": now_iso}
+
+    @app.get("/v1/adaptive/metrics")
+    async def adaptive_metrics(task_limit: int = 500, promotion_limit: int = 500) -> dict[str, Any]:
+        """Aggregate adaptive budget, compaction, and role-learning metrics."""
+        task_limit = min(max(int(task_limit or 500), 25), 5000)
+        promotion_limit = min(max(int(promotion_limit or 500), 25), 5000)
+        task_repo = SqliteTaskRepository(container.get_db())
+        tasks = await task_repo.list_by_workspace(_workspace_id(), limit=task_limit)
+
+        soft_extensions_total = 0
+        auto_compactions_total = 0
+        compaction_checkpoint_total = 0
+        adaptive_budget_applied_tasks = 0
+        adaptive_budget_sources: dict[str, int] = {}
+
+        for task in tasks:
+            approval_data = task.approval_data or {}
+            runtime = (
+                approval_data.get("adaptive_runtime", {}) if isinstance(approval_data, dict) else {}
+            )
+            if isinstance(runtime, dict):
+                soft_extensions_total += int(runtime.get("budget_soft_extensions_used", 0) or 0)
+                auto_compactions_total += int(runtime.get("budget_auto_compactions", 0) or 0)
+                checkpoints = runtime.get("compaction_checkpoints", [])
+                if isinstance(checkpoints, list):
+                    compaction_checkpoint_total += len(checkpoints)
+            collaboration = (
+                approval_data.get("collaboration", {}) if isinstance(approval_data, dict) else {}
+            )
+            events = collaboration.get("events", []) if isinstance(collaboration, dict) else []
+            if isinstance(events, list):
+                for event in events:
+                    if not isinstance(event, dict) or event.get("type") != "intent_detected":
+                        continue
+                    source = str(event.get("budget_source", "")).strip() or "unknown"
+                    adaptive_budget_sources[source] = int(
+                        adaptive_budget_sources.get(source, 0) + 1
+                    )
+                    if bool(event.get("adaptive_budget_applied", False)):
+                        adaptive_budget_applied_tasks += 1
+                    break
+
+        db = container.get_db()
+        try:
+            ledger_rows = db.fetchall(
+                """SELECT role, status, score, created_at
+                   FROM memory_promotion_ledger
+                   WHERE workspace_id = ?
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (str(_workspace_id()), promotion_limit),
+            )
+        except Exception:
+            ledger_rows = []
+        promoted_by_role: dict[str, int] = {}
+        rolled_back_by_role: dict[str, int] = {}
+        promoted_scores: list[float] = []
+        recent_promotions: list[dict[str, Any]] = []
+        for row in ledger_rows:
+            role_name = str(row["role"] or "unknown")
+            status_name = str(row["status"] or "promoted")
+            score = float(row["score"] or 0.0)
+            if status_name == "rolled_back":
+                rolled_back_by_role[role_name] = int(rolled_back_by_role.get(role_name, 0) + 1)
+            else:
+                promoted_by_role[role_name] = int(promoted_by_role.get(role_name, 0) + 1)
+                promoted_scores.append(score)
+            if len(recent_promotions) < 20:
+                recent_promotions.append(
+                    {
+                        "role": role_name,
+                        "status": status_name,
+                        "score": score,
+                        "created_at": row["created_at"],
+                    }
+                )
+
+        return {
+            "budget": {
+                "adaptive_budget_applied_tasks": adaptive_budget_applied_tasks,
+                "adaptive_budget_sources": adaptive_budget_sources,
+            },
+            "compaction": {
+                "soft_extensions_total": soft_extensions_total,
+                "auto_compactions_total": auto_compactions_total,
+                "compaction_checkpoint_total": compaction_checkpoint_total,
+            },
+            "learning": {
+                "promoted_by_role": promoted_by_role,
+                "rolled_back_by_role": rolled_back_by_role,
+                "promoted_total": int(sum(promoted_by_role.values())),
+                "rolled_back_total": int(sum(rolled_back_by_role.values())),
+                "avg_promoted_score": round(sum(promoted_scores) / len(promoted_scores), 3)
+                if promoted_scores
+                else 0.0,
+                "recent": recent_promotions,
+            },
         }
 
     @app.get("/v1/integrations/policy")
@@ -3001,6 +3220,12 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             baseline_tokens = None
         if baseline_tokens is not None and baseline_tokens <= 0:
             baseline_tokens = None
+        adaptive_runtime = (task.approval_data or {}).get("adaptive_runtime", {})
+        if not isinstance(adaptive_runtime, dict):
+            adaptive_runtime = {}
+        checkpoint_contract = (task.approval_data or {}).get("checkpoint_contract", {})
+        if not isinstance(checkpoint_contract, dict):
+            checkpoint_contract = {}
 
         ui_summary = {
             "tier_requested": str(getattr(task, "tier", "auto") or "auto"),
@@ -3026,6 +3251,14 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "cache_saved_tokens": cache_saved_tokens,
             "cache_saved_cost_usd": cache_saved_cost_usd,
             "provider_cached_input_tokens": provider_cached_input_tokens,
+            "budget_soft_extensions_used": int(
+                adaptive_runtime.get("budget_soft_extensions_used", 0) or 0
+            ),
+            "budget_auto_compactions": int(adaptive_runtime.get("budget_auto_compactions", 0) or 0),
+            "checkpoint_policy_hash": str(checkpoint_contract.get("policy_hash", "")),
+            "checkpoint_memory_snapshot_hash": str(
+                checkpoint_contract.get("memory_snapshot_hash", "")
+            ),
             "gates_total": gates_total,
             "gates_failed": gates_failed,
             "next_expected_role": next_expected_role,

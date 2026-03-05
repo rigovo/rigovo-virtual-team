@@ -5,109 +5,90 @@
 <h1 align="center">Rigovo Teams</h1>
 
 <p align="center">
-  <strong>Multi-agent software engineering with deterministic quality gates, transparent cost, and launch-speed execution.</strong>
+  <strong>Multi-agent software delivery with deterministic quality gates, adaptive cost control, and auditable learning.</strong>
 </p>
 
 ---
 
-## What Rigovo Is
+## 90-Second Evaluation
 
-Rigovo Teams is a local-first AI engineering runtime that turns a task prompt into a structured, auditable software delivery flow.
+Use this to decide quickly if Rigovo is a fit:
 
-It is designed for teams that want:
+1. Start desktop locally: `./scripts/e2e_desktop.sh`
+2. Run one real engineering task in Control Plane
+3. Validate three outcomes in one run:
+   - gate trace is explicit (pass/fail + evidence)
+   - spend is visible (tokens/cost + pressure handling)
+   - execution is explainable (map/timeline/logs)
 
-1. High intelligence output (planning + implementation + review)
-2. Strict quality enforcement (Rigour gates)
-3. Cost discipline (intent budgets, cache reuse, approval checkpoints)
-4. Full observability (map, timeline, logs, per-step token/cost telemetry)
-
----
-
-## Why This Is Different
-
-Tools like Cursor, Claude Code, and Codex are strong chat-first coding copilots for direct human-in-the-loop editing.
-
-Rigovo targets a different operating model: orchestrated, policy-aware, multi-agent execution.
-
-| Area | Rigovo Teams | Typical Chat-First Coding Assistant |
-|---|---|---|
-| Execution model | Multi-agent pipeline with explicit handoffs | Single active assistant loop |
-| Cost controls | Intent gate + token budgets + budget approval checkpoint | Usually prompt/session level controls |
-| Quality | Deterministic Rigour gates in pipeline | Mostly prompt-guided or post-hoc checking |
-| Auditability | Structured events, checkpoints, approvals, gate history | Primarily conversation history |
-| Caching | Provider cache + Rigovo exact/artifact cache telemetry | Provider-level caching only (varies by tool) |
-| Team UX | Map, Timeline, Logs aligned to pipeline state | Editor/chat centric UI |
-
-If your goal is "finish production tasks with clear governance and predictable spend", Rigovo is the better fit.
+If you need governance, auditability, and predictable delivery quality, continue rollout.
 
 ---
 
-## Why Rigovo Can Be Best (Honest View)
+## What Rigovo Teams Is
 
-Rigovo is strongest today at governed multi-agent execution with explicit cost/quality controls.
+Rigovo Teams is a desktop-first orchestration platform for engineering work.
 
-Rigovo is **not** automatically "world-best" yet in every scenario:
-
-1. Single-file interactive editing speed can still be better in chat-first tools.
-2. Some advanced controls are still operator-centric and need simpler UX defaults.
-3. Adaptive learning/promotion is policy-gated and intentionally conservative.
-
-What can make Rigovo best-in-class is the combination of:
-
-1. Adaptive budget controller (p50/p95-driven, not static-only caps)
-2. Auto compaction before failure
-3. Layered memory with audit and rollback
-4. Deterministic quality gates with full traceability
+It runs a structured multi-agent pipeline (planning, coding, review, QA, security, operations), enforces quality and policy at each stage, and exposes full execution traceability so teams can ship with confidence.
 
 ---
 
-## Launch Architecture (Current)
+## Why Teams Use It
 
-### Core runtime path
+- Predictable quality: deterministic gates during execution, not only at the end
+- Predictable spend: adaptive budget controls with token-pressure recovery paths
+- Operational trust: explicit approvals, audit trails, and rollbackable learning promotions
+- Local control: launch profile is local-first with SQLite runtime storage
 
-1. Scan workspace
-2. Classify task
-3. Detect intent and enforce budget/profile
-4. Route team and assemble agents
-5. Execute agents with gate checks and retries
-6. Finalize with confidence, costs, and full event trace
+### Best Fit
 
-### Token budget policy (current defaults)
+- Teams shipping production software with review/compliance expectations
+- Operators who need to explain why a run succeeded or failed
+- Organizations optimizing quality-per-dollar, not chat volume
 
-| Intent | Max Agents | Tool Rounds | File Reads | Token Budget |
-|---|---:|---:|---:|---:|
-| brainstorm | 2 | 3 | 0 | 50,000 |
-| research | 3 | 10 | 15 | 150,000 |
-| fix | 4 | 12 | 30 | 200,000 |
-| build | 6 | 10 | unlimited | 200,000 |
+### Not Ideal
 
-When token pressure rises, Rigovo can warn internally, compact context, and continue with soft extensions.
-Only when those protections are exhausted does Rigovo require approval or stop.
+- Pure ad-hoc chat coding with no process requirements
+- Teams that do not need auditability or policy controls
 
 ---
 
-## Agent Canonical Roles vs UI Labels
+## Core Capabilities
 
-Canonical runtime keys are stable and used in policy/config (`rigovo.yml`, APIs, tool grants).
-UI labels are presentation only.
+### 1) Multi-Agent Orchestration
 
-| Canonical Key | UI Label |
-|---|---|
-| `lead` | Tech Lead |
-| `planner` | Project Manager |
-| `coder` | Software Engineer |
-| `reviewer` | Reviewer |
-| `qa` | QA Engineer |
-| `security` | Security Engineer |
-| `devops` | DevOps |
-| `sre` | SRE |
-| `docs` | Technical Writer |
+- Role-specific agent pipeline with explicit handoffs
+- Retry and replan behavior on failures
+- Team routing by task intent
 
-Use canonical keys for automation and config to avoid mismatch.
+### 2) Deterministic Quality Gates
+
+- Rigour checks between agent stages
+- Gate decisions and evidence are persisted and inspectable
+- Policy-driven approvals for sensitive actions
+
+### 3) Adaptive Cost Management
+
+- Intent-aware budget policy
+- Internal warning before hard-fail paths
+- Auto-compaction and controlled extension behavior under token pressure
+
+### 4) Layered Memory + Learning Governance
+
+- `task_memory`: ephemeral run context
+- `workspace_memory`: long-lived project context
+- `agent_skill_memory`: role-specific promoted learning
+- Promotion ledger with rollback support and operator visibility
+
+### 5) Full Traceability
+
+- Map / Timeline / Logs in desktop UI
+- Per-task cost, token, gate, and cache telemetry
+- Promotion and rollback audit history
 
 ---
 
-## Mermaid Flow Diagram
+## Runtime Flow
 
 ```mermaid
 flowchart TD
@@ -124,168 +105,56 @@ flowchart TD
     I -- yes --> G
     I -- no --> J[finalize]
 
-    H -- fail --> K[retry with fix packet]
+    H -- fail --> K[retry / fix packet]
     K --> H
-    H -- retry exhausted --> L[replan]
+    H -- exhausted --> L[replan]
     L --> G
 
-    G --> M{token budget exceeded?}
-    M -- no --> H
-    M -- yes --> N[approval requested]
-    N -- approve --> O[extend budget]
-    O --> G
-    N -- reject --> P[pipeline failed]
-
-    B -. artifact cache hit/miss .-> Q[(SQLite cache)]
-    C -. exact cache hit/miss .-> Q
-    E -. exact cache hit/miss .-> Q
-    G -. provider cache telemetry .-> R[usage + cost accounting]
-
-    J --> S[UI Summary: tokens, cost, gates, cache savings]
+    G --> M{token pressure}
+    M -- recoverable --> N[compaction + extension]
+    N --> G
+    M -- unrecoverable --> P[approval or stop]
 ```
 
 ---
 
-## Caching Strategy (Implemented)
+## Canonical Agent Roles
 
-Rigovo currently runs three practical cache layers:
+Use these canonical keys in config, policy, and automation:
 
-1. Provider prompt cache telemetry
-   - Anthropic and OpenAI cached input/write tokens are normalized into usage.
-2. Rigovo exact cache
-   - Deterministic reuse for classification fallback and team routing.
-3. Artifact cache
-   - Project scan snapshot and knowledge graph reuse when workspace fingerprint is unchanged.
-
-All cache effects are surfaced in task detail:
-
-- `cache_hits_exact`
-- `cache_hit_rate`
-- `cache_saved_tokens`
-- `cache_saved_cost_usd`
-- `provider_cached_input_tokens`
+| Canonical Key | UI Label |
+|---|---|
+| `lead` | Tech Lead |
+| `planner` | Project Manager |
+| `coder` | Software Engineer |
+| `reviewer` | Code Reviewer |
+| `qa` | QA Engineer |
+| `security` | Security Engineer |
+| `devops` | DevOps |
+| `sre` | SRE |
+| `docs` | Technical Writer |
 
 ---
 
-## Quality and Trust Model
+## Desktop Product Surface
 
-Rigovo uses deterministic quality checks in the execution loop, not only prompt instructions.
-
-- Gate pass/fail is explicit in state and UI.
-- Retries are structured (with fix packets).
-- Replan is explicit and visible.
-- Confidence is derived from concrete run evidence (gates, retries, outcomes).
+- **Control Plane**: task status, execution controls, map/timeline/logs
+- **Skills**: role models, role grants, integration visibility
+- **Automations**: approvals inbox, governance and queue health
+- **Settings**: policy, capabilities, memory controls, agent configuration
 
 ---
 
-## Desktop UX
+## Memory and Learning API (Key Endpoints)
 
-The desktop app provides three synchronized run views:
-
-1. Map - agent graph and current state
-2. Timeline - chronological execution narrative
-3. Logs - compact step-level operational data
-
-Users can inspect:
-
-- What ran
-- What failed
-- Which gate failed
-- What was retried
-- What cache/budget decisions happened
-- What it cost
-
----
-
-## Tech Stack
-
-- Backend: Python + FastAPI + LangGraph
-- Runtime DB: SQLite (`.rigovo/local.db`)
-- Desktop: Electron + React + TypeScript
-- Quality engine: Rigour
-
-Note: current launch path is SQLite-first local runtime.
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- Python 3.10+
-- Node.js 20+
-- pnpm 9+
-- At least one LLM API key (Anthropic/OpenAI/etc.)
-
-### Install dependencies
-
-```bash
-python3 -m pip install -e .
-pnpm -C apps/desktop install
+```text
+GET    /v1/memory/metrics
+GET    /v1/memory/promotions
+POST   /v1/memory/promotions/{promotion_id}/rollback
+GET    /v1/adaptive/metrics
 ```
 
-### Start desktop dev flow
-
-```bash
-./scripts/e2e_desktop.sh
-```
-
-### Run backend tests (targeted)
-
-```bash
-pytest -q tests/unit/api/test_control_plane_ping.py
-pytest -q tests/unit/application/test_graph_nodes_execute_agent.py
-pytest -q tests/unit/application/test_langgraph_engine.py -k "pipeline_classifies_task or pipeline_executes_agents or auto_approve_mode"
-```
-
-### Build desktop
-
-```bash
-pnpm -C apps/desktop run build
-```
-
----
-
-## Configuration
-
-`rigovo.yml` (example):
-
-```yaml
-version: "1"
-
-teams:
-  engineering:
-    agents:
-      planner:
-        model: "claude-sonnet-4-6"
-      coder:
-        model: "claude-opus-4-6"
-      reviewer:
-        model: "claude-sonnet-4-6"
-
-orchestration:
-  max_retries: 5
-  consultation:
-    enabled: true
-  replan:
-    enabled: true
-    strategy: deterministic
-
-approval:
-  after_planning: true
-  before_commit: true
-
-quality:
-  deep_mode: "smart"
-
-database:
-  backend: sqlite
-  local_path: ".rigovo/local.db"
-```
-
----
-
-## API Surface
+General task/control endpoints:
 
 ```text
 POST   /v1/tasks
@@ -297,25 +166,89 @@ POST   /v1/tasks/{id}/approve
 POST   /v1/tasks/{id}/deny
 GET    /v1/settings
 POST   /v1/settings
-GET    /v1/projects
-POST   /v1/projects
-GET    /health
+GET    /v1/runtime/capabilities
 ```
 
 ---
 
-## Launch Positioning
+## Storage and Launch Scope
 
-Rigovo wins when users care about outcome per dollar, not just autocomplete speed:
+Current launch profile:
 
-- Fewer wasted tokens through intent routing and cache reuse
-- Fewer broken outputs through deterministic gate enforcement
-- Higher trust through full execution audit trail
+- Local-first runtime
+- SQLite as the active runtime database (`.rigovo/local.db`)
+- Desktop-first operations
 
-That combination (intelligence + rigour + cost transparency) is the product moat.
+Note:
+
+- Postgres persistence code exists in the repo for future deployment modes.
+- SQLite is the active and supported launch path today.
 
 ---
 
-## License
+## Technology Stack
 
-MIT - see [LICENSE](LICENSE)
+- Backend: Python, FastAPI, LangGraph
+- Desktop: Electron, React, TypeScript
+- Quality engine: Rigour
+- Runtime DB: SQLite
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.10+
+- Node.js 20+
+- pnpm 9+
+- LLM API key(s)
+
+### Install
+
+```bash
+python3 -m pip install -e .
+pnpm -C apps/desktop install
+```
+
+### Run desktop (dev)
+
+```bash
+./scripts/e2e_desktop.sh
+```
+
+### Build desktop app
+
+```bash
+pnpm -C apps/desktop run build
+```
+
+### Run tests
+
+```bash
+pytest -q
+```
+
+---
+
+## Release Packaging
+
+Desktop release workflow builds:
+
+- macOS: `.dmg`, `.zip`
+- Linux: `.AppImage`, `.deb`
+- Windows: `.exe` (NSIS)
+
+Workflow file:
+
+- [desktop-release.yml](.github/workflows/desktop-release.yml)
+
+---
+
+## Positioning
+
+Rigovo Teams is built for organizations that want both velocity and control:
+
+- faster execution through coordinated agents
+- higher confidence through deterministic gates
+- lower operational surprise through transparent cost, memory, and audit systems

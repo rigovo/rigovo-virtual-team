@@ -101,6 +101,22 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS memory_promotion_ledger (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    score DOUBLE PRECISION DEFAULT 0,
+    status TEXT DEFAULT 'promoted',
+    summary TEXT,
+    metadata TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    rolled_back_at TEXT,
+    rollback_reason TEXT,
+    rollback_actor TEXT
+);
+
 CREATE TABLE IF NOT EXISTS team_cache (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
@@ -155,6 +171,10 @@ CREATE INDEX IF NOT EXISTS idx_cost_workspace ON cost_ledger(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_workspace ON audit_log(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_task ON audit_log(task_id);
 CREATE INDEX IF NOT EXISTS idx_memories_workspace ON memories(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_memory_promotion_workspace
+    ON memory_promotion_ledger(workspace_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_promotion_status
+    ON memory_promotion_ledger(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_queue_entity_type ON sync_queue(entity_type);
 """
 
@@ -298,6 +318,26 @@ class PostgresDatabase:
                 "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_label TEXT",
                 "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS checkpoint_timeline TEXT",
                 "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_heartbeat DOUBLE PRECISION",
+                """CREATE TABLE IF NOT EXISTS memory_promotion_ledger (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    memory_id TEXT NOT NULL,
+                    score DOUBLE PRECISION DEFAULT 0,
+                    status TEXT DEFAULT 'promoted',
+                    summary TEXT,
+                    metadata TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    rolled_back_at TEXT,
+                    rollback_reason TEXT,
+                    rollback_actor TEXT
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_memory_promotion_workspace "
+                "ON memory_promotion_ledger(workspace_id, created_at DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_memory_promotion_status "
+                "ON memory_promotion_ledger(status, created_at DESC)",
+                "ALTER TABLE memory_promotion_ledger ADD COLUMN IF NOT EXISTS rollback_actor TEXT",
             ]:
                 try:
                     cur.execute(_col_sql)

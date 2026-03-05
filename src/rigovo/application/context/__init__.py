@@ -8,9 +8,11 @@ This package provides:
 - ProjectScanner: Reads project structure and key files
 - ContextBuilder: Assembles rich per-agent context
 - MemoryRetriever: Fetches relevant past learnings
+- RigourMemoryRuntime: Explicit rigour_remember/rigour_recall contracts
 """
 
 from rigovo.application.context.context_builder import AgentContext, ContextBuilder
+from rigovo.application.context.memory_runtime import RigourMemoryRuntime
 from rigovo.application.context.memory_retriever import MemoryRetriever
 from rigovo.application.context.project_scanner import ProjectScanner, ProjectSnapshot
 
@@ -18,6 +20,7 @@ __all__ = [
     "AgentContext",
     "ContextBuilder",
     "MemoryRetriever",
+    "RigourMemoryRuntime",
     "ProjectScanner",
     "ProjectSnapshot",
 ]

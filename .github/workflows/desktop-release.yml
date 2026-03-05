@@ -36,11 +36,18 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: apps/desktop/package-lock.json
+          # Use glob so cache setup doesn't fail when path resolution differs across runners.
+          cache-dependency-path: "**/package-lock.json"
 
       - name: Install dependencies
         working-directory: apps/desktop
-        run: npm install
+        shell: bash
+        run: |
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
 
       - name: Build Electron app (main + preload + renderer)
         working-directory: apps/desktop

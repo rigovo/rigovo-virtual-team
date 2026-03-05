@@ -25,7 +25,8 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from rigovo.application.context.context_builder import ContextBuilder
-from rigovo.application.context.memory_retriever import ROLE_MEMORY_PREFERENCES, MemoryRetriever
+from rigovo.application.context.memory_retriever import MemoryRetriever
+from rigovo.application.context.memory_runtime import RigourMemoryRuntime
 from rigovo.application.graph.state import AgentOutput, TaskState
 from rigovo.domain.interfaces.embedding_provider import EmbeddingProvider
 from rigovo.domain.interfaces.llm_provider import LLMProvider, LLMResponse, LLMUsage
@@ -480,18 +481,6 @@ def _parse_state_uuid(value: Any) -> UUID | None:
         return None
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Compute cosine similarity between two vectors."""
-    if len(a) != len(b) or not a:
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(x * x for x in b) ** 0.5
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
 async def _resolve_memory_context_for_role(
     state: TaskState,
     current_role: str,
@@ -530,50 +519,30 @@ async def _resolve_memory_context_for_role(
         return "", memory_context_by_role, memory_retrieval_log, []
 
     retriever = memory_retriever or MemoryRetriever()
+    runtime = RigourMemoryRuntime(
+        memory_repo=memory_repo,
+        embedding_provider=embedding_provider,
+        memory_retriever=retriever,
+    )
     events: list[dict[str, Any]] = []
     try:
-        query_embedding = await embedding_provider.embed(task_description)
-        preferred_types = ROLE_MEMORY_PREFERENCES.get(current_role) or None
-        memories = await memory_repo.search(
+        recall = await runtime.rigour_recall(
             workspace_id=workspace_id,
-            query_embedding=query_embedding,
-            limit=24,
-            memory_types=preferred_types,
-        )
-        similarity_scores = [
-            _cosine_similarity(query_embedding, m.embedding or []) for m in memories
-        ]
-        retrieved = await retriever.retrieve(
             task_description=task_description,
             role=current_role,
-            memories=memories,
-            similarity_scores=similarity_scores,
+            limit=24,
         )
-        memory_section_text = retrieved.to_context_section()
+        memory_section_text = recall.context_text
         memory_context_by_role[current_role] = memory_section_text
-        memory_retrieval_log[current_role] = [
-            {
-                "memory_id": str(scored.memory.id),
-                "score": round(float(scored.score), 6),
-                "memory_type": scored.memory.memory_type.value,
-            }
-            for scored in retrieved.memories
-        ]
-
-        avg_score = (
-            sum(sm.score for sm in retrieved.memories) / max(len(retrieved.memories), 1)
-            if retrieved.memories
-            else 0.0
-        )
-        top_score = max((sm.score for sm in retrieved.memories), default=0.0)
+        memory_retrieval_log[current_role] = list(recall.retrieval_log)
 
         events.append(
             {
                 "type": "memories_retrieved",
                 "role": current_role,
-                "count": retrieved.count,
-                "avg_score": round(avg_score, 3),
-                "top_score": round(top_score, 3),
+                "count": int(recall.count),
+                "avg_score": round(float(recall.avg_score), 3),
+                "top_score": round(float(recall.top_score), 3),
             }
         )
         return memory_section_text, memory_context_by_role, memory_retrieval_log, events
