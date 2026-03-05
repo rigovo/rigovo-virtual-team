@@ -46,14 +46,12 @@ jobs:
         working-directory: apps/desktop
         run: npx electron-vite build
 
-      # --publish always: uploads installers + update manifests (latest.yml,
-      # latest-mac.yml, latest-linux.yml) directly to the GitHub Release.
-      # electron-updater in the app reads these manifests to detect new versions.
-      - name: Package and publish for ${{ matrix.platform }}
+      # Build platform installers locally; GitHub release upload is handled
+      # by the dedicated `release` job below.
+      - name: Package installers for ${{ matrix.platform }}
         working-directory: apps/desktop
-        run: npx electron-builder --publish always
+        run: npx electron-builder --publish never
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # macOS code signing (optional — set these secrets if you have a certificate)
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
@@ -85,7 +83,6 @@ jobs:
           path: |
             apps/desktop/release/*.AppImage
             apps/desktop/release/*.deb
-            apps/desktop/release/*.snap
             apps/desktop/release/latest-linux.yml
           if-no-files-found: warn
 
@@ -96,7 +93,6 @@ jobs:
           name: rigovo-desktop-win
           path: |
             apps/desktop/release/*.exe
-            apps/desktop/release/*.msi
             apps/desktop/release/latest.yml
           if-no-files-found: warn
 

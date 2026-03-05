@@ -1542,7 +1542,9 @@ async def execute_agent_node(
     # Near cap: reduce per-agent max_tokens and tool rounds to push completion-first behavior.
     runtime_agent_config = dict(agent_config)
     intent_profile = state.get("intent_profile") or {}
-    intent_max_rounds = int(intent_profile.get("max_tool_rounds", MAX_TOOL_ROUNDS) or MAX_TOOL_ROUNDS)
+    intent_max_rounds = int(
+        intent_profile.get("max_tool_rounds", MAX_TOOL_ROUNDS) or MAX_TOOL_ROUNDS
+    )
     token_limit = int(state.get("budget_max_tokens_per_task", 0) or 0)
     accumulated_tokens = sum(v.get("tokens", 0) for v in state.get("cost_accumulator", {}).values())
     if token_limit > 0:

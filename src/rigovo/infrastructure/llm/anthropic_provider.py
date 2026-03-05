@@ -105,11 +105,7 @@ class AnthropicProvider(LLMProvider):
         output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
         cached_input_tokens = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
         cache_write_tokens = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
-        cache_source = (
-            "provider"
-            if cached_input_tokens > 0 or cache_write_tokens > 0
-            else "none"
-        )
+        cache_source = "provider" if cached_input_tokens > 0 or cache_write_tokens > 0 else "none"
 
         return LLMResponse(
             content=content,

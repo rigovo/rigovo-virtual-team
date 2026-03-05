@@ -47,6 +47,7 @@ def _classifier_timeout_seconds() -> int:
         return 25
     return max(5, min(value, 120))
 
+
 # Lightweight fallback prompt (used when no classifier is injected)
 CLASSIFICATION_PROMPT = """\
 You are a task classifier for a software engineering team.
@@ -443,7 +444,9 @@ async def classify_node(
     cache_context_fingerprint = stable_hash(
         {
             "deterministic": deterministic_classification,
-            "workspace_type_hint": _derive_workspace_type(state, {"task_type": det_result.task_type}),
+            "workspace_type_hint": _derive_workspace_type(
+                state, {"task_type": det_result.task_type}
+            ),
             "project_root": str(state.get("project_root", "") or ""),
         }
     )
@@ -472,7 +475,9 @@ async def classify_node(
                         "type": "cache_hit",
                         "cache_source": "rigovo_exact",
                         "role": "master_classify_fallback",
-                        "saved_tokens": int((cached.get("usage") or {}).get("total_tokens", 0) or 0),
+                        "saved_tokens": int(
+                            (cached.get("usage") or {}).get("total_tokens", 0) or 0
+                        ),
                     }
                 )
                 return {

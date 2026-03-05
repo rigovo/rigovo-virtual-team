@@ -114,7 +114,9 @@ async def route_team_node(
                         "type": "cache_hit",
                         "cache_source": "rigovo_exact",
                         "role": "master_route_team",
-                        "saved_tokens": int((cached.get("usage") or {}).get("total_tokens", 0) or 0),
+                        "saved_tokens": int(
+                            (cached.get("usage") or {}).get("total_tokens", 0) or 0
+                        ),
                     },
                     {
                         "type": "team_routed",

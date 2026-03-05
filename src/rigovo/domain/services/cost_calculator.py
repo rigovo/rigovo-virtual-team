@@ -144,8 +144,8 @@ class CostCalculator:
     ) -> float:
         """Estimate cost if provider caching gave no discount."""
         input_price, output_price = self._pricing.get_pricing(model)
-        full_input_tokens = max(0, input_tokens) + max(0, cached_input_tokens) + max(
-            0, cache_write_tokens
+        full_input_tokens = (
+            max(0, input_tokens) + max(0, cached_input_tokens) + max(0, cache_write_tokens)
         )
         input_cost = (full_input_tokens / TOKENS_PER_MILLION) * input_price
         output_cost = (max(0, output_tokens) / TOKENS_PER_MILLION) * output_price

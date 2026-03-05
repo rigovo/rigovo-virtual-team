@@ -93,7 +93,9 @@ def _normalize_step_status(raw: str | None) -> str:
     return s or "pending"
 
 
-def _canonical_agent_identity(raw_role: str | None, raw_name: str | None = None) -> tuple[str, str, str]:
+def _canonical_agent_identity(
+    raw_role: str | None, raw_name: str | None = None
+) -> tuple[str, str, str]:
     import re
 
     role_source = str(raw_role or "").strip()
@@ -125,6 +127,7 @@ def _canonical_agent_identity(raw_role: str | None, raw_name: str | None = None)
     if index and role not in _SINGLETON_ROLES:
         label = f"{label} {index}"
     return role, instance, label
+
 
 # ── Live agent progress tracker (in-memory, per-task) ──────────────
 # Populated by event emitter callbacks during graph execution.
@@ -532,7 +535,6 @@ class CreateTaskRequest(BaseModel):
 
 class RenameTaskRequest(BaseModel):
     title: str  # Custom display title; overrides description in the inbox/sidebar
-
 
 
 class PingResponse(BaseModel):
@@ -2421,11 +2423,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             next_expected_reason = "queued by planner sequence"
 
         collab_stored = (task.approval_data or {}).get("collaboration", {})
-        collab_events = (
-            collab_stored.get("events", [])
-            if isinstance(collab_stored, dict)
-            else []
-        )
+        collab_events = collab_stored.get("events", []) if isinstance(collab_stored, dict) else []
         if not isinstance(collab_events, list):
             collab_events = []
         live_events = _live_task_events.get(task_id, [])
@@ -2439,8 +2437,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         debate_count = sum(
             1
             for e in merged_events
-            if isinstance(e, dict)
-            and str(e.get("type", "")) in {"debate_round", "feedback_loop"}
+            if isinstance(e, dict) and str(e.get("type", "")) in {"debate_round", "feedback_loop"}
         )
         cache_hits_exact = sum(
             1
@@ -2465,7 +2462,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             1
             for e in merged_events
             if isinstance(e, dict)
-            and str(e.get("type", "")) in {
+            and str(e.get("type", ""))
+            in {
                 "cache_hit",
                 "cache_miss",
                 "artifact_cache_hit",
@@ -2473,24 +2471,23 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             }
         )
         cache_saved_tokens = sum(
-            int(s.get("cache_saved_tokens", 0) or 0)
-            for s in steps
-            if isinstance(s, dict)
+            int(s.get("cache_saved_tokens", 0) or 0) for s in steps if isinstance(s, dict)
         )
         cache_saved_tokens += sum(
             int(e.get("saved_tokens", 0) or 0)
             for e in merged_events
-            if isinstance(e, dict)
-            and str(e.get("type", "")) == "cache_hit"
+            if isinstance(e, dict) and str(e.get("type", "")) == "cache_hit"
         )
         cache_saved_cost_usd = round(
-            sum(float(s.get("cache_saved_cost_usd", 0.0) or 0.0) for s in steps if isinstance(s, dict)),
+            sum(
+                float(s.get("cache_saved_cost_usd", 0.0) or 0.0)
+                for s in steps
+                if isinstance(s, dict)
+            ),
             6,
         )
         provider_cached_input_tokens = sum(
-            int(s.get("cached_input_tokens", 0) or 0)
-            for s in steps
-            if isinstance(s, dict)
+            int(s.get("cached_input_tokens", 0) or 0) for s in steps if isinstance(s, dict)
         )
 
         total_tokens = int((cost or {}).get("total_tokens") or task.total_tokens or 0)

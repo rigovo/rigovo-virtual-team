@@ -85,7 +85,7 @@ class TestCostTracker:
         tracker._total_tokens = 2000
         tracker._elapsed_s = 5.0
         tracker._agent_count = 1
-        content = tracker._render_content()
+        content = tracker._build()
         assert "$0.10" in content
         assert "2,000" in content
         assert "$2.00" in content
@@ -94,7 +94,7 @@ class TestCostTracker:
         tracker = CostTracker(budget=1.00)
         tracker._total_cost = 0.50
         tracker._total_tokens = 1000
-        content = tracker._render_content()
+        content = tracker._build()
         assert "50%" in content
 
 
@@ -105,7 +105,7 @@ class TestTaskHeader:
             task_description="Fix login bug",
             project_root="/home/user/project",
         )
-        rendered = header._render()
+        rendered = header._build()
         assert "RIGOVO TEAMS" in rendered
         assert "Fix login bug" in rendered
 
@@ -113,19 +113,19 @@ class TestTaskHeader:
         header = TaskHeader(
             task_description="A" * 100,
         )
-        rendered = header._render()
+        rendered = header._build()
         assert "..." in rendered
 
     def test_set_status_updates(self) -> None:
         header = TaskHeader()
         header._status = "executing"
-        rendered = header._render()
-        assert "executing" in rendered
+        rendered = header._build()
+        assert "Executing agents" in rendered
 
     def test_set_team_updates(self) -> None:
         header = TaskHeader()
         header._team = "planner, coder, reviewer"
-        rendered = header._render()
+        rendered = header._build()
         assert "planner" in rendered
 
 

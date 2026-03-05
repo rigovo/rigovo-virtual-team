@@ -273,9 +273,7 @@ class Container:
             enable_streaming=enable_streaming,
             enable_parallel=enable_parallel,
             auto_approve=auto_approve,
-            budget_max_cost_per_task=float(
-                self.config.yml.orchestration.budget.max_cost_per_task
-            ),
+            budget_max_cost_per_task=float(self.config.yml.orchestration.budget.max_cost_per_task),
             budget_max_tokens_per_task=int(
                 self.config.yml.orchestration.budget.max_tokens_per_task
             ),

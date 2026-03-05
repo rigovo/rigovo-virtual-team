@@ -64,7 +64,9 @@ def _non_git_fingerprint(root: Path) -> str:
         if rel.startswith((".git/", "node_modules/", "__pycache__/")):
             continue
         parts.append((rel, int(stat.st_size), int(stat.st_mtime_ns)))
-    digest = hashlib.sha256(json.dumps(sorted(parts), ensure_ascii=True).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(
+        json.dumps(sorted(parts), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
     return digest
 
 
