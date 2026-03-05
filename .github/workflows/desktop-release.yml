@@ -54,14 +54,42 @@ jobs:
       # by the dedicated `release` job below.
       - name: Package installers for ${{ matrix.platform }}
         working-directory: apps/desktop
-        run: npx electron-builder --publish never
-        env:
-          # macOS code signing (optional — set these secrets if you have a certificate)
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          # Windows code signing (optional)
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Prevent inherited/global env values from forcing broken signing paths.
+          unset CSC_LINK CSC_KEY_PASSWORD WIN_CSC_LINK WIN_CSC_KEY_PASSWORD || true
+          case "${{ matrix.platform }}" in
+            mac)
+              # Default to unsigned builds to avoid hard-failing release pipelines.
+              export CSC_IDENTITY_AUTO_DISCOVERY=false
+              if [[ -n "${{ secrets.MAC_CSC_LINK }}" ]]; then
+                export CSC_LINK="${{ secrets.MAC_CSC_LINK }}"
+                export CSC_KEY_PASSWORD="${{ secrets.MAC_CSC_KEY_PASSWORD }}"
+                echo "Using provided macOS signing certificate."
+              else
+                echo "No macOS signing certificate configured; producing unsigned artifacts."
+              fi
+              npx electron-builder --publish never --mac
+              ;;
+            linux)
+              npx electron-builder --publish never --linux
+              ;;
+            win)
+              if [[ -n "${{ secrets.WIN_CSC_LINK }}" ]]; then
+                export WIN_CSC_LINK="${{ secrets.WIN_CSC_LINK }}"
+                export WIN_CSC_KEY_PASSWORD="${{ secrets.WIN_CSC_KEY_PASSWORD }}"
+                echo "Using provided Windows signing certificate."
+              else
+                echo "No Windows signing certificate configured; producing unsigned artifacts."
+              fi
+              npx electron-builder --publish never --win
+              ;;
+            *)
+              echo "Unknown platform: ${{ matrix.platform }}"
+              exit 1
+              ;;
+          esac
 
       - name: List release artifacts
         working-directory: apps/desktop/release
