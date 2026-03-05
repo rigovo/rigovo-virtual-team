@@ -101,8 +101,10 @@ def _derive_adaptive_budget_profiles(
             ADAPTIVE_BUDGET_CEILINGS.get(intent, ADAPTIVE_BUDGET_CEILINGS["build"])
         )
 
-        # Bias toward completion reliability: use p75 with guard band, bounded by p95.
-        recommended = int(max(floor_budget, min(int(p75 * 1.15), int(p95 * 1.05))))
+        # Bias toward reliability and cost discipline:
+        # - base at p50 for cost control
+        # - allow guard band toward p95 for hard tasks
+        recommended = int(max(floor_budget, min(int(p50 * 1.20), int(p95 * 1.05))))
         recommended = int(min(recommended, ceiling_budget))
 
         profiles[intent] = {
@@ -255,6 +257,8 @@ class RunTaskCommand:
         auto_approve: bool = True,
         budget_max_cost_per_task: float = 25.00,
         budget_max_tokens_per_task: int = 200_000,
+        budget_policy: dict[str, Any] | None = None,
+        learning_policy: dict[str, Any] | None = None,
     ) -> None:
         self._workspace_id = workspace_id
         self._project_root = project_root
@@ -285,6 +289,8 @@ class RunTaskCommand:
         self._auto_approve = auto_approve
         self._budget_max_cost: float = max(0.0, float(budget_max_cost_per_task or 0.0))
         self._budget_max_tokens: int = max(0, int(budget_max_tokens_per_task or 0))
+        self._budget_policy = budget_policy or {}
+        self._learning_policy = learning_policy or {}
         self._agent_model_overrides: dict[str, str] = {}  # Set via set_agent_model_overrides()
 
         # Master Agent sub-services
@@ -472,6 +478,7 @@ class RunTaskCommand:
             "deep_mode": self._deep_mode,
             "deep_pro": self._deep_pro,
             "replan_policy": self._replan_policy,
+            "learning_policy": self._learning_policy,
             "replan_count": 0,
             "replan_history": [],
             "ci_mode": self._ci_mode,
@@ -490,10 +497,27 @@ class RunTaskCommand:
             "adaptive_token_budget_by_intent": adaptive_budget_profiles,
             "adaptive_budget_user_cap": budget_user_cap,
             "adaptive_budget_min_sample": ADAPTIVE_BUDGET_MIN_SAMPLE,
+            "budget_policy": self._budget_policy,
+            "budget_warning_emitted_at_tokens": 0,
+            "budget_soft_extensions_used": 0,
+            "budget_auto_compactions": 0,
+            "compaction_checkpoints": [],
+            "compaction_synthesis": "",
             "memories_to_store": [],
             "memory_context_by_role": {},
             "memory_retrieval_log": {},
             "memory_learning_metrics": {},
+            "memory_layer_policy": {
+                "task_memory_enabled": True,
+                "workspace_memory_enabled": True,
+                "agent_skill_memory_enabled": True,
+                "min_quality_chars": 32,
+                "safe_mode": bool(self._learning_policy.get("safe_mode", True)),
+            },
+            "memory_layer_counters": {},
+            "agent_learning_updates": {},
+            "behavior_change_audit": [],
+            "memory_snapshots": [],
             "integration_policy": self._integration_policy,
             "integration_catalog": self._build_integration_catalog(),
             "status": "running",
@@ -855,6 +879,21 @@ class RunTaskCommand:
                     },
                 )
             )
+            learning_updates = final_state.get("agent_learning_updates", {}) or {}
+            if isinstance(learning_updates, dict) and learning_updates:
+                await self._audit_repo.append(
+                    AuditEntry(
+                        workspace_id=self._workspace_id,
+                        task_id=task_id,
+                        action=AuditAction.PATTERN_DETECTED,
+                        agent_role="master",
+                        summary="Agent self-tuning updates promoted",
+                        metadata={
+                            "updates": learning_updates,
+                            "behavior_change_audit": final_state.get("behavior_change_audit", []),
+                        },
+                    )
+                )
 
         # --- 8. Emit finalization event ---
         agent_outputs = final_state.get("agent_outputs", {})

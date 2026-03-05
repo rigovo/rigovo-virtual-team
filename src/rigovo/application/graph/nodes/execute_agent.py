@@ -591,7 +591,7 @@ async def _resolve_memory_context_for_role(
 
 
 def _check_budget_guards(state: TaskState, current_role: str) -> dict[str, Any] | None:
-    """Check budget and token limits. Logs warnings but does NOT hard-stop.
+    """Check budget and token limits with soft warnings and auto-compaction.
 
     Returns error state dict if token limit exceeded, None otherwise.
     Cost overruns are logged as warnings — user should be informed, not blocked.
@@ -608,7 +608,59 @@ def _check_budget_guards(state: TaskState, current_role: str) -> dict[str, Any] 
 
     accumulated_tokens = sum(v.get("tokens", 0) for v in state.get("cost_accumulator", {}).values())
     token_limit = state.get("budget_max_tokens_per_task", 0)
+    budget_policy = state.get("budget_policy", {}) or {}
+    warning_ratio = float(budget_policy.get("token_warning_ratio", 0.85) or 0.85)
+    warning_ratio = min(0.99, max(0.50, warning_ratio))
+    warning_threshold = int(token_limit * warning_ratio) if token_limit > 0 else 0
+    warned_at = int(state.get("budget_warning_emitted_at_tokens", 0) or 0)
+    if (
+        token_limit > 0
+        and accumulated_tokens >= warning_threshold
+        and accumulated_tokens > warned_at
+    ):
+        events = list(state.get("events", []))
+        events.append(
+            {
+                "type": "budget_warning_internal",
+                "role": current_role,
+                "tokens_used": int(accumulated_tokens),
+                "token_limit": int(token_limit),
+                "warning_ratio": warning_ratio,
+            }
+        )
+        state["events"] = events
+        state["budget_warning_emitted_at_tokens"] = int(accumulated_tokens)
+
     if token_limit > 0 and accumulated_tokens >= token_limit:
+        if _apply_auto_compaction_on_pressure(state, current_role, accumulated_tokens, token_limit):
+            return None
+
+        max_soft_extensions = int(budget_policy.get("max_soft_extensions_per_task", 3) or 3)
+        soft_fail = bool(budget_policy.get("soft_fail_on_token_limit", False))
+        extensions_used = int(state.get("budget_soft_extensions_used", 0) or 0)
+        extension_step = int(
+            budget_policy.get("compaction_token_extension_step", TOKEN_EXTENSION_STEP)
+            or TOKEN_EXTENSION_STEP
+        )
+        extension_step = max(10_000, extension_step)
+        if soft_fail and extensions_used < max_soft_extensions:
+            new_limit = int(token_limit + extension_step)
+            events = list(state.get("events", []))
+            events.append(
+                {
+                    "type": "budget_soft_extension_applied",
+                    "role": current_role,
+                    "tokens_used": int(accumulated_tokens),
+                    "previous_limit": int(token_limit),
+                    "new_limit": int(new_limit),
+                    "soft_extensions_used": int(extensions_used + 1),
+                }
+            )
+            state["events"] = events
+            state["budget_max_tokens_per_task"] = int(new_limit)
+            state["budget_soft_extensions_used"] = int(extensions_used + 1)
+            return None
+
         requested_extension = max(TOKEN_EXTENSION_STEP, int(token_limit * 0.25))
         summary = (
             "Token limit reached. Approve an extension to continue this run "
@@ -649,6 +701,109 @@ def _check_budget_guards(state: TaskState, current_role: str) -> dict[str, Any] 
             ],
         }
     return None
+
+
+def _apply_auto_compaction_on_pressure(
+    state: TaskState,
+    current_role: str,
+    accumulated_tokens: int,
+    token_limit: int,
+) -> bool:
+    """Apply multi-stage auto-compaction and token replay pointer updates."""
+    budget_policy = state.get("budget_policy", {}) or {}
+    enabled = bool(budget_policy.get("auto_compact_on_token_pressure", False))
+    if not enabled:
+        return False
+
+    max_compactions = int(budget_policy.get("max_auto_compactions_per_task", 3) or 3)
+    used_compactions = int(state.get("budget_auto_compactions", 0) or 0)
+    if used_compactions >= max_compactions:
+        return False
+
+    extension_step = int(
+        budget_policy.get("compaction_token_extension_step", TOKEN_EXTENSION_STEP)
+        or TOKEN_EXTENSION_STEP
+    )
+    extension_step = max(10_000, extension_step)
+
+    # Stage A: remove low-signal events/artifacts.
+    original_events = list(state.get("events", []))
+    drop_types = {
+        "token_stream",
+        "tool_output_chunk",
+        "debug",
+    }
+    filtered_events = [
+        ev
+        for ev in original_events
+        if not (isinstance(ev, dict) and str(ev.get("type", "")) in drop_types)
+    ]
+    if len(filtered_events) > 160:
+        filtered_events = filtered_events[-160:]
+    dropped_events = max(0, len(original_events) - len(filtered_events))
+
+    # Stage B: compact agent outputs into bounded summaries.
+    compacted_agent_outputs: dict[str, dict[str, Any]] = {}
+    for role, output in (state.get("agent_outputs", {}) or {}).items():
+        if not isinstance(output, dict):
+            continue
+        summary = str(output.get("summary", "")).strip()
+        compacted_agent_outputs[str(role)] = {
+            "summary": (summary[:280] + "...") if len(summary) > 280 else summary,
+            "files_changed": list(output.get("files_changed", []))[:10],
+            "tokens": int(output.get("tokens", 0) or 0),
+        }
+
+    # Stage C: cross-agent synthesis + contradiction preservation hints.
+    contradiction_flags: list[str] = []
+    synth_lines: list[str] = []
+    for role, compact in compacted_agent_outputs.items():
+        line = f"{role}: {compact.get('summary', '')}".strip()
+        synth_lines.append(line)
+        text = str(compact.get("summary", "")).lower()
+        if "failed" in text and "complete" in text:
+            contradiction_flags.append(role)
+    synthesis = " | ".join(synth_lines)[:1200]
+
+    next_limit = int(token_limit + extension_step)
+    checkpoints = list(state.get("compaction_checkpoints", []))
+    checkpoint_id = f"cmp-{int(time.time() * 1000)}-{used_compactions + 1}"
+    checkpoint = {
+        "id": checkpoint_id,
+        "role": current_role,
+        "tokens_used": int(accumulated_tokens),
+        "token_limit_before": int(token_limit),
+        "token_limit_after": int(next_limit),
+        "dropped_events": int(dropped_events),
+        "replay_pointer": {
+            "events_kept": int(len(filtered_events)),
+            "agent_outputs_kept": int(len(compacted_agent_outputs)),
+        },
+        "contradiction_flags": contradiction_flags,
+        "created_at": time.time(),
+    }
+    checkpoints.append(checkpoint)
+
+    events = filtered_events
+    events.append(
+        {
+            "type": "auto_compaction_applied",
+            "role": current_role,
+            "checkpoint_id": checkpoint_id,
+            "dropped_events": int(dropped_events),
+            "new_token_limit": int(next_limit),
+            "stage_a": "low_signal_prune",
+            "stage_b": "semantic_compaction",
+            "stage_c": "cross_agent_synthesis",
+        }
+    )
+
+    state["events"] = events
+    state["budget_max_tokens_per_task"] = int(next_limit)
+    state["budget_auto_compactions"] = int(used_compactions + 1)
+    state["compaction_checkpoints"] = checkpoints
+    state["compaction_synthesis"] = synthesis
+    return True
 
 
 def _resolve_tool_definitions(

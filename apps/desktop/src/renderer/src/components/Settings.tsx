@@ -64,7 +64,20 @@ interface RuntimeCapabilities {
       max_replans_per_task: number;
       trigger_retry_count: number;
     };
-    budget?: { max_cost_per_task: number; max_tokens_per_task: number };
+    budget?: {
+      max_cost_per_task: number;
+      max_tokens_per_task: number;
+      token_warning_ratio?: number;
+      auto_compact_on_token_pressure?: boolean;
+      max_auto_compactions_per_task?: number;
+      soft_fail_on_token_limit?: boolean;
+    };
+    learning?: {
+      enabled: boolean;
+      safe_mode: boolean;
+      allow_internet_ingestion: boolean;
+      promotion_threshold: number;
+    };
   };
   plugins: {
     enabled: boolean;
@@ -532,6 +545,14 @@ export default function Settings({
     replanEnabled: false,
     replanMaxReplans: 2,
     maxTokensPerTask: 200000,
+    tokenWarningRatio: 0.85,
+    autoCompactOnTokenPressure: true,
+    maxAutoCompactionsPerTask: 3,
+    softFailOnTokenLimit: true,
+    learningEnabled: true,
+    learningSafeMode: true,
+    allowInternetIngestion: false,
+    learningPromotionThreshold: 0.75,
     qualityGateEnabled: true,
   });
 
@@ -673,12 +694,30 @@ export default function Settings({
       );
       return m ? parseInt(m[1], 10) : null;
     };
+    const floatInBlock = (blockKey: string, childKey: string): number | null => {
+      const blockMatch = raw.match(
+        new RegExp(`^[ \\t]*${blockKey}:[\\t ]*\\n((?:[ \\t]+.+\\n?)*)`, "m"),
+      );
+      if (!blockMatch) return null;
+      const m = blockMatch[1].match(
+        new RegExp(`^[ \\t]*${childKey}:[ \\t]*([0-9]*\\.?[0-9]+)`, "m"),
+      );
+      return m ? Number.parseFloat(m[1]) : null;
+    };
     return {
       parallelAgents: boolFlat("parallel_agents"),
       consultationEnabled: boolInBlock("consultation", "enabled"),
       replanEnabled: boolInBlock("replan", "enabled"),
       replanMaxReplans: numInBlock("replan", "max_replans_per_task"),
       maxTokensPerTask: numInBlock("budget", "max_tokens_per_task"),
+      tokenWarningRatio: floatInBlock("budget", "token_warning_ratio"),
+      autoCompactOnTokenPressure: boolInBlock("budget", "auto_compact_on_token_pressure"),
+      maxAutoCompactionsPerTask: numInBlock("budget", "max_auto_compactions_per_task"),
+      softFailOnTokenLimit: boolInBlock("budget", "soft_fail_on_token_limit"),
+      learningEnabled: boolInBlock("learning", "enabled"),
+      learningSafeMode: boolInBlock("learning", "safe_mode"),
+      allowInternetIngestion: boolInBlock("learning", "allow_internet_ingestion"),
+      learningPromotionThreshold: floatInBlock("learning", "promotion_threshold"),
       qualityGateEnabled: boolInBlock("quality", "rigour_enabled"),
     };
   }, []);
@@ -708,6 +747,38 @@ export default function Settings({
         yml.maxTokensPerTask ??
         runtimeCaps?.orchestration.budget?.max_tokens_per_task ??
         200000,
+      tokenWarningRatio:
+        yml.tokenWarningRatio ??
+        runtimeCaps?.orchestration.budget?.token_warning_ratio ??
+        0.85,
+      autoCompactOnTokenPressure:
+        yml.autoCompactOnTokenPressure ??
+        runtimeCaps?.orchestration.budget?.auto_compact_on_token_pressure ??
+        true,
+      maxAutoCompactionsPerTask:
+        yml.maxAutoCompactionsPerTask ??
+        runtimeCaps?.orchestration.budget?.max_auto_compactions_per_task ??
+        3,
+      softFailOnTokenLimit:
+        yml.softFailOnTokenLimit ??
+        runtimeCaps?.orchestration.budget?.soft_fail_on_token_limit ??
+        true,
+      learningEnabled:
+        yml.learningEnabled ??
+        runtimeCaps?.orchestration.learning?.enabled ??
+        true,
+      learningSafeMode:
+        yml.learningSafeMode ??
+        runtimeCaps?.orchestration.learning?.safe_mode ??
+        true,
+      allowInternetIngestion:
+        yml.allowInternetIngestion ??
+        runtimeCaps?.orchestration.learning?.allow_internet_ingestion ??
+        false,
+      learningPromotionThreshold:
+        yml.learningPromotionThreshold ??
+        runtimeCaps?.orchestration.learning?.promotion_threshold ??
+        0.75,
       qualityGateEnabled: yml.qualityGateEnabled ?? true,
     });
   }, [ymlRaw, runtimeCaps, parseOrchFromYml]);
@@ -1106,6 +1177,44 @@ export default function Settings({
       "budget",
       "max_tokens_per_task",
       orchSettings.maxTokensPerTask,
+    );
+    yml = patchYmlInBlock(
+      yml,
+      "budget",
+      "token_warning_ratio",
+      Number(orchSettings.tokenWarningRatio.toFixed(2)),
+    );
+    yml = patchYmlInBlock(
+      yml,
+      "budget",
+      "auto_compact_on_token_pressure",
+      orchSettings.autoCompactOnTokenPressure,
+    );
+    yml = patchYmlInBlock(
+      yml,
+      "budget",
+      "max_auto_compactions_per_task",
+      orchSettings.maxAutoCompactionsPerTask,
+    );
+    yml = patchYmlInBlock(
+      yml,
+      "budget",
+      "soft_fail_on_token_limit",
+      orchSettings.softFailOnTokenLimit,
+    );
+    yml = patchYmlInBlock(yml, "learning", "enabled", orchSettings.learningEnabled);
+    yml = patchYmlInBlock(yml, "learning", "safe_mode", orchSettings.learningSafeMode);
+    yml = patchYmlInBlock(
+      yml,
+      "learning",
+      "allow_internet_ingestion",
+      orchSettings.allowInternetIngestion,
+    );
+    yml = patchYmlInBlock(
+      yml,
+      "learning",
+      "promotion_threshold",
+      Number(orchSettings.learningPromotionThreshold.toFixed(2)),
     );
 
     // Quality gate maps to quality.rigour_enabled (not quality_gate_enabled)
@@ -3191,53 +3300,245 @@ export default function Settings({
                 )}
               </div>
 
-              {/* Token budget */}
-              <div
-                className="rounded-lg border px-4 py-3"
-                style={{
-                  borderColor: "var(--ui-border)",
-                  background: "rgba(0,0,0,0.01)",
-                }}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <p
-                      className="text-xs font-medium"
-                      style={{ color: "var(--ui-text)" }}
-                    >
-                      Max tokens per task
-                    </p>
-                    <p
-                      className="text-[11px] mt-0.5"
-                      style={{ color: "var(--ui-text-muted)" }}
-                    >
-                      Hard stop for total tokens consumed by a single task run.
-                    </p>
+              {settingsMode === "advanced" && (
+                <div
+                  className="rounded-lg border px-4 py-3"
+                  style={{
+                    borderColor: "var(--ui-border)",
+                    background: "rgba(0,0,0,0.01)",
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p
+                        className="text-xs font-medium"
+                        style={{ color: "var(--ui-text)" }}
+                      >
+                        Token safety cap (advanced)
+                      </p>
+                      <p
+                        className="text-[11px] mt-0.5"
+                        style={{ color: "var(--ui-text-muted)" }}
+                      >
+                        Absolute emergency cap after auto-compaction and soft
+                        extensions are exhausted.
+                      </p>
+                    </div>
+                    <input
+                      type="number"
+                      min={10000}
+                      max={1000000}
+                      step={10000}
+                      value={orchSettings.maxTokensPerTask}
+                      onChange={(e) =>
+                        setOrchSettings((p) => ({
+                          ...p,
+                          maxTokensPerTask: Math.max(
+                            10000,
+                            Math.min(1000000, Number(e.target.value) || 200000),
+                          ),
+                        }))
+                      }
+                      className="w-28 rounded border bg-[var(--canvas)] text-xs text-right px-2 py-1"
+                      style={{
+                        borderColor: "var(--ui-border)",
+                        background: "var(--canvas)",
+                        color: "var(--ui-text)",
+                      }}
+                    />
                   </div>
-                  <input
-                    type="number"
-                    min={10000}
-                    max={1000000}
-                    step={10000}
-                    value={orchSettings.maxTokensPerTask}
-                    onChange={(e) =>
-                      setOrchSettings((p) => ({
-                        ...p,
-                        maxTokensPerTask: Math.max(
-                          10000,
-                          Math.min(1000000, Number(e.target.value) || 200000),
-                        ),
-                      }))
-                    }
-                    className="w-28 rounded border bg-[var(--canvas)] text-xs text-right px-2 py-1"
-                    style={{
-                      borderColor: "var(--ui-border)",
-                      background: "var(--canvas)",
-                      color: "var(--ui-text)",
-                    }}
-                  />
                 </div>
-              </div>
+              )}
+
+              {settingsMode === "advanced" && (
+                <div
+                  className="rounded-lg border px-4 py-3 space-y-3"
+                  style={{
+                    borderColor: "var(--ui-border)",
+                    background: "rgba(0,0,0,0.01)",
+                  }}
+                >
+                  <p
+                    className="text-xs font-medium"
+                    style={{ color: "var(--ui-text)" }}
+                  >
+                    Token pressure controls
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <label className="text-xs" style={{ color: "var(--ui-text-secondary)" }}>
+                      Internal warning ratio
+                      <input
+                        type="number"
+                        min={0.5}
+                        max={0.99}
+                        step={0.01}
+                        value={orchSettings.tokenWarningRatio}
+                        onChange={(e) =>
+                          setOrchSettings((p) => ({
+                            ...p,
+                            tokenWarningRatio: Math.max(
+                              0.5,
+                              Math.min(0.99, Number(e.target.value) || 0.85),
+                            ),
+                          }))
+                        }
+                        className="mt-1 w-full rounded border bg-[var(--canvas)] text-xs px-2 py-1"
+                        style={{
+                          borderColor: "var(--ui-border)",
+                          color: "var(--ui-text)",
+                        }}
+                      />
+                    </label>
+                    <label className="text-xs" style={{ color: "var(--ui-text-secondary)" }}>
+                      Max auto-compactions per task
+                      <input
+                        type="number"
+                        min={0}
+                        max={10}
+                        step={1}
+                        value={orchSettings.maxAutoCompactionsPerTask}
+                        onChange={(e) =>
+                          setOrchSettings((p) => ({
+                            ...p,
+                            maxAutoCompactionsPerTask: Math.max(
+                              0,
+                              Math.min(10, Number(e.target.value) || 0),
+                            ),
+                          }))
+                        }
+                        className="mt-1 w-full rounded border bg-[var(--canvas)] text-xs px-2 py-1"
+                        style={{
+                          borderColor: "var(--ui-border)",
+                          color: "var(--ui-text)",
+                        }}
+                      />
+                    </label>
+                    <label className="rounded-lg px-3 py-2 flex items-center justify-between md:col-span-2"
+                      style={{ background: "rgba(0,0,0,0.02)" }}>
+                      <span className="text-xs" style={{ color: "var(--ui-text-secondary)" }}>
+                        Auto-compact on token pressure
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={orchSettings.autoCompactOnTokenPressure}
+                        onChange={(e) =>
+                          setOrchSettings((p) => ({
+                            ...p,
+                            autoCompactOnTokenPressure: e.target.checked,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="rounded-lg px-3 py-2 flex items-center justify-between md:col-span-2"
+                      style={{ background: "rgba(0,0,0,0.02)" }}>
+                      <span className="text-xs" style={{ color: "var(--ui-text-secondary)" }}>
+                        Soft-fail on token limit (avoid hard-stop)
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={orchSettings.softFailOnTokenLimit}
+                        onChange={(e) =>
+                          setOrchSettings((p) => ({
+                            ...p,
+                            softFailOnTokenLimit: e.target.checked,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {settingsMode === "advanced" && (
+                <div
+                  className="rounded-lg border px-4 py-3 space-y-3"
+                  style={{
+                    borderColor: "var(--ui-border)",
+                    background: "rgba(0,0,0,0.01)",
+                  }}
+                >
+                  <p
+                    className="text-xs font-medium"
+                    style={{ color: "var(--ui-text)" }}
+                  >
+                    Self-tuning learning policy
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <label className="rounded-lg px-3 py-2 flex items-center justify-between"
+                      style={{ background: "rgba(0,0,0,0.02)" }}>
+                      <span className="text-xs" style={{ color: "var(--ui-text-secondary)" }}>
+                        Learning enabled
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={orchSettings.learningEnabled}
+                        onChange={(e) =>
+                          setOrchSettings((p) => ({
+                            ...p,
+                            learningEnabled: e.target.checked,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="rounded-lg px-3 py-2 flex items-center justify-between"
+                      style={{ background: "rgba(0,0,0,0.02)" }}>
+                      <span className="text-xs" style={{ color: "var(--ui-text-secondary)" }}>
+                        Safe mode
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={orchSettings.learningSafeMode}
+                        onChange={(e) =>
+                          setOrchSettings((p) => ({
+                            ...p,
+                            learningSafeMode: e.target.checked,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="rounded-lg px-3 py-2 flex items-center justify-between md:col-span-2"
+                      style={{ background: "rgba(0,0,0,0.02)" }}>
+                      <span className="text-xs" style={{ color: "var(--ui-text-secondary)" }}>
+                        Allow internet ingestion
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={orchSettings.allowInternetIngestion}
+                        onChange={(e) =>
+                          setOrchSettings((p) => ({
+                            ...p,
+                            allowInternetIngestion: e.target.checked,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="text-xs md:col-span-2" style={{ color: "var(--ui-text-secondary)" }}>
+                      Promotion threshold
+                      <input
+                        type="number"
+                        min={0.5}
+                        max={1}
+                        step={0.01}
+                        value={orchSettings.learningPromotionThreshold}
+                        onChange={(e) =>
+                          setOrchSettings((p) => ({
+                            ...p,
+                            learningPromotionThreshold: Math.max(
+                              0.5,
+                              Math.min(1, Number(e.target.value) || 0.75),
+                            ),
+                          }))
+                        }
+                        className="mt-1 w-full rounded border bg-[var(--canvas)] text-xs px-2 py-1"
+                        style={{
+                          borderColor: "var(--ui-border)",
+                          color: "var(--ui-text)",
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
 
               {/* Quality gates — maps to quality.rigour_enabled in YAML */}
               <div

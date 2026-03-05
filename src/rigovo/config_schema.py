@@ -150,9 +150,38 @@ class BudgetSchema(BaseModel):
 
     max_cost_per_task: float = 25.00  # USD — soft warning only, never hard-stops
     max_tokens_per_task: int = 200_000
+    token_warning_ratio: float = 0.85  # Internal warning threshold (no hard-stop)
+    auto_compact_on_token_pressure: bool = True  # Compact context before blocking
+    max_auto_compactions_per_task: int = 3
+    compaction_token_extension_step: int = 50_000
+    soft_fail_on_token_limit: bool = True  # Prefer auto-extend over user-facing hard fail
+    max_soft_extensions_per_task: int = 3
     monthly_budget: float = 100.00  # USD
     alert_at_percent: float = 0.80  # Alert at 80%
     hard_stop_at_percent: float = 1.0  # Stop at 100%
+
+
+class LearningSchema(BaseModel):
+    """Safe self-tuning policy for role-specific learning."""
+
+    enabled: bool = True
+    safe_mode: bool = True
+    allow_internet_ingestion: bool = False
+    promotion_threshold: float = 0.75
+    max_promotions_per_task: int = 3
+    role_domains: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "qa": ["testing", "quality-engineering", "ci-cd"],
+            "coder": ["architecture", "refactoring", "patterns"],
+            "security": ["owasp", "secure-coding", "threat-modeling"],
+            "devops": ["deployment", "observability", "reliability"],
+            "sre": ["incident-response", "slo", "resilience"],
+            "reviewer": ["code-review", "maintainability"],
+            "docs": ["technical-writing", "api-docs"],
+            "planner": ["delivery", "risk", "estimation"],
+            "lead": ["system-design", "governance"],
+        }
+    )
 
 
 class ReplanSchema(BaseModel):
@@ -191,6 +220,7 @@ class OrchestrationSchema(BaseModel):
     consultation: ConsultationSchema = Field(default_factory=lambda: ConsultationSchema())
     subagents: SubAgentSchema = Field(default_factory=lambda: SubAgentSchema())
     replan: ReplanSchema = Field(default_factory=lambda: ReplanSchema())
+    learning: LearningSchema = Field(default_factory=LearningSchema)
 
     budget: BudgetSchema = Field(default_factory=BudgetSchema)
 

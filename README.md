@@ -42,6 +42,25 @@ If your goal is "finish production tasks with clear governance and predictable s
 
 ---
 
+## Why Rigovo Can Be Best (Honest View)
+
+Rigovo is strongest today at governed multi-agent execution with explicit cost/quality controls.
+
+Rigovo is **not** automatically "world-best" yet in every scenario:
+
+1. Single-file interactive editing speed can still be better in chat-first tools.
+2. Some advanced controls are still operator-centric and need simpler UX defaults.
+3. Adaptive learning/promotion is policy-gated and intentionally conservative.
+
+What can make Rigovo best-in-class is the combination of:
+
+1. Adaptive budget controller (p50/p95-driven, not static-only caps)
+2. Auto compaction before failure
+3. Layered memory with audit and rollback
+4. Deterministic quality gates with full traceability
+
+---
+
 ## Launch Architecture (Current)
 
 ### Core runtime path
@@ -62,8 +81,29 @@ If your goal is "finish production tasks with clear governance and predictable s
 | fix | 4 | 12 | 30 | 200,000 |
 | build | 6 | 10 | unlimited | 200,000 |
 
-When the token budget is reached, Rigovo raises a budget approval checkpoint.
-If approved, the run extends budget and continues; if rejected, the run stops cleanly.
+When token pressure rises, Rigovo can warn internally, compact context, and continue with soft extensions.
+Only when those protections are exhausted does Rigovo require approval or stop.
+
+---
+
+## Agent Canonical Roles vs UI Labels
+
+Canonical runtime keys are stable and used in policy/config (`rigovo.yml`, APIs, tool grants).
+UI labels are presentation only.
+
+| Canonical Key | UI Label |
+|---|---|
+| `lead` | Tech Lead |
+| `planner` | Project Manager |
+| `coder` | Software Engineer |
+| `reviewer` | Reviewer |
+| `qa` | QA Engineer |
+| `security` | Security Engineer |
+| `devops` | DevOps |
+| `sre` | SRE |
+| `docs` | Technical Writer |
+
+Use canonical keys for automation and config to avoid mismatch.
 
 ---
 

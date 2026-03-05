@@ -23,6 +23,9 @@ class MemoryType(StrEnum):
     GATE_LEARNING = "gate_learning"  # Quality gate violations and fixes learned
     TEAM_PERFORMANCE = "team_performance"  # Which role combinations worked best
     ARCHITECTURE = "architecture"  # Architectural patterns and insights discovered
+    TASK_MEMORY = "task_memory"  # Ephemeral task-scoped memory
+    WORKSPACE_MEMORY = "workspace_memory"  # Long-lived workspace memory
+    AGENT_SKILL_MEMORY = "agent_skill_memory"  # Role/persona-specific skill update
 
 
 @dataclass

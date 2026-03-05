@@ -146,9 +146,16 @@ class TaskState(TypedDict, total=False):
     ]  # Workspace history-derived p50/p75/p95
     adaptive_budget_user_cap: bool  # True when max_tokens_per_task is explicitly user-defined
     adaptive_budget_min_sample: int  # Minimum sample size required for adaptive application
+    budget_policy: dict[str, Any]  # Runtime token-pressure policy (warning/compaction/soft-fail)
+    budget_warning_emitted_at_tokens: int  # Last token count at which warning was emitted
+    budget_soft_extensions_used: int  # Number of soft auto-extensions applied
+    budget_auto_compactions: int  # Number of auto-compactions applied
+    compaction_checkpoints: list[dict[str, Any]]  # Multi-stage compaction history + replay pointers
+    compaction_synthesis: str  # Cross-agent synthesis generated during compaction
     consultation_policy: dict[str, Any]  # Runtime consultation policy from rigovo.yml
     subagent_policy: dict[str, Any]  # Runtime sub-agent spawn policy from rigovo.yml
     replan_policy: dict[str, Any]  # Runtime replanning policy from rigovo.yml
+    learning_policy: dict[str, Any]  # Runtime self-tuning policy (safe-mode by default)
     replan_count: int  # Replans already triggered in this task
     replan_history: list[dict[str, Any]]  # Replan trigger/failure history for auditability
     deep_mode: str  # never|final|ci|always|critical_only
@@ -171,6 +178,13 @@ class TaskState(TypedDict, total=False):
     memory_context_by_role: dict[str, str]  # Cached retrieved memory prompt section per role
     memory_retrieval_log: dict[str, list[dict[str, Any]]]  # Retrieved memory IDs/scores by role
     memory_learning_metrics: dict[str, Any]  # Per-task feedback metrics for memory loop
+    memory_layer_policy: dict[str, Any]  # task/workspace/agent_skill memory layer policy
+    memory_layer_counters: dict[str, int]  # Persisted/blocked counters by memory layer
+    agent_learning_updates: dict[
+        str, list[dict[str, Any]]
+    ]  # Proposed/promoted role-level learning deltas
+    behavior_change_audit: list[dict[str, Any]]  # Why agent behavior changed (promotion trail)
+    memory_snapshots: list[dict[str, Any]]  # Versioned memory snapshots for rollback
     integration_policy: dict[str, Any]  # Runtime policy for plugin/connector/MCP tooling
     integration_catalog: dict[str, Any]  # Loaded plugin capability catalog
 

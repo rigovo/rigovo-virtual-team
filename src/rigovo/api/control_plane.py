@@ -1482,6 +1482,22 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "budget": {
                     "max_cost_per_task": float(orchestration.budget.max_cost_per_task),
                     "max_tokens_per_task": int(orchestration.budget.max_tokens_per_task),
+                    "token_warning_ratio": float(orchestration.budget.token_warning_ratio),
+                    "auto_compact_on_token_pressure": bool(
+                        orchestration.budget.auto_compact_on_token_pressure
+                    ),
+                    "max_auto_compactions_per_task": int(
+                        orchestration.budget.max_auto_compactions_per_task
+                    ),
+                    "soft_fail_on_token_limit": bool(orchestration.budget.soft_fail_on_token_limit),
+                },
+                "learning": {
+                    "enabled": bool(orchestration.learning.enabled),
+                    "safe_mode": bool(orchestration.learning.safe_mode),
+                    "allow_internet_ingestion": bool(
+                        orchestration.learning.allow_internet_ingestion
+                    ),
+                    "promotion_threshold": float(orchestration.learning.promotion_threshold),
                 },
             },
             "plugins": {
@@ -1742,8 +1758,12 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "id": cid,
                 "provider": (req.connector.provider or cid).strip(),
                 "kind": (req.connector.kind or "api").strip(),
-                "inbound_events": [e.strip() for e in req.connector.inbound_events if str(e).strip()],
-                "outbound_actions": [a.strip() for a in req.connector.outbound_actions if str(a).strip()],
+                "inbound_events": [
+                    e.strip() for e in req.connector.inbound_events if str(e).strip()
+                ],
+                "outbound_actions": [
+                    a.strip() for a in req.connector.outbound_actions if str(a).strip()
+                ],
                 "config_schema": {},
             }
             replaced = False
@@ -1866,7 +1886,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "github.com",
             "www.github.com",
         }:
-            raise HTTPException(status_code=400, detail="github_url must be a valid github.com URL.")
+            raise HTTPException(
+                status_code=400, detail="github_url must be a valid github.com URL."
+            )
         parts = [p for p in parsed.path.split("/") if p]
         if len(parts) < 2:
             raise HTTPException(status_code=400, detail="github_url must include owner/repo.")
@@ -1949,7 +1971,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             if manifest.connectors:
                 plugins_section["enable_connector_tools"] = True
                 for c in manifest.connectors:
-                    connector_ops.extend([str(a).strip() for a in (c.outbound_actions or []) if str(a).strip()])
+                    connector_ops.extend(
+                        [str(a).strip() for a in (c.outbound_actions or []) if str(a).strip()]
+                    )
             if manifest.mcp_servers:
                 plugins_section["enable_mcp_tools"] = True
                 for m in manifest.mcp_servers:

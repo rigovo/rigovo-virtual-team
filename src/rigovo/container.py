@@ -277,6 +277,27 @@ class Container:
             budget_max_tokens_per_task=int(
                 self.config.yml.orchestration.budget.max_tokens_per_task
             ),
+            budget_policy={
+                "token_warning_ratio": float(
+                    self.config.yml.orchestration.budget.token_warning_ratio
+                ),
+                "auto_compact_on_token_pressure": bool(
+                    self.config.yml.orchestration.budget.auto_compact_on_token_pressure
+                ),
+                "max_auto_compactions_per_task": int(
+                    self.config.yml.orchestration.budget.max_auto_compactions_per_task
+                ),
+                "compaction_token_extension_step": int(
+                    self.config.yml.orchestration.budget.compaction_token_extension_step
+                ),
+                "soft_fail_on_token_limit": bool(
+                    self.config.yml.orchestration.budget.soft_fail_on_token_limit
+                ),
+                "max_soft_extensions_per_task": int(
+                    self.config.yml.orchestration.budget.max_soft_extensions_per_task
+                ),
+            },
+            learning_policy=self.config.yml.orchestration.learning.model_dump(),
         )
         # Inject per-agent model overrides from LLM_AGENT_MODELS env var
         cmd._agent_model_overrides = self.config.llm.agent_model_overrides
