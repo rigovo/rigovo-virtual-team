@@ -93,9 +93,10 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         assert output["tokens"] == 300
         assert output["cost"] == 0.10
         assert "agent_backend_complete" in result["status"]
-        assert len(result["events"]) == 2  # agent_started + agent_complete
-        assert result["events"][0]["type"] == "agent_started"
-        assert result["events"][1]["type"] == "agent_complete"
+        event_types = [event["type"] for event in result["events"]]
+        assert "agent_started" in event_types
+        assert "master_decision" in event_types
+        assert "agent_complete" in event_types
 
     async def test_execute_agent_node_with_previous_outputs(self):
         """Test execute_agent_node includes previous agent outputs in context."""
@@ -243,6 +244,12 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
             "current_agent_role": "backend",
             "agent_outputs": {},
             "fix_packets": ["Fix violation in src/app.py line 15"],
+            "active_fix_packet": {
+                "role": "backend",
+                "failure_evidence": ["Syntax error on line 15"],
+                "affected_files": ["src/app.py"],
+                "remediation_phase": "diagnose",
+            },
             "events": [],
         }
 
@@ -270,6 +277,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
 
         # Should include fix packet
         assert any("[FIX REQUIRED]" in msg.get("content", "") for msg in messages)
+        assert any("Syntax error on line 15" in msg.get("content", "") for msg in messages)
 
     async def test_execute_agent_node_updates_cost_accumulator(self):
         """Test execute_agent_node updates cost accumulator."""
@@ -478,6 +486,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         assert messages[1]["type"] == "consult_response"
         assert messages[1]["from_role"] == "security"
         assert any(e.get("type") == "agent_consult_completed" for e in result["events"])
+        assert any(e.get("type") == "consultation_visible" for e in result["events"])
 
     async def test_pending_consult_is_fulfilled_when_target_role_completes(self):
         """Pending consults are auto-answered when the target role finishes."""
@@ -846,6 +855,66 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         assert coder_out["tokens"] == 230
         assert any(e.get("type") == "subtask_spawned" for e in result["events"])
         assert any(e.get("type") == "subtask_complete" for e in result["events"])
+        assert any(e.get("type") == "spawn_started" for e in result["events"])
+        assert any(e.get("type") == "spawn_completed" for e in result["events"])
+        assert result["spawn_history"]
+
+    async def test_execute_agent_blocks_risky_action_in_approve_tier(self):
+        """Risky governance actions should require approval without blocking ordinary orchestration."""
+        state: TaskState = {
+            "task_id": "task-risk-1",
+            "description": "Deploy the service to production",
+            "tier": "approve",
+            "team_config": {
+                "agents": {
+                    "devops": {
+                        "id": "agent-devops",
+                        "name": "DevOps",
+                        "role": "devops",
+                        "system_prompt": "You are devops.",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": ["run_command"],
+                    },
+                }
+            },
+            "current_agent_role": "devops",
+            "agent_outputs": {},
+            "events": [],
+        }
+
+        mock_llm = AsyncMock()
+        mock_llm.invoke.side_effect = [
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=80, output_tokens=20),
+                model="claude-sonnet-4-6",
+                tool_calls=[{
+                    "id": "toolu_risk_1",
+                    "name": "run_command",
+                    "input": {"command": "terraform apply -auto-approve"},
+                }],
+            ),
+            LLMResponse(
+                content="Stopping for approval.",
+                usage=LLMUsage(input_tokens=40, output_tokens=20),
+                model="claude-sonnet-4-6",
+            ),
+        ]
+
+        def llm_factory(model: str):
+            return mock_llm
+
+        cost_calc = MagicMock()
+        cost_calc.calculate.return_value = 0.03
+        result = await execute_agent_node(state, llm_factory, cost_calc)
+
+        assert result["status"] == "awaiting_runtime_approval"
+        assert result["approval_status"] == "pending"
+        assert result["approval_data"]["checkpoint"] == "risk_action_required"
+        assert result["approval_data"]["tool_name"] == "run_command"
+        assert any(e.get("type") == "risk_action_evaluated" for e in result["events"])
+        assert any(e.get("type") == "approval_required" for e in result["events"])
+        assert result["required_approval_actions"]
 
     async def test_spawn_subtask_honors_policy_limit(self):
         """subagent_policy should block spawns beyond max_subtasks_per_agent_step."""

@@ -56,6 +56,98 @@ def _serialize_violation(violation: Violation) -> dict[str, Any]:
     }
 
 
+def _serialize_fix_packet(
+    packet: FixPacket,
+    *,
+    role: str,
+    gate_source: str,
+    affected_files: list[str],
+    remediation_phase: str,
+    allowed_patch_scope: list[str] | None = None,
+    required_verification_commands: list[str] | None = None,
+) -> dict[str, Any]:
+    """Normalize a FixPacket for graph state, persistence, and UI."""
+    return {
+        "role": role,
+        "gate_source": gate_source,
+        "attempt": packet.attempt,
+        "max_attempts": packet.max_attempts,
+        "affected_files": affected_files,
+        "allowed_patch_scope": list(allowed_patch_scope or affected_files),
+        "required_verification_commands": list(required_verification_commands or []),
+        "remediation_phase": remediation_phase,
+        "items": [
+            {
+                "gate_id": item.gate_id,
+                "file_path": item.file_path,
+                "message": item.message,
+                "suggestion": item.suggestion,
+                "severity": str(
+                    item.severity.value if hasattr(item.severity, "value") else item.severity
+                ),
+                "line": item.line,
+            }
+            for item in packet.items
+        ],
+        "prompt": packet.to_prompt(),
+    }
+
+
+def _remediation_update(
+    state: TaskState,
+    *,
+    current_role: str,
+    gate_summary: dict[str, Any],
+    fix_packet: FixPacket,
+    gate_source: str,
+    affected_files: list[str],
+    remediation_phase: str,
+    retry_count: int,
+    max_retries: int,
+    extra_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build the common remediation state payload for failed gate runs."""
+    active_fix_packet = _serialize_fix_packet(
+        fix_packet,
+        role=current_role,
+        gate_source=gate_source,
+        affected_files=affected_files,
+        remediation_phase=remediation_phase,
+    )
+    events = list(state.get("events", [])) + [
+        {
+            "type": "fix_packet_created",
+            "role": current_role,
+            "gate_source": gate_source,
+            "attempt": retry_count,
+            "max_attempts": max_retries,
+            "affected_files": affected_files,
+            "violation_count": len(active_fix_packet["items"]),
+        },
+        {
+            "type": "remediation_started",
+            "role": current_role,
+            "attempt": retry_count,
+            "phase": remediation_phase,
+        },
+        {
+            "type": "downstream_locked",
+            "role": current_role,
+            "reason": f"awaiting gate remediation by {current_role}",
+        },
+        *list(extra_events or []),
+    ]
+    return {
+        "gate_results": gate_summary,
+        "active_fix_packet": active_fix_packet,
+        "fix_packets": state.get("fix_packets", []) + [active_fix_packet["prompt"]],
+        "retry_count": retry_count,
+        "downstream_lock_reason": f"awaiting gate remediation by {current_role}",
+        "events": events,
+        "status": f"gate_failed_{current_role}",
+    }
+
+
 def _resolve_deep_mode(state: TaskState, current_role: str) -> tuple[bool, bool]:
     """
     Decide whether to enable Rigour deep analysis for this gate run.
@@ -341,10 +433,22 @@ async def _validate_master_agent_output(
             max_attempts=max_retries,
         )
 
-        update["fix_packets"] = state.get("fix_packets", []) + [fix_packet.to_prompt()]
-        update["retry_count"] = retry_count
-        update["status"] = f"gate_failed_{current_role}"
+        update.update(
+            _remediation_update(
+                state,
+                current_role=current_role,
+                gate_summary=gate_summary,
+                fix_packet=fix_packet,
+                gate_source="master_structural_validation",
+                affected_files=[],
+                remediation_phase="diagnose",
+                retry_count=retry_count,
+                max_retries=max_retries,
+            )
+        )
     else:
+        update["active_fix_packet"] = {}
+        update["downstream_lock_reason"] = ""
         update["status"] = f"gate_passed_{current_role}"
 
     return update
@@ -492,12 +596,28 @@ async def quality_check_node(
                 max_attempts=max_retries,
             )
             return {
-                "gate_results": gate_summary,
                 "gate_history": gate_history,
-                "fix_packets": state.get("fix_packets", []) + [fix_packet.to_prompt()],
-                "retry_count": retry_count,
-                "status": f"gate_failed_{current_instance}",
-                "events": events,
+                **_remediation_update(
+                    state,
+                    current_role=current_instance,
+                    gate_summary=gate_summary,
+                    fix_packet=fix_packet,
+                    gate_source="persona_violation",
+                    affected_files=files_changed,
+                remediation_phase="diagnose",
+                retry_count=retry_count,
+                max_retries=max_retries,
+                    extra_events=[
+                        {
+                            "type": "gate_results",
+                            "role": current_instance,
+                            "passed": False,
+                            "gates_run": 1,
+                            "violations": len(hard_violations),
+                            "reason": "persona_violation",
+                        }
+                    ],
+                ),
             }
 
         # No hard violations — log soft ones as advisory
@@ -538,6 +658,8 @@ async def quality_check_node(
         return {
             "gate_results": {"status": "skipped", "passed": True},
             "gate_history": gate_history,
+            "active_fix_packet": {},
+            "downstream_lock_reason": "",
             "status": f"gates_skipped_{current_instance}",
             "events": events,
         }
@@ -608,12 +730,39 @@ async def quality_check_node(
             }
         )
         return {
-            "gate_results": gate_summary,
             "gate_history": gate_history,
-            "fix_packets": state.get("fix_packets", []) + [fix_packet.to_prompt()],
-            "retry_count": retry_count,
-            "status": f"gate_failed_{current_instance}",
-            "events": events,
+            **_remediation_update(
+                state,
+                current_role=current_instance,
+                gate_summary=gate_summary,
+                fix_packet=fix_packet,
+                gate_source="no_files_produced",
+                affected_files=[],
+                remediation_phase="patch",
+                retry_count=retry_count,
+                max_retries=max_retries,
+                extra_events=[
+                    {
+                        "type": "gate_results",
+                        "role": current_instance,
+                        "passed": False,
+                        "gates_run": 1,
+                        "violations": 1,
+                        "reason": "no_files_produced",
+                    },
+                    {
+                        "type": (
+                            "gate_remediation_scheduled"
+                            if retry_count < max_retries
+                            else "gate_retries_exhausted"
+                        ),
+                        "role": current_instance,
+                        "reason": "no_files_produced",
+                        "retry_count": retry_count,
+                        "max_retries": max_retries,
+                    },
+                ],
+            ),
         }
 
     run_deep, run_pro = _resolve_deep_mode(state, current_role)
@@ -678,6 +827,8 @@ async def quality_check_node(
     update: dict[str, Any] = {
         "gate_results": gate_summary,
         "gate_history": gate_history,
+        "active_fix_packet": {},
+        "downstream_lock_reason": "",
         "events": state.get("events", [])
         + [
             {
@@ -739,22 +890,32 @@ async def quality_check_node(
             max_attempts=max_retries,
         )
 
-        update["fix_packets"] = state.get("fix_packets", []) + [fix_packet.to_prompt()]
-        update["retry_count"] = retry_count
-        update["status"] = f"gate_failed_{current_instance}"
-        update["events"] = list(update.get("events", [])) + [
-            {
-                "type": (
-                    "gate_remediation_scheduled"
-                    if retry_count < max_retries
-                    else "gate_retries_exhausted"
-                ),
-                "role": current_instance,
-                "reason": "gates_failed",
-                "retry_count": retry_count,
-                "max_retries": max_retries,
-            }
-        ]
+        update.update(
+            _remediation_update(
+                state,
+                current_role=current_instance,
+                gate_summary=gate_summary,
+                fix_packet=fix_packet,
+                gate_source="rigour",
+                affected_files=files_changed,
+                remediation_phase="verify",
+                retry_count=retry_count,
+                max_retries=max_retries,
+                extra_events=[
+                    {
+                        "type": (
+                            "gate_remediation_scheduled"
+                            if retry_count < max_retries
+                            else "gate_retries_exhausted"
+                        ),
+                        "role": current_instance,
+                        "reason": "gates_failed",
+                        "retry_count": retry_count,
+                        "max_retries": max_retries,
+                    }
+                ],
+            )
+        )
     else:
         update["status"] = f"gate_passed_{current_instance}"
 

@@ -82,6 +82,7 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
         event_types = [e["type"] for e in result["events"]]
         assert "deterministic_classified" in event_types
         assert "task_classified" in event_types
+        assert result["supervisory_decisions"] == []
         # Find the task_classified event and verify its fields
         task_event = next(e for e in result["events"] if e["type"] == "task_classified")
         assert task_event["task_type"] == "feature"
@@ -163,6 +164,8 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
         assert result["classification"]["complexity"] == "high"
         assert result["cost_accumulator"]["master_agent"]["tokens"] == 0
         assert "staffing_plan" in result
+        assert result["staffing_plan"]["execution_mode"] == "linear"
+        assert isinstance(result["staffing_plan"]["consultation_requirements"], list)
         # enforce_minimum_team guarantees bug minimum team [coder, reviewer]
         # Mock plan had [coder-1] → enforce adds reviewer → 2 agents
         agents = result["staffing_plan"]["agents"]
@@ -179,7 +182,66 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
         event_types = [e["type"] for e in result["events"]]
         assert "deterministic_classified" in event_types
         assert "task_classified" in event_types
+        assert "master_decision" in event_types
+        assert len(result["supervisory_decisions"]) == 1
         mock_llm.invoke.assert_not_called()
+
+    async def test_classify_node_still_uses_master_classifier_for_deterministic_new_project(self):
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Create auth identity SaaS in Python",
+            "events": [],
+        }
+        mock_llm = AsyncMock()
+        mock_classifier = AsyncMock()
+        mock_classifier.analyze.return_value = StaffingPlan(
+            task_type="new_project",
+            complexity=TaskComplexity.HIGH,
+            workspace_type="new_project",
+            domain_analysis="Greenfield auth SaaS",
+            architecture_notes="Start from empty workspace",
+            agents=[
+                AgentAssignment(
+                    instance_id="lead-1",
+                    role="lead",
+                    specialisation="architecture",
+                    assignment="Own architecture and staffing review",
+                    depends_on=[],
+                    verification="Architecture approved",
+                ),
+                AgentAssignment(
+                    instance_id="planner-1",
+                    role="planner",
+                    specialisation="requirements",
+                    assignment="Plan the greenfield build",
+                    depends_on=["lead-1"],
+                    verification="Plan approved",
+                ),
+                AgentAssignment(
+                    instance_id="coder-1",
+                    role="coder",
+                    specialisation="backend-api",
+                    assignment="Implement the auth SaaS",
+                    depends_on=["planner-1"],
+                    verification="Build and tests pass",
+                ),
+            ],
+            risks=["Greenfield drift"],
+            acceptance_criteria=["Project boots from scratch"],
+            reasoning="Master Brain must review greenfield product asks.",
+        )
+
+        result = await classify_node(state, mock_llm, classifier=mock_classifier)
+
+        mock_classifier.analyze.assert_awaited_once()
+        assert result["classification"]["task_type"] == "new_project"
+        assert result["classification"]["workspace_type"] == "new_project"
+        assert result["staffing_plan"]["reasoning"] == "Master Brain must review greenfield product asks."
+        assert result["staffing_plan"]["task_type"] == "new_project"
+        assert "lead" in {agent["role"] for agent in result["staffing_plan"]["agents"]}
+        assert result["cost_accumulator"]["master_agent"]["tokens"] == 0
+        assert result["events"][-1].get("fast_path") is not True
+        assert result["supervisory_decisions"][0]["workspace_type"] == "new_project"
 
 
 class TestRouteTeamNode(unittest.IsolatedAsyncioTestCase):

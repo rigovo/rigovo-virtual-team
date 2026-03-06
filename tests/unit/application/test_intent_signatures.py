@@ -55,6 +55,16 @@ class TestKeywordClassifier:
         result = classify_by_keywords("Build an auth system from scratch")
         assert result.task_type == "new_project"
 
+    def test_new_project_create_saas_in_language(self) -> None:
+        result = classify_by_keywords("Create auth identity SaaS in Python")
+        assert result.task_type == "new_project"
+
+    def test_new_project_create_folder_and_saas(self) -> None:
+        result = classify_by_keywords(
+            "Create new folder in mounted one and create auth identity SaaS in Python"
+        )
+        assert result.task_type == "new_project"
+
     def test_bug_fix(self) -> None:
         result = classify_by_keywords("Fix the crash on the login page")
         assert result.task_type == "bug"
@@ -168,6 +178,15 @@ class TestSemanticClassifier:
     async def test_new_project_semantic(self, classifier: SemanticClassifier) -> None:
         """Semantic should catch new project intent even with unusual phrasing."""
         result = await classifier.classify("spin up a new landing page with Next.js")
+        assert result.task_type == "new_project"
+
+    @pytest.mark.asyncio
+    async def test_new_project_semantic_user_prompt_shape(
+        self, classifier: SemanticClassifier
+    ) -> None:
+        result = await classifier.classify(
+            "Create new folder in mounted one and create auth identity SaaS in Python"
+        )
         assert result.task_type == "new_project"
 
     @pytest.mark.asyncio

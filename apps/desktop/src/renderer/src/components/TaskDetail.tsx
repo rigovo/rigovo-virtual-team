@@ -1761,6 +1761,10 @@ export default function TaskDetail({
             selectedRole={selectedAgent}
             collab={collab}
             costs={costs}
+            activeFixPacket={detail?.active_fix_packet ?? null}
+            downstreamLockReason={detail?.downstream_lock_reason ?? null}
+            supervisoryDecisions={detail?.supervisory_decisions ?? []}
+            riskActionQueue={detail?.risk_action_queue ?? []}
             totalFiles={totalFiles}
             expectedAgents={expectedAgents}
             nextExpectedRole={nextRole ? canonicalAgentLabel(nextRole) : null}

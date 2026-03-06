@@ -21,6 +21,7 @@ import logging
 import re
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -139,6 +140,144 @@ CONSULT_MAX_QUESTION_CHARS = 1200
 CONSULT_MAX_RESPONSE_CHARS = 1200
 SUBAGENT_MAX_SUBTASKS_PER_STEP = 3
 SUBAGENT_MAX_ROUNDS = 10
+
+
+@dataclass(frozen=True)
+class RoleExecutionContract:
+    """Shared specialist contract injected into role execution context."""
+
+    goal_template: str
+    allowed_tools: tuple[str, ...] = ()
+    required_verifications: tuple[str, ...] = ()
+    self_checklist: tuple[str, ...] = ()
+    consultation_targets: tuple[str, ...] = ()
+    spawn_permissions: tuple[str, ...] = ()
+    completion_artifacts: tuple[str, ...] = ()
+    risk_actions: tuple[str, ...] = ()
+    learning_extractors: tuple[str, ...] = ()
+
+
+ROLE_EXECUTION_CONTRACTS: dict[str, RoleExecutionContract] = {
+    "planner": RoleExecutionContract(
+        goal_template="Turn the task into an executable delivery plan with clear sequencing and risks.",
+        allowed_tools=("list_directory", "read_file", "search_codebase", "consult_agent"),
+        required_verifications=("plan covers files, order, acceptance criteria, and constraints",),
+        self_checklist=(
+            "decide whether this is greenfield or existing-project work",
+            "identify the starting owner and required specialists",
+            "avoid unnecessary full-repo reconnaissance for brainstorming work",
+        ),
+        consultation_targets=("lead",),
+        completion_artifacts=("implementation plan", "acceptance criteria", "risk summary"),
+        learning_extractors=("planning heuristics", "project-shape patterns"),
+    ),
+    "coder": RoleExecutionContract(
+        goal_template="Produce verified code changes and respond precisely to failing evidence.",
+        allowed_tools=(
+            "read_file",
+            "write_file",
+            "list_directory",
+            "search_codebase",
+            "run_command",
+            "consult_agent",
+            "spawn_subtask",
+            "invoke_integration",
+        ),
+        required_verifications=("build/test commands for touched code", "Rigour remediation packet"),
+        self_checklist=(
+            "edit the smallest correct set of files",
+            "execute verification after patching",
+            "if remediation is active, patch against the exact failing evidence",
+        ),
+        consultation_targets=("reviewer", "security", "qa", "devops"),
+        spawn_permissions=("bounded implementation subtask",),
+        completion_artifacts=("files_changed", "verification evidence", "implementation summary"),
+        risk_actions=("destructive command", "deploy/release", "privileged integration"),
+        learning_extractors=("implementation patterns", "failure remediation patterns"),
+    ),
+    "reviewer": RoleExecutionContract(
+        goal_template="Independently verify implementation quality, correctness, and residual risk.",
+        allowed_tools=("read_file", "search_codebase", "consult_agent"),
+        required_verifications=("review verdict", "specific findings or explicit pass rationale"),
+        self_checklist=(
+            "review changed files, not stale assumptions",
+            "escalate to security or lead when risk exceeds review scope",
+        ),
+        consultation_targets=("coder", "security", "lead"),
+        completion_artifacts=("review verdict", "finding list", "handoff recommendation"),
+        learning_extractors=("review heuristics", "missed-risk patterns"),
+    ),
+    "qa": RoleExecutionContract(
+        goal_template="Generate and verify tests that prove changed behavior.",
+        allowed_tools=("read_file", "write_file", "run_command", "consult_agent"),
+        required_verifications=("test execution results",),
+        self_checklist=("cover changed flows", "report flaky or blocked verification explicitly"),
+        consultation_targets=("coder", "reviewer", "security"),
+        completion_artifacts=("test files", "test results"),
+        learning_extractors=("test strategy", "flaky test signals"),
+    ),
+    "security": RoleExecutionContract(
+        goal_template="Audit changed behavior for auth, data, and privilege risks.",
+        allowed_tools=("read_file", "search_codebase", "consult_agent"),
+        required_verifications=("security verdict",),
+        self_checklist=("focus on auth, secrets, data flow, and privilege boundaries",),
+        consultation_targets=("coder", "reviewer", "lead", "devops"),
+        completion_artifacts=("security findings", "risk verdict"),
+        learning_extractors=("security review patterns",),
+    ),
+    "devops": RoleExecutionContract(
+        goal_template="Keep delivery, packaging, and deployment flow operational and safe.",
+        allowed_tools=("read_file", "write_file", "run_command", "consult_agent", "invoke_integration"),
+        required_verifications=("build/package/pipeline verification",),
+        self_checklist=("treat deploy/release as risky actions",),
+        consultation_targets=("sre", "security", "lead"),
+        completion_artifacts=("pipeline/config files", "verification results"),
+        risk_actions=("deploy/release", "external infra mutation", "privileged integration"),
+        learning_extractors=("release and pipeline patterns",),
+    ),
+    "sre": RoleExecutionContract(
+        goal_template="Protect reliability, rollback safety, and runtime operability.",
+        allowed_tools=("read_file", "write_file", "run_command", "consult_agent"),
+        required_verifications=("runtime/reliability checks",),
+        self_checklist=("prefer reversible reliability improvements",),
+        consultation_targets=("devops", "security", "lead"),
+        completion_artifacts=("operability changes", "runtime checks"),
+        learning_extractors=("reliability heuristics",),
+    ),
+    "docs": RoleExecutionContract(
+        goal_template="Document the operator and user-facing truth of the implementation.",
+        allowed_tools=("read_file", "write_file", "consult_agent"),
+        required_verifications=("docs reflect shipped behavior",),
+        self_checklist=("document real behavior, not intended behavior",),
+        consultation_targets=("planner", "coder", "reviewer"),
+        completion_artifacts=("documentation updates",),
+        learning_extractors=("documentation patterns",),
+    ),
+    "lead": RoleExecutionContract(
+        goal_template="Provide architectural direction and adjudicate cross-role conflict.",
+        allowed_tools=("read_file", "search_codebase", "consult_agent"),
+        required_verifications=("architectural verdict",),
+        self_checklist=("decide when branching, consultation, or escalation is required",),
+        consultation_targets=("planner", "coder", "reviewer", "security", "qa"),
+        completion_artifacts=("architectural decision", "risk sign-off"),
+        learning_extractors=("architecture decision patterns",),
+    ),
+}
+
+RISKY_COMMAND_PATTERNS: tuple[tuple[re.Pattern[str], dict[str, str]], ...] = (
+    (
+        re.compile(r"\b(?:rm\s+-rf|terraform\s+destroy|kubectl\s+delete|dropdb)\b", re.IGNORECASE),
+        {"kind": "destructive_command", "summary": "destructive infrastructure or filesystem command", "severity": "critical"},
+    ),
+    (
+        re.compile(r"\b(?:terraform\s+apply|kubectl\s+apply|helm\s+(?:install|upgrade)|flyctl\s+deploy|vercel(?:\s+deploy)?\s+--prod)\b", re.IGNORECASE),
+        {"kind": "deploy", "summary": "deployment or infrastructure apply", "severity": "high"},
+    ),
+    (
+        re.compile(r"\b(?:git\s+push|gh\s+release|npm\s+publish|docker\s+push)\b", re.IGNORECASE),
+        {"kind": "release", "summary": "release or external publish action", "severity": "high"},
+    ),
+)
 
 # Role-to-role consultation policy. Advisory-only, never full step completion.
 #
@@ -267,6 +406,14 @@ class AgentTimeoutError(Exception):
         super().__init__(f"Agent '{role}' timed out after {timeout}s")
 
 
+class RuntimeApprovalRequired(Exception):
+    """Raised when a risky runtime action requires human approval."""
+
+    def __init__(self, approval_event: dict[str, Any]) -> None:
+        self.approval_event = approval_event
+        super().__init__(approval_event.get("summary", "Runtime approval required"))
+
+
 def _schema_type_ok(expected: str, value: Any) -> bool:
     if expected == "string":
         return isinstance(value, str)
@@ -393,6 +540,175 @@ def _build_expert_context_block(
     return " ".join(parts)
 
 
+def _role_execution_contract(role: str) -> RoleExecutionContract:
+    """Return the specialist execution contract for a role."""
+    return ROLE_EXECUTION_CONTRACTS.get(
+        role,
+        RoleExecutionContract(goal_template="Execute your assigned specialist work with verification."),
+    )
+
+
+def _role_contract_block(role: str) -> str:
+    """Render a compact role contract block for prompt injection."""
+    contract = _role_execution_contract(role)
+    lines = [f"ROLE CONTRACT: {contract.goal_template}"]
+    if contract.required_verifications:
+        lines.append("REQUIRED VERIFICATION: " + "; ".join(contract.required_verifications))
+    if contract.self_checklist:
+        lines.append("SELF CHECKLIST: " + "; ".join(contract.self_checklist))
+    if contract.consultation_targets:
+        lines.append("CONSULT WHEN NEEDED: " + ", ".join(contract.consultation_targets))
+    if contract.completion_artifacts:
+        lines.append("COMPLETE WHEN YOU LEAVE: " + ", ".join(contract.completion_artifacts))
+    return "\n".join(lines)
+
+
+def _format_jsonish(value: Any) -> str:
+    """Render structured values compactly for prompts."""
+    try:
+        return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    except TypeError:
+        return str(value)
+
+
+def _active_fix_packet(state: TaskState) -> dict[str, Any] | None:
+    """Normalize active fix packet from current state."""
+    packet = state.get("active_fix_packet") or state.get("fix_packet")
+    if isinstance(packet, dict):
+        return packet
+    fix_packets = state.get("fix_packets", [])
+    if isinstance(fix_packets, list) and fix_packets:
+        return {"summary": str(fix_packets[-1]), "raw": fix_packets[-1], "remediation_phase": "diagnose"}
+    return None
+
+
+def _step_objective(state: TaskState, agent_config: dict[str, Any], role: str) -> str:
+    """Return the explicit objective for the current role."""
+    assignment = str(agent_config.get("assignment", "") or "").strip()
+    if assignment:
+        return assignment
+    completion_contract = state.get("classification", {}).get("completion_contract")
+    if isinstance(completion_contract, dict):
+        by_role = completion_contract.get(role)
+        if isinstance(by_role, str) and by_role.strip():
+            return by_role.strip()
+    return f"Advance the task for role '{role}' and leave verified, handoff-ready output."
+
+
+def _required_consultations(state: TaskState, role: str) -> list[dict[str, Any]]:
+    """Return mandatory consultation edges for the current role."""
+    raw = state.get("classification", {}).get("consultation_requirements", [])
+    if not isinstance(raw, list):
+        return []
+    required: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        from_role = str(item.get("from_role", "")).strip()
+        if from_role == role:
+            required.append(item)
+    return required
+
+
+def _pending_consultations(agent_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return consultation requests still awaiting a response."""
+    responses = {
+        str(msg.get("linked_to", "")).strip()
+        for msg in agent_messages
+        if msg.get("type") == "consult_response"
+    }
+    pending: list[dict[str, Any]] = []
+    for msg in agent_messages:
+        if msg.get("type") != "consult_request":
+            continue
+        if msg.get("status") == "answered" or str(msg.get("id", "")) in responses:
+            continue
+        pending.append(
+            {
+                "message_id": str(msg.get("id", "")),
+                "from_role": str(msg.get("from_role", "")),
+                "to_role": str(msg.get("to_role", "")),
+                "content": str(msg.get("content", ""))[:240],
+                "status": str(msg.get("status", "pending")),
+            }
+        )
+    return pending
+
+
+def _collect_event_records(
+    prior: list[dict[str, Any]] | None,
+    events: list[dict[str, Any]],
+    allowed_types: set[str],
+) -> list[dict[str, Any]]:
+    """Merge prior state records with newly emitted event records."""
+    merged: list[dict[str, Any]] = list(prior or [])
+    merged.extend(event for event in events if event.get("type") in allowed_types)
+    return merged
+
+
+def _approval_records_from_events(
+    state: TaskState,
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Collect governance approval records from state + new events."""
+    risk_action_queue, required_approval_actions = _approval_records_from_events(state, events)
+    return risk_action_queue, required_approval_actions
+
+
+def _evaluate_risky_action(
+    *,
+    role: str,
+    tool_name: str,
+    tool_input: dict[str, Any],
+    state: TaskState | None,
+) -> dict[str, Any] | None:
+    """Classify risky actions before execution and attach governance policy."""
+    if state is None:
+        return None
+    tier = str(state.get("tier", "auto") or "auto").lower()
+    action: dict[str, Any] | None = None
+
+    if tool_name == "invoke_integration":
+        kind = str(tool_input.get("kind", "integration") or "integration")
+        operation = str(tool_input.get("operation", "") or "").strip()
+        action = {
+            "kind": f"{kind}_integration",
+            "summary": f"{kind} integration operation '{operation or 'unknown'}'",
+            "severity": "high" if operation.lower() not in {"read", "search", "list"} else "medium",
+        }
+    elif tool_name == "run_command":
+        command = str(tool_input.get("command", "") or "").strip()
+        for pattern, metadata in RISKY_COMMAND_PATTERNS:
+            if pattern.search(command):
+                action = {**metadata, "command": command[:240]}
+                break
+
+    if action is None:
+        return None
+
+    severity = str(action.get("severity", "medium"))
+    decision = "allow"
+    requires_approval_even_in_auto = severity == "critical"
+    if severity in {"high", "critical"}:
+        if tier == "approve":
+            decision = "approval_required"
+        elif tier == "notify":
+            decision = "notify_only"
+        elif tier == "auto" and requires_approval_even_in_auto:
+            decision = "approval_required"
+
+    return {
+        **action,
+        "type": "risk_action_evaluated",
+        "role": role,
+        "tool_name": tool_name,
+        "decision": decision,
+        "tier": tier,
+        "policy": decision,
+        "requires_approval_even_in_auto": requires_approval_even_in_auto,
+    }
+
+
 def _build_agent_messages(
     state: TaskState,
     system_prompt: str,
@@ -428,6 +744,10 @@ def _build_agent_messages(
     )
     if expert_block:
         system_prompt += f"\n\n{expert_block}"
+
+    role_contract_block = _role_contract_block(current_role)
+    if role_contract_block:
+        system_prompt += f"\n\n{role_contract_block}"
 
     # Role-specific action imperatives — forces execution not description
     # Intent-aware: brainstorm/think mode tells planner to reason, not read codebase
@@ -469,6 +789,9 @@ def _build_agent_messages(
             "role": "user",
             "content": (
                 f"Task: {state['description']}\n\n"
+                f"Intent: {state.get('classification', {}).get('task_type', state.get('task_type', 'unknown'))}\n"
+                f"Workspace mode: {state.get('classification', {}).get('workspace_type', 'existing_project')}\n"
+                f"Current objective: {_step_objective(state, agent_config, current_role)}\n"
                 f"START NOW: {action_imperative}\n"
                 "Do not describe what you will do. Do it."
             ),
@@ -476,14 +799,14 @@ def _build_agent_messages(
     ]
 
     # Add fix packet if retrying
-    fix_packets = state.get("fix_packets", [])
-    if fix_packets:
+    active_fix_packet = _active_fix_packet(state)
+    if active_fix_packet:
         retry_count = int(state.get("retry_count", 0) or 0)
         max_retries = int(state.get("max_retries", 5) or 5)
         messages.append(
             {
                 "role": "user",
-                "content": f"[FIX REQUIRED]: {fix_packets[-1]}",
+                "content": f"[FIX REQUIRED]: {_format_jsonish(active_fix_packet)}",
             }
         )
         guidance = (
@@ -493,6 +816,19 @@ def _build_agent_messages(
         if current_role in ROLES_REQUIRING_FILE_WRITES:
             guidance += " You must call write_file and produce actual file changes."
         messages.append({"role": "user", "content": guidance})
+
+    mandatory_consults = _required_consultations(state, current_role)
+    if mandatory_consults:
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "MANDATORY CONSULTATIONS: "
+                    + _format_jsonish(mandatory_consults)
+                    + ". If the current work materially touches these areas, consult before final handoff."
+                ),
+            }
+        )
 
     return messages
 
@@ -1017,6 +1353,16 @@ def _handle_consult_agent(
             "question_preview": question[:220],
         }
     )
+    events.append(
+        {
+            "type": "consultation_visible",
+            "status": "pending",
+            "from_role": from_role,
+            "to_role": to_role,
+            "message_id": request_id,
+            "question_preview": question[:220],
+        }
+    )
 
     existing_output = state.get("agent_outputs", {}).get(to_role, {})
     existing_summary = existing_output.get("summary", "")
@@ -1040,6 +1386,16 @@ def _handle_consult_agent(
         events.append(
             {
                 "type": "agent_consult_completed",
+                "from_role": from_role,
+                "to_role": to_role,
+                "message_id": request_id,
+                "response_preview": answer[:220],
+            }
+        )
+        events.append(
+            {
+                "type": "consultation_visible",
+                "status": "answered",
                 "from_role": from_role,
                 "to_role": to_role,
                 "message_id": request_id,
@@ -1120,6 +1476,16 @@ def _fulfill_pending_consults(
             events.append(
                 {
                     "type": "agent_consult_completed",
+                    "from_role": msg.get("from_role", ""),
+                    "to_role": current_role,
+                    "message_id": msg.get("id", ""),
+                    "response_preview": answer[:220],
+                }
+            )
+            events.append(
+                {
+                    "type": "consultation_visible",
+                    "status": "answered",
                     "from_role": msg.get("from_role", ""),
                     "to_role": current_role,
                     "message_id": msg.get("id", ""),
@@ -1365,6 +1731,7 @@ async def _run_agentic_loop(
             nonlocal total_cached_input_tokens
             nonlocal total_cache_write_tokens
             nonlocal provider_cache_hits
+            nonlocal successful_write_file_calls
             tool_name = str(tc.get("name", "")).strip()
             if (
                 enforce_file_write_on_retry
@@ -1438,6 +1805,16 @@ async def _run_agentic_loop(
                             "description": subtask_description[:140],
                         }
                     )
+                    events.append(
+                        {
+                            "type": "spawn_started",
+                            "role": role,
+                            "parent_role": role,
+                            "spawn_kind": "subtask",
+                            "subtask_index": subtask_count_ref["value"],
+                            "description": subtask_description[:140],
+                        }
+                    )
                     sub_result = await _run_subtask(
                         llm=llm,
                         tool_executor=tool_executor,
@@ -1471,6 +1848,18 @@ async def _run_agentic_loop(
                             "files_changed": len(sub_result.get("files_changed", []) or []),
                         }
                     )
+                    events.append(
+                        {
+                            "type": "spawn_completed",
+                            "role": role,
+                            "parent_role": role,
+                            "spawn_kind": "subtask",
+                            "subtask_index": subtask_count_ref["value"],
+                            "files_changed": len(sub_result.get("files_changed", []) or []),
+                            "input_tokens": sub_in,
+                            "output_tokens": sub_out,
+                        }
+                    )
                     result_str = json.dumps(sub_result, default=str)
             elif tc["name"] == "consult_agent":
                 if state is None:
@@ -1486,6 +1875,55 @@ async def _run_agentic_loop(
                         events=events,
                     )
             else:
+                risk_event = _evaluate_risky_action(
+                    role=role,
+                    tool_name=tc["name"],
+                    tool_input=tc.get("input", {}),
+                    state=state,
+                )
+                if risk_event is not None:
+                    events.append(risk_event)
+                    if risk_event["decision"] == "notify_only":
+                        events.append(
+                            {
+                                "type": "master_risk_escalation",
+                                "role": role,
+                                "summary": risk_event["summary"],
+                                "policy": "notify_only",
+                                "severity": risk_event["severity"],
+                            }
+                        )
+                    elif risk_event["decision"] == "approval_required":
+                        approval_event = {
+                            "type": "approval_required",
+                            "checkpoint": "risk_action_required",
+                            "role": role,
+                            "summary": risk_event["summary"],
+                            "kind": risk_event["kind"],
+                            "severity": risk_event["severity"],
+                            "policy": "approval_required",
+                            "tool_name": tc["name"],
+                            "tool_input": tc.get("input", {}),
+                            "requires_human_approval": True,
+                        }
+                        events.append(approval_event)
+                        raise RuntimeApprovalRequired(approval_event)
+                    elif risk_event["decision"] == "deny":
+                        events.append(
+                            {
+                                "type": "approval_denied",
+                                "role": role,
+                                "summary": risk_event["summary"],
+                                "kind": risk_event["kind"],
+                            }
+                        )
+                        return tc, json.dumps(
+                            {
+                                "status": "denied_by_policy",
+                                "error": risk_event["summary"],
+                                "risk_action": risk_event,
+                            }
+                        )
                 if tc["name"] == "run_command":
                     raw_cmd = str(tc.get("input", {}).get("command", "")).strip()
                     normalized_cmd = " ".join(raw_cmd.split())
@@ -1603,9 +2041,27 @@ async def _run_agentic_loop(
                 return_exceptions=True,
             )
 
-            for result in parallel_results:
+            for idx, result in enumerate(parallel_results):
                 if isinstance(result, Exception):
-                    logger.error("Parallel tool execution error: %s", result)
+                    tc = response.tool_calls[idx]
+                    logger.error(
+                        "Parallel tool execution error for %s: %s",
+                        tc.get("name", "?"),
+                        result,
+                    )
+                    result_str = json.dumps(
+                        {
+                            "status": "tool_execution_error",
+                            "error": str(result),
+                        }
+                    )
+                    tool_results_content.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tc["id"],
+                            "content": result_str,
+                        }
+                    )
                     continue
                 tc, result_str = result
                 if stream_callback:
@@ -1943,6 +2399,30 @@ async def execute_agent_node(
             "specialisation": runtime_agent_config.get("specialisation", ""),
         }
     )
+    events.append(
+        {
+            "type": "master_decision",
+            "role": current_role,
+            "instance_id": current_instance,
+            "execution_mode": str(
+                state.get("classification", {}).get("execution_mode", "linear") or "linear"
+            ),
+            "workspace_type": str(
+                state.get("classification", {}).get("workspace_type", "existing_project")
+                or "existing_project"
+            ),
+            "step_objective": _step_objective(state, runtime_agent_config, current_role),
+        }
+    )
+    required_consults = _required_consultations(state, current_role)
+    if required_consults:
+        events.append(
+            {
+                "type": "master_consult_decision",
+                "role": current_role,
+                "consultations": required_consults,
+            }
+        )
 
     start_time = time.monotonic()
     # Baseline filesystem state to capture file writes made outside write_file tool
@@ -2140,6 +2620,44 @@ async def execute_agent_node(
             cache_saved_cost_usd = round(max(0.0, uncached_baseline_cost - cost), 6)
             subtask_metrics = {"subtask_count": 0, "subtask_tokens": 0}
 
+    except RuntimeApprovalRequired as exc:
+        duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)
+        approval_event = dict(exc.approval_event)
+        risk_action_queue, required_approval_actions = _approval_records_from_events(state, events)
+        return {
+            "status": "awaiting_runtime_approval",
+            "error": approval_event.get(
+                "summary",
+                f"Risky runtime action requires approval for '{current_role}'.",
+            ),
+            "approval_status": "pending",
+            "approval_data": {
+                "checkpoint": str(approval_event.get("checkpoint", "risk_action_required")),
+                "summary": str(
+                    approval_event.get(
+                        "summary",
+                        f"Risky runtime action requires approval for '{current_role}'.",
+                    )
+                ),
+                "current_role": current_role,
+                "instance_id": current_instance,
+                "tool_name": str(approval_event.get("tool_name", "")),
+                "kind": str(approval_event.get("kind", "")),
+                "severity": str(approval_event.get("severity", "")),
+                "tool_input": approval_event.get("tool_input", {}),
+                "requires_human_approval": bool(
+                    approval_event.get("requires_human_approval", True)
+                ),
+                "approval_mode": "runtime_risk",
+            },
+            "agent_messages": agent_messages_log,
+            "memory_context_by_role": memory_context_by_role,
+            "memory_retrieval_log": memory_retrieval_log,
+            "risk_action_queue": risk_action_queue,
+            "required_approval_actions": required_approval_actions,
+            "events": events,
+            "duration_ms": duration_ms,
+        }
     except asyncio.TimeoutError:
         duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)
         logger.warning("Agent %s timed out after %ds", current_role, batch_timeout)
@@ -2234,6 +2752,34 @@ async def execute_agent_node(
         }
     )
 
+    pending_consults = _pending_consultations(agent_messages_log)
+    supervisory_decisions = _collect_event_records(
+        state.get("supervisory_decisions"),
+        events,
+        {
+            "master_decision",
+            "master_spawn_decision",
+            "master_consult_decision",
+            "master_risk_escalation",
+            "master_completion_judgment",
+        },
+    )
+    spawn_history = _collect_event_records(
+        state.get("spawn_history"),
+        events,
+        {"spawn_requested", "spawn_started", "spawn_completed"},
+    )
+    risk_action_queue = _collect_event_records(
+        state.get("risk_action_queue"),
+        events,
+        {"risk_action_evaluated", "approval_required", "approval_denied"},
+    )
+    required_approval_actions = _collect_event_records(
+        state.get("required_approval_actions"),
+        events,
+        {"approval_required"},
+    )
+
     # ── Detect RECLASSIFY signal in agent output ──────────────────
     reclassify_detected, reclassify_type, reclassify_reason = _detect_reclassify_signal(
         final_text,
@@ -2291,6 +2837,11 @@ async def execute_agent_node(
         "agent_messages": agent_messages_log,
         "memory_context_by_role": memory_context_by_role,
         "memory_retrieval_log": memory_retrieval_log,
+        "active_consultations": pending_consults,
+        "spawn_history": spawn_history,
+        "supervisory_decisions": supervisory_decisions,
+        "risk_action_queue": risk_action_queue,
+        "required_approval_actions": required_approval_actions,
         "events": events,
         **reclassify_fields,
     }
@@ -2389,6 +2940,11 @@ async def execute_agents_parallel(
         inst_state["cost_accumulator"] = dict(base.get("cost_accumulator", {}))
         inst_state["memory_context_by_role"] = dict(base.get("memory_context_by_role", {}))
         inst_state["memory_retrieval_log"] = dict(base.get("memory_retrieval_log", {}))
+        inst_state["active_consultations"] = list(base.get("active_consultations", []))
+        inst_state["spawn_history"] = list(base.get("spawn_history", []))
+        inst_state["supervisory_decisions"] = list(base.get("supervisory_decisions", []))
+        inst_state["risk_action_queue"] = list(base.get("risk_action_queue", []))
+        inst_state["required_approval_actions"] = list(base.get("required_approval_actions", []))
         return inst_state
 
     tasks = []
@@ -2414,6 +2970,11 @@ async def execute_agents_parallel(
     merged_memory_context = dict(state.get("memory_context_by_role", {}))
     merged_memory_log = dict(state.get("memory_retrieval_log", {}))
     merged_events = list(state.get("events", []))
+    merged_consults = list(state.get("active_consultations", []))
+    merged_spawn_history = list(state.get("spawn_history", []))
+    merged_supervisory = list(state.get("supervisory_decisions", []))
+    merged_risk_actions = list(state.get("risk_action_queue", []))
+    merged_required_approvals = list(state.get("required_approval_actions", []))
 
     for i, result in enumerate(results):
         iid = instance_ids[i]
@@ -2450,6 +3011,11 @@ async def execute_agents_parallel(
                     "cost": merged_outputs[iid].get("cost", 0.0),
                 }
             merged_memory_context.update(result.get("memory_context_by_role", {}))
+            merged_consults.extend(result.get("active_consultations", []))
+            merged_spawn_history.extend(result.get("spawn_history", []))
+            merged_supervisory.extend(result.get("supervisory_decisions", []))
+            merged_risk_actions.extend(result.get("risk_action_queue", []))
+            merged_required_approvals.extend(result.get("required_approval_actions", []))
             role_memory_log = result.get("memory_retrieval_log", {})
             if isinstance(role_memory_log, dict):
                 for role_key, entries in role_memory_log.items():
@@ -2479,6 +3045,11 @@ async def execute_agents_parallel(
         "cost_accumulator": merged_costs,
         "memory_context_by_role": merged_memory_context,
         "memory_retrieval_log": merged_memory_log,
+        "active_consultations": merged_consults,
+        "spawn_history": merged_spawn_history,
+        "supervisory_decisions": merged_supervisory,
+        "risk_action_queue": merged_risk_actions,
+        "required_approval_actions": merged_required_approvals,
         "events": merged_events,
         "status": "parallel_complete",
     }

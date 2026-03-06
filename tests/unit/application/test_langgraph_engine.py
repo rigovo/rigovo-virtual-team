@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from rigovo.application.graph.builder import GraphBuilder
 from rigovo.application.graph.state import TaskState
@@ -224,6 +224,80 @@ class TestLangGraphExecution(unittest.IsolatedAsyncioTestCase):
             "status": "starting",
             "events": [],
         }
+
+    async def test_runtime_risk_approval_uses_approval_handler_and_retries(self):
+        """GraphBuilder should pause on risky runtime action and continue after approval."""
+        builder = self._make_builder()
+        approval_handler = MagicMock(
+            return_value={"approval_status": "approved", "approval_feedback": "approved by test"}
+        )
+        builder._approval_handler = approval_handler
+        builder._auto_approve = False
+
+        state = self._make_initial_state()
+        state["current_agent_role"] = "coder"
+        state["team_config"] = {
+            "agents": {
+                "coder": {
+                    "id": "agent-coder",
+                    "name": "Coder",
+                    "role": "coder",
+                    "system_prompt": "You are a coder.",
+                    "llm_model": "mock-model",
+                    "tools": ["run_command"],
+                }
+            }
+        }
+
+        first = {
+            "status": "awaiting_runtime_approval",
+            "approval_status": "pending",
+            "approval_data": {
+                "checkpoint": "risk_action_required",
+                "summary": "Deploy to protected environment",
+                "current_role": "coder",
+                "tool_name": "run_command",
+                "kind": "deploy",
+                "requires_human_approval": True,
+            },
+            "events": [
+                {
+                    "type": "approval_required",
+                    "checkpoint": "risk_action_required",
+                    "role": "coder",
+                    "summary": "Deploy to protected environment",
+                    "tool_name": "run_command",
+                    "kind": "deploy",
+                }
+            ],
+            "required_approval_actions": [
+                {
+                    "type": "approval_required",
+                    "checkpoint": "risk_action_required",
+                    "role": "coder",
+                    "summary": "Deploy to protected environment",
+                    "tool_name": "run_command",
+                    "kind": "deploy",
+                }
+            ],
+        }
+        second = {
+            "status": "agent_coder_complete",
+            "events": [{"type": "agent_complete", "role": "coder"}],
+            "agent_outputs": {"coder": {"summary": "done", "files_changed": ["src/feature.py"]}},
+        }
+
+        with patch(
+            "rigovo.application.graph.builder.execute_agent_node",
+            new=AsyncMock(side_effect=[first, second]),
+        ) as mock_execute:
+            result = await builder._run_execute_with_budget_approval(state)
+
+        assert result["status"] == "agent_coder_complete"
+        assert approval_handler.call_count == 1
+        assert any(e.get("type") == "approval_granted" for e in result["events"])
+        assert result.get("required_approval_actions") == []
+        assert mock_execute.await_count == 2
 
     async def test_full_pipeline_completes(self):
         """Graph runs from START to END and produces a completed status."""

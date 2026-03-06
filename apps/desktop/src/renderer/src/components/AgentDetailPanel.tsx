@@ -58,6 +58,10 @@ export interface AgentDetailPanelProps {
   selectedRole:  string | null;         // null = auto-select running agent
   collab:        CollaborationData | null;
   costs:         CostData | null;
+  activeFixPacket?: Record<string, unknown> | null;
+  downstreamLockReason?: string | null;
+  supervisoryDecisions?: Array<Record<string, unknown>>;
+  riskActionQueue?: Array<Record<string, unknown>>;
   totalFiles:    number;
   expectedAgents?: number;
   nextExpectedRole?: string | null;
@@ -67,6 +71,98 @@ export interface AgentDetailPanelProps {
   onApprove?:    () => void;
   onReject?:     () => void;
   isApproval:    boolean;
+}
+
+function RuntimeTruthSection({
+  activeRole,
+  activeFixPacket,
+  downstreamLockReason,
+  supervisoryDecisions,
+  riskActionQueue,
+}: {
+  activeRole: string | null;
+  activeFixPacket?: Record<string, unknown> | null;
+  downstreamLockReason?: string | null;
+  supervisoryDecisions?: Array<Record<string, unknown>>;
+  riskActionQueue?: Array<Record<string, unknown>>;
+}) {
+  const fixPacket = activeFixPacket && Object.keys(activeFixPacket).length > 0 ? activeFixPacket : null;
+  const fixRole = String(fixPacket?.role || "").trim().toLowerCase();
+  const visibleForRole =
+    !activeRole || !fixRole || resolveCanonicalRole(activeRole) === resolveCanonicalRole(fixRole);
+  const items = Array.isArray(fixPacket?.items)
+    ? (fixPacket?.items as Array<Record<string, unknown>>)
+    : [];
+  const masterDecisions = (supervisoryDecisions ?? []).slice(-2);
+  const riskEvents = (riskActionQueue ?? []).slice(-3);
+
+  if (!fixPacket && !downstreamLockReason && masterDecisions.length === 0 && riskEvents.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="adp-section">
+      <div className="adp-section-hdr">
+        <span className="adp-section-icon">🧭</span>
+        <span className="adp-section-title">Execution truth</span>
+      </div>
+      {fixPacket && visibleForRole && (
+        <div className="adp-comms-item" style={{ marginTop: 8 }}>
+          <div className="adp-comms-header">
+            <span className="adp-comms-badge debate">Fix packet</span>
+            <span className="adp-comms-kind">
+              attempt {String(fixPacket.attempt || "1")}/{String(fixPacket.max_attempts || "1")}
+            </span>
+          </div>
+          {downstreamLockReason && (
+            <p className="adp-comms-snippet">{downstreamLockReason}</p>
+          )}
+          {items.slice(0, 3).map((item, idx) => (
+            <p key={idx} className="adp-comms-snippet">
+              {String(item.message || item.gate_id || "Remediation required")}
+            </p>
+          ))}
+        </div>
+      )}
+      {!fixPacket && downstreamLockReason && (
+        <p className="adp-no-output" style={{ marginTop: 6 }}>
+          {downstreamLockReason}
+        </p>
+      )}
+      {masterDecisions.length > 0 && (
+        <div className="adp-comms-list" style={{ marginTop: 8 }}>
+          {masterDecisions.map((decision, idx) => (
+            <div key={`master-${idx}`} className="adp-comms-item">
+              <div className="adp-comms-header">
+                <span className="adp-comms-badge consult">Master decision</span>
+                <span className="adp-comms-kind">
+                  {String(decision.execution_mode || "linear")}
+                </span>
+              </div>
+              <p className="adp-comms-snippet">
+                {String(decision.summary || decision.reasoning || "Supervisory decision recorded.")}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+      {riskEvents.length > 0 && (
+        <div className="adp-comms-list" style={{ marginTop: 8 }}>
+          {riskEvents.map((risk, idx) => (
+            <div key={`risk-${idx}`} className="adp-comms-item">
+              <div className="adp-comms-header">
+                <span className="adp-comms-badge debate">Governance</span>
+                <span className="adp-comms-kind">{String(risk.type || risk.action || "risk")}</span>
+              </div>
+              <p className="adp-comms-snippet">
+                {String(risk.summary || risk.reason || risk.action || "Governance event recorded.")}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ═══════════════════════════════════════════════════════════════════ */
@@ -521,6 +617,7 @@ function resolveActiveRole(selectedRole: string | null, steps: TaskStep[]): stri
 
 export default function AgentDetailPanel({
   steps, taskStatus, selectedRole, collab, costs,
+  activeFixPacket, downstreamLockReason, supervisoryDecisions, riskActionQueue,
   totalFiles, expectedAgents, nextExpectedRole, nextExpectedReason, replanCount, onOpenFiles, onApprove, onReject, isApproval,
 }: AgentDetailPanelProps) {
 
@@ -571,6 +668,13 @@ export default function AgentDetailPanel({
       {activeRole && step && (
         <div className="adp-content">
           <AgentHeader step={step} role={activeBaseRole || activeRole} agentCost={agentCost} />
+          <RuntimeTruthSection
+            activeRole={activeBaseRole || activeRole}
+            activeFixPacket={activeFixPacket}
+            downstreamLockReason={downstreamLockReason}
+            supervisoryDecisions={supervisoryDecisions}
+            riskActionQueue={riskActionQueue}
+          />
           {isActive && !hasRunning && step.status === "complete" && totalAgentCount > completedCount && (
             <div className="adp-section" style={{ marginTop: 8 }}>
               <div className="adp-section-hdr">
@@ -638,6 +742,13 @@ export default function AgentDetailPanel({
                   ? `Coordinating pipeline execution. ${nextExpectedRole ? `Next owner: ${nextExpectedRole}.` : ""}`
                   : "Run orchestration completed."}
               </p>
+              <RuntimeTruthSection
+                activeRole={syntheticRole}
+                activeFixPacket={activeFixPacket}
+                downstreamLockReason={downstreamLockReason}
+                supervisoryDecisions={supervisoryDecisions}
+                riskActionQueue={riskActionQueue}
+              />
             </div>
           )}
 

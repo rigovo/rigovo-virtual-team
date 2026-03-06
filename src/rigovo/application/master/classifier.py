@@ -69,6 +69,13 @@ class StaffingPlan:
 
     # The SME's reasoning for the team composition
     reasoning: str
+    execution_mode: str = "linear"  # linear | parallel | supervised_parallel
+    consultation_requirements: list[dict[str, Any]] = field(default_factory=list)
+    spawn_candidates: list[dict[str, Any]] = field(default_factory=list)
+    completion_contract: list[str] = field(default_factory=list)
+    risk_actions: list[dict[str, Any]] = field(default_factory=list)
+    required_approvals: list[dict[str, Any]] = field(default_factory=list)
+    supervision_checkpoints: list[str] = field(default_factory=list)
 
     @property
     def instance_ids(self) -> list[str]:
@@ -140,9 +147,16 @@ Respond with ONLY valid JSON:
 {"task_type":"feature|bug|refactor|test|docs|infra|security|performance|investigation|new_project",
 "complexity":"low|medium|high|critical",
 "workspace_type":"new_project|existing_project",
+"execution_mode":"linear|parallel|supervised_parallel",
 "domain_analysis":"2-3 sentences",
 "architecture_notes":"key patterns",
 "agents":[{"instance_id":"planner-1","role":"planner","specialisation":"requirements","assignment":"...","depends_on":[],"tools_required":[],"verification":"..."}],
+"consultation_requirements":[{"from_role":"coder","to_role":"security","reason":"auth surface"}],
+"spawn_candidates":[{"role":"coder","specialisation":"backend-api","reason":"separable API branch","bounded_assignment":"auth endpoints","estimated_cost_delta_usd":0.4,"estimated_time_delta_ms":120000}],
+"completion_contract":["working code","verification passed"],
+"risk_actions":[{"kind":"deploy","summary":"deploy to protected environment","policy":"approval_required","severity":"high"}],
+"required_approvals":[{"kind":"budget_extension","summary":"token budget extension beyond policy band","policy":"approval_required"}],
+"supervision_checkpoints":["before_first_implementation","after_first_rigour_failure","before_final_completion"],
 "risks":["..."],
 "acceptance_criteria":["..."],
 "reasoning":"..."}
@@ -349,7 +363,6 @@ class TaskClassifier:
         try:
             task_type = TaskType(raw_type)
         except ValueError:
-            # Handle new_project which isn't in TaskType enum
             task_type = TaskType.FEATURE
 
         try:
@@ -407,6 +420,25 @@ class TaskClassifier:
             domain_analysis=str(data.get("domain_analysis", "")),
             architecture_notes=str(data.get("architecture_notes", "")),
             agents=agents,
+            execution_mode=str(data.get("execution_mode", "linear") or "linear"),
+            consultation_requirements=[
+                item for item in data.get("consultation_requirements", []) if isinstance(item, dict)
+            ],
+            spawn_candidates=[
+                item for item in data.get("spawn_candidates", []) if isinstance(item, dict)
+            ],
+            completion_contract=[
+                str(item) for item in data.get("completion_contract", []) if str(item).strip()
+            ],
+            risk_actions=[item for item in data.get("risk_actions", []) if isinstance(item, dict)],
+            required_approvals=[
+                item for item in data.get("required_approvals", []) if isinstance(item, dict)
+            ],
+            supervision_checkpoints=[
+                str(item)
+                for item in data.get("supervision_checkpoints", [])
+                if str(item).strip()
+            ],
             risks=list(data.get("risks", [])),
             acceptance_criteria=list(data.get("acceptance_criteria", [])),
             reasoning=str(data.get("reasoning", "")),
@@ -416,9 +448,13 @@ class TaskClassifier:
         """Safe fallback when SME analysis fails to parse."""
         logger.warning("Using fallback staffing plan due to: %s", error)
         return StaffingPlan(
-            task_type=TaskType.FEATURE,
+            task_type=TaskType.NEW_PROJECT
+            if "from scratch" in description.lower() or "new project" in description.lower()
+            else TaskType.FEATURE,
             complexity=TaskComplexity.MEDIUM,
-            workspace_type="existing_project",
+            workspace_type="new_project"
+            if "from scratch" in description.lower() or "new project" in description.lower()
+            else "existing_project",
             domain_analysis=f"Analysis failed ({error}), using safe defaults.",
             architecture_notes="Follow existing project patterns.",
             agents=[
@@ -447,6 +483,20 @@ class TaskClassifier:
                     depends_on=["coder-1"],
                     verification="Review verdict is APPROVED or issues are actionable.",
                 ),
+            ],
+            execution_mode="linear",
+            consultation_requirements=[],
+            spawn_candidates=[],
+            completion_contract=[
+                "Implementation satisfies requested outcome",
+                "Verification commands pass",
+            ],
+            risk_actions=[],
+            required_approvals=[],
+            supervision_checkpoints=[
+                "before_first_implementation",
+                "after_first_rigour_failure",
+                "before_final_completion",
             ],
             risks=["Fallback plan — Master Agent analysis failed, may miss domain-specific needs."],
             acceptance_criteria=[
@@ -495,7 +545,7 @@ class TaskClassifier:
 
 _LIGHTWEIGHT_CLASSIFIER_PROMPT = """\
 You are a task classifier. Given a task description, respond with ONLY JSON:
-{"task_type": "feature|bug|refactor|test|docs|infra|security|performance|investigation",
+{"task_type": "feature|bug|refactor|test|docs|infra|security|performance|investigation|new_project",
  "complexity": "low|medium|high|critical",
  "reasoning": "one sentence"}
 """

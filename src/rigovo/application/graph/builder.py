@@ -118,15 +118,41 @@ class GraphBuilder:
         self._evaluator = evaluator
         self._cache_repo = cache_repo
 
-    async def _run_execute_with_budget_approval(self, state: TaskState) -> dict[str, Any]:
-        """Run execute_agent_node with token-limit approval continuation.
+    @staticmethod
+    def _clear_matching_pending_approvals(
+        pending_actions: list[dict[str, Any]] | None,
+        approval_data: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Remove the approval item that has just been resolved."""
+        checkpoint = str(approval_data.get("checkpoint", "") or "").strip()
+        role = str(approval_data.get("current_role", "") or "").strip()
+        kind = str(approval_data.get("kind", "") or "").strip()
+        tool_name = str(approval_data.get("tool_name", "") or "").strip()
+        summary = str(approval_data.get("summary", "") or "").strip()
+        remaining: list[dict[str, Any]] = []
+        for item in list(pending_actions or []):
+            if not isinstance(item, dict):
+                remaining.append(item)
+                continue
+            same = (
+                str(item.get("checkpoint", "") or "").strip() == checkpoint
+                and str(item.get("role", "") or "").strip() == role
+                and str(item.get("kind", "") or "").strip() == kind
+                and str(item.get("tool_name", "") or "").strip() == tool_name
+                and str(item.get("summary", "") or "").strip() == summary
+            )
+            if not same:
+                remaining.append(item)
+        return remaining
 
-        When execute_agent_node signals ``awaiting_budget_approval``, this method
-        calls the configured approval handler. If approved, it extends the token
-        cap and retries execute_agent once; if rejected, it returns rejected state.
+    async def _run_execute_with_budget_approval(self, state: TaskState) -> dict[str, Any]:
+        """Run execute_agent_node with interactive approval continuation.
+
+        Handles both token-budget extension checkpoints and risky runtime-action
+        checkpoints so the graph can pause and resume on governance decisions.
         """
         current_state = state
-        for _ in range(3):
+        for _ in range(5):
             result = await execute_agent_node(
                 current_state,
                 self._llm_factory,
@@ -136,12 +162,21 @@ class GraphBuilder:
                 embedding_provider=self._embedding_provider,
                 memory_retriever=self._memory_retriever,
             )
-            if result.get("status") != "awaiting_budget_approval":
+            status = str(result.get("status", "") or "")
+            if status not in {"awaiting_budget_approval", "awaiting_runtime_approval"}:
                 return result
 
             approval_state = {**current_state, **result}
+            approval_data = result.get("approval_data", {}) or {}
+            auto_approvable = bool(
+                approval_data.get(
+                    "auto_approvable",
+                    status == "awaiting_budget_approval"
+                    and not bool(approval_data.get("requires_human_approval", False)),
+                )
+            )
             decision = {"approval_status": "approved", "approval_feedback": "auto-approved"}
-            if self._auto_approve:
+            if self._auto_approve and auto_approvable:
                 decision = {"approval_status": "approved", "approval_feedback": "auto-approved"}
             elif self._approval_handler:
                 decision = await asyncio.to_thread(self._approval_handler, approval_state)
@@ -149,17 +184,21 @@ class GraphBuilder:
                 return {
                     **result,
                     "status": "failed",
-                    "error": "Token limit reached and no approval handler is configured.",
+                    "error": (
+                        "Approval is required to continue this run, but no approval handler "
+                        "is configured."
+                    ),
                 }
 
             approval_status = str(decision.get("approval_status", "approved"))
             approval_feedback = str(decision.get("approval_feedback", "") or "")
             events = list(result.get("events", []))
+            checkpoint = str(approval_data.get("checkpoint", "checkpoint") or "checkpoint")
             if approval_status == "rejected":
                 events.append(
                     {
                         "type": "approval_denied",
-                        "checkpoint": "token_budget_exceeded",
+                        "checkpoint": checkpoint,
                         "feedback": approval_feedback,
                     }
                 )
@@ -169,35 +208,60 @@ class GraphBuilder:
                     "approval_feedback": approval_feedback,
                     "error": result.get("error", ""),
                     "events": events,
+                    "required_approval_actions": self._clear_matching_pending_approvals(
+                        result.get("required_approval_actions", []),
+                        approval_data,
+                    ),
                 }
 
-            approval_data = result.get("approval_data", {}) or {}
-            current_limit = int(current_state.get("budget_max_tokens_per_task", 0) or 0)
-            requested_extension = int(approval_data.get("requested_extension_tokens", 0) or 0)
-            extension = (
-                requested_extension if requested_extension > 0 else max(50_000, current_limit // 4)
-            )
-            new_limit = current_limit + extension
-            events.append(
-                {
-                    "type": "approval_granted",
-                    "checkpoint": "token_budget_exceeded",
-                    "previous_token_limit": current_limit,
-                    "token_limit": new_limit,
-                    "extension_tokens": extension,
-                    "feedback": approval_feedback,
-                }
-            )
             current_state = {
                 **current_state,
+                **result,
                 "events": events,
                 "approval_status": "approved",
-                "budget_max_tokens_per_task": new_limit,
+                "required_approval_actions": self._clear_matching_pending_approvals(
+                    result.get("required_approval_actions", []),
+                    approval_data,
+                ),
             }
+
+            if status == "awaiting_budget_approval":
+                current_limit = int(current_state.get("budget_max_tokens_per_task", 0) or 0)
+                requested_extension = int(approval_data.get("requested_extension_tokens", 0) or 0)
+                extension = (
+                    requested_extension
+                    if requested_extension > 0
+                    else max(50_000, current_limit // 4)
+                )
+                new_limit = current_limit + extension
+                events.append(
+                    {
+                        "type": "approval_granted",
+                        "checkpoint": checkpoint,
+                        "previous_token_limit": current_limit,
+                        "token_limit": new_limit,
+                        "extension_tokens": extension,
+                        "feedback": approval_feedback,
+                    }
+                )
+                current_state["budget_max_tokens_per_task"] = new_limit
+                current_state["events"] = events
+            else:
+                events.append(
+                    {
+                        "type": "approval_granted",
+                        "checkpoint": checkpoint,
+                        "feedback": approval_feedback,
+                        "summary": str(approval_data.get("summary", "") or ""),
+                        "kind": str(approval_data.get("kind", "") or ""),
+                        "tool_name": str(approval_data.get("tool_name", "") or ""),
+                    }
+                )
+                current_state["events"] = events
 
         return {
             "status": "failed",
-            "error": "Token limit extension approved repeatedly but execution still could not proceed.",
+            "error": "Approval was granted repeatedly but execution still could not proceed.",
             "events": current_state.get("events", []),
         }
 

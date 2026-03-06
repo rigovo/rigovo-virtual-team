@@ -218,6 +218,13 @@ export interface TaskDetail {
   confidence_score?: number;
   /** Pipeline failure reason (only present when status is "failed") */
   error?: string | null;
+  active_fix_packet?: Record<string, unknown>;
+  downstream_lock_reason?: string;
+  active_consultations?: Array<Record<string, unknown>>;
+  spawn_history?: Array<Record<string, unknown>>;
+  supervisory_decisions?: Array<Record<string, unknown>>;
+  risk_action_queue?: Array<Record<string, unknown>>;
+  required_approval_actions?: Array<Record<string, unknown>>;
   /** Backend-precomputed bridge summary for UI display (preferred over local derivation). */
   ui_summary?: {
     tier_requested?: Tier;

@@ -129,6 +129,8 @@ class TaskState(TypedDict, total=False):
     gate_results: dict[str, Any]  # Latest gate check result
     gate_history: list[dict[str, Any]]  # Per-role gate summaries across pipeline
     fix_packets: list[str]  # Accumulated fix packet prompts
+    active_fix_packet: dict[str, Any]  # Structured remediation packet for current failing role
+    downstream_lock_reason: str  # Why downstream roles are blocked
     retry_count: int
     max_retries: int
 
@@ -202,6 +204,11 @@ class TaskState(TypedDict, total=False):
     resume_context: dict[str, Any]  # Injected when resuming an interrupted task
     last_heartbeat: float  # Epoch seconds — stale detection for interrupted tasks
     is_resuming: bool  # True when this execution is a resume (not fresh start)
+    active_consultations: list[dict[str, Any]]  # Visible consult edges attached to runtime
+    spawn_history: list[dict[str, Any]]  # Spawned specialists and merge-back contracts
+    supervisory_decisions: list[dict[str, Any]]  # Master Brain supervisory reasoning/events
+    risk_action_queue: list[dict[str, Any]]  # Risky actions evaluated by policy engine
+    required_approval_actions: list[dict[str, Any]]  # Governance actions currently awaiting approval
 
     # --- Status ---
     status: str  # Current phase name

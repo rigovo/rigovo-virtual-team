@@ -38,6 +38,32 @@ from rigovo.domain.interfaces.llm_provider import LLMProvider
 logger = logging.getLogger(__name__)
 
 
+def _enum_or_str_value(value: Any) -> str:
+    """Normalize StrEnum/string values from classifier outputs."""
+    return str(getattr(value, "value", value))
+
+
+def _master_decision_event(plan_dict: dict[str, Any], classification: dict[str, Any]) -> dict[str, Any]:
+    """Build a durable supervisory event from the final Master staffing plan."""
+    return {
+        "type": "master_decision",
+        "task_type": classification.get("task_type"),
+        "complexity": classification.get("complexity"),
+        "workspace_type": classification.get("workspace_type"),
+        "execution_mode": plan_dict.get("execution_mode", "linear"),
+        "summary": plan_dict.get("reasoning", ""),
+        "topology": {
+            "parallel_groups": plan_dict.get("parallel_groups", []),
+            "execution_dag": plan_dict.get("execution_dag", {}),
+        },
+        "mandatory_consultations": plan_dict.get("consultation_requirements", []),
+        "spawn_candidates": plan_dict.get("spawn_candidates", []),
+        "required_approvals": plan_dict.get("required_approvals", []),
+        "risk_actions": plan_dict.get("risk_actions", []),
+        "supervision_checkpoints": plan_dict.get("supervision_checkpoints", []),
+    }
+
+
 def _classifier_timeout_seconds() -> int:
     """Runtime-configurable timeout for Master Agent classification."""
     raw = os.environ.get("RIGOVO_CLASSIFIER_TIMEOUT_SECONDS", "25").strip()
@@ -129,76 +155,9 @@ async def classify_node(
 
     # ══════════════════════════════════════════════════════════════════
     # PHASE 2: Master Agent LLM — full SME analysis
-    # FAST PATH: skip LLM entirely when deterministic brain is highly
-    # confident (≥0.90) — build staffing plan from minimum team table.
-    # This cuts classification from 10-30s → <100ms for common tasks.
+    # Deterministic classification is a floor and fallback, not the final
+    # brain. When a Master classifier exists, it must review the task.
     # ══════════════════════════════════════════════════════════════════
-    if det_result.is_deterministic and det_result.confidence >= 0.85 and classifier is not None:
-        logger.info(
-            "FAST PATH: skipping Master Agent LLM (deterministic confidence=%.2f ≥ 0.85)",
-            det_result.confidence,
-        )
-        # Build a minimal staffing plan from deterministic result + enforce_minimum_team
-        fast_agents = enforce_minimum_team(
-            [],  # Start empty — enforce_minimum_team fills the minimum team
-            task_type=det_result.task_type,
-            description=description,
-        )
-        classification: dict[str, Any] = {
-            "task_type": det_result.task_type,
-            "complexity": det_result.complexity,
-            "workspace_type": "new_project"
-            if det_result.task_type == "new_project"
-            else "existing_project",
-            "reasoning": f"Deterministic fast path (confidence={det_result.confidence:.0%}, pattern={det_result.matched_pattern})",
-        }
-        plan_dict: dict[str, Any] = {
-            "task_type": det_result.task_type,
-            "complexity": det_result.complexity,
-            "workspace_type": classification["workspace_type"],
-            "domain_analysis": f"Auto-classified as {det_result.task_type} ({det_result.complexity})",
-            "architecture_notes": "",
-            "agents": fast_agents,
-            "risks": [],
-            "acceptance_criteria": [],
-            "reasoning": classification["reasoning"],
-        }
-        events.append(
-            {
-                "type": "task_classified",
-                "task_type": det_result.task_type,
-                "complexity": det_result.complexity,
-                "workspace_type": classification["workspace_type"],
-                "reasoning": classification["reasoning"],
-                "domain_analysis": plan_dict["domain_analysis"],
-                "agent_count": len(fast_agents),
-                "agent_instances": [
-                    {
-                        "instance_id": a.get("instance_id", ""),
-                        "role": a.get("role", ""),
-                        "specialisation": a.get("specialisation", ""),
-                        "assignment": (a.get("assignment", "") or "")[:200],
-                    }
-                    for a in fast_agents
-                ],
-                "risks": [],
-                "acceptance_criteria": [],
-                "deterministic_hint_used": True,
-                "minimum_team_enforced": True,
-                "fast_path": True,
-            }
-        )
-        return {
-            "classification": classification,
-            "deterministic_classification": deterministic_classification,
-            "staffing_plan": plan_dict,
-            "status": "classified",
-            "cost_accumulator": {
-                **state.get("cost_accumulator", {}),
-                "master_agent": {"tokens": 0, "cost": 0.0},
-            },
-            "events": events,
-        }
 
     if classifier is not None:
         try:
@@ -232,9 +191,16 @@ async def classify_node(
                 "task_type": det_result.task_type,
                 "complexity": det_result.complexity,
                 "workspace_type": classification["workspace_type"],
+                "execution_mode": "linear",
                 "domain_analysis": "Deterministic fallback after classifier timeout.",
                 "architecture_notes": "",
                 "agents": fast_agents,
+                "consultation_requirements": [],
+                "spawn_candidates": [],
+                "completion_contract": [],
+                "risk_actions": [],
+                "required_approvals": [],
+                "supervision_checkpoints": [],
                 "risks": ["Master classifier timeout; plan may be less specialized."],
                 "acceptance_criteria": [],
                 "reasoning": classification["reasoning"],
@@ -261,10 +227,12 @@ async def classify_node(
                     "fallback_reason": "classifier_timeout",
                 }
             )
+            events.append(_master_decision_event(plan_dict, classification))
             return {
                 "classification": classification,
                 "deterministic_classification": deterministic_classification,
                 "staffing_plan": plan_dict,
+                "supervisory_decisions": [_master_decision_event(plan_dict, classification)],
                 "status": "classified",
                 "cost_accumulator": {
                     **state.get("cost_accumulator", {}),
@@ -291,9 +259,16 @@ async def classify_node(
                 "task_type": det_result.task_type,
                 "complexity": det_result.complexity,
                 "workspace_type": classification["workspace_type"],
+                "execution_mode": "linear",
                 "domain_analysis": "Deterministic fallback after classifier failure.",
                 "architecture_notes": "",
                 "agents": fast_agents,
+                "consultation_requirements": [],
+                "spawn_candidates": [],
+                "completion_contract": [],
+                "risk_actions": [],
+                "required_approvals": [],
+                "supervision_checkpoints": [],
                 "risks": ["Master classifier failed; plan may be less specialized."],
                 "acceptance_criteria": [],
                 "reasoning": classification["reasoning"],
@@ -320,10 +295,12 @@ async def classify_node(
                     "fallback_reason": "classifier_exception",
                 }
             )
+            events.append(_master_decision_event(plan_dict, classification))
             return {
                 "classification": classification,
                 "deterministic_classification": deterministic_classification,
                 "staffing_plan": plan_dict,
+                "supervisory_decisions": [_master_decision_event(plan_dict, classification)],
                 "status": "classified",
                 "cost_accumulator": {
                     **state.get("cost_accumulator", {}),
@@ -352,7 +329,7 @@ async def classify_node(
 
         # ── ENFORCE COMPLEXITY FLOOR — LLM cannot downgrade ─────────
         _COMPLEXITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
-        llm_complexity = str(plan.complexity.value)
+        llm_complexity = _enum_or_str_value(plan.complexity)
         det_complexity = det_result.complexity
         if _COMPLEXITY_ORDER.get(llm_complexity, 1) < _COMPLEXITY_ORDER.get(det_complexity, 1):
             logger.info(
@@ -365,7 +342,7 @@ async def classify_node(
 
         # Build legacy classification dict for backward compatibility
         classification: dict[str, Any] = {
-            "task_type": str(plan.task_type.value),
+            "task_type": _enum_or_str_value(plan.task_type),
             "complexity": llm_complexity,
             "workspace_type": plan.workspace_type,
             "reasoning": plan.reasoning,
@@ -414,11 +391,14 @@ async def classify_node(
                 "minimum_team_enforced": len(enforced_agents) > len(plan.agents),
             }
         )
+        master_decision = _master_decision_event(plan_dict, classification)
+        events.append(master_decision)
 
         return {
             "classification": classification,
             "deterministic_classification": deterministic_classification,
             "staffing_plan": plan_dict,
+            "supervisory_decisions": [master_decision],
             "status": "classified",
             "cost_accumulator": {
                 **state.get("cost_accumulator", {}),
@@ -564,6 +544,7 @@ async def classify_node(
     return {
         "classification": classification,
         "deterministic_classification": deterministic_classification,
+        "supervisory_decisions": [],
         "status": "classified",
         "cost_accumulator": {
             **state.get("cost_accumulator", {}),
@@ -591,9 +572,10 @@ def _derive_workspace_type(state: TaskState, classification: dict[str, Any]) -> 
 def _serialize_staffing_plan(plan: StaffingPlan) -> dict[str, Any]:
     """Serialize a StaffingPlan to a dict suitable for graph state."""
     return {
-        "task_type": str(plan.task_type.value),
-        "complexity": str(plan.complexity.value),
+        "task_type": _enum_or_str_value(plan.task_type),
+        "complexity": _enum_or_str_value(plan.complexity),
         "workspace_type": plan.workspace_type,
+        "execution_mode": plan.execution_mode,
         "domain_analysis": plan.domain_analysis,
         "architecture_notes": plan.architecture_notes,
         "agents": [
@@ -611,6 +593,12 @@ def _serialize_staffing_plan(plan: StaffingPlan) -> dict[str, Any]:
         "risks": plan.risks,
         "acceptance_criteria": plan.acceptance_criteria,
         "reasoning": plan.reasoning,
+        "consultation_requirements": plan.consultation_requirements,
+        "spawn_candidates": plan.spawn_candidates,
+        "completion_contract": plan.completion_contract,
+        "risk_actions": plan.risk_actions,
+        "required_approvals": plan.required_approvals,
+        "supervision_checkpoints": plan.supervision_checkpoints,
         "execution_dag": plan.execution_dag,
         "parallel_groups": plan.parallel_groups,
     }

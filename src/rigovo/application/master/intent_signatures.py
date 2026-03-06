@@ -61,6 +61,9 @@ _RAW_SIGNATURES: dict[str, dict[str, Any]] = {
         "patterns": [
             r"\b(?:create\s+(?:new\s+)?(?:repo|project|app|application|service))\b",
             r"\b(?:build\s+(?:a\s+|an\s+)?(?:new\s+)?(?:app|application|service|platform|system|saas|tool))\b",
+            r"\b(?:create\s+(?:a\s+|an\s+)?(?:app|application|service|platform|system|saas|tool))\b",
+            r"\b(?:create\s+(?:a\s+|an\s+)?new\s+folder)\b",
+            r"\b(?:create\s+\w+(?:\s+\w+){0,4}\s+(?:saas|platform|system|service|application|app|tool)\s+in\s+(?:python|typescript|javascript|go|rust|java|node(?:\.js)?))\b",
             r"\b(?:init(?:ialize)?|scaffold|bootstrap|start\s+(?:a\s+)?new)\b",
             r"\b(?:new\s+repo(?:sitory)?|from\s+scratch|brand\s*new)\b",
             r"\b(?:set\s*up\s+(?:a\s+)?(?:project|repo|codebase))\b",
@@ -78,7 +81,7 @@ _RAW_SIGNATURES: dict[str, dict[str, Any]] = {
     "feature": {
         "complexity_hint": "medium",
         "patterns": [
-            r"\b(?:add|implement|build|create|develop|integrate|enable|support)\b",
+            r"\b(?:add|implement|develop|integrate|enable|support)\b",
         ],
         "anchors": [
             "add user authentication to the existing app",

@@ -219,6 +219,10 @@ export interface CollaborationData {
     subtasks_spawned?: number;
     subtasks_completed?: number;
     subtasks_blocked?: number;
+    consultation_visible?: number;
+    spawn_started?: number;
+    spawn_completed?: number;
+    debate_adjudicated?: number;
   };
 }
 
@@ -235,7 +239,16 @@ export interface GovTimelineEvent {
 
 export interface GovernanceData {
   timeline: GovTimelineEvent[];
-  summary: { allow: number; deny: number; pending: number };
+  summary: {
+    allow: number;
+    deny: number;
+    pending: number;
+    approval_events?: number;
+    replan_events?: number;
+    policy_events?: number;
+    governance_risk_events?: number;
+    quality_gate_events?: number;
+  };
 }
 
 export interface CostData {

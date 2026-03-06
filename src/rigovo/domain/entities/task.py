@@ -28,6 +28,7 @@ class TaskStatus(StrEnum):
 class TaskType(StrEnum):
     """Classification of what kind of work the task represents."""
 
+    NEW_PROJECT = "new_project"
     FEATURE = "feature"
     BUG = "bug"
     REFACTOR = "refactor"

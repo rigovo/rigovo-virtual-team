@@ -193,9 +193,15 @@ class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
         assert result["retry_count"] == 1
         assert "fix_packets" in result
         assert len(result["fix_packets"]) == 1
+        assert result["active_fix_packet"]["role"] == "backend"
+        assert result["downstream_lock_reason"] == "awaiting gate remediation by backend"
         assert len(result["events"]) >= 1
         assert any(
             isinstance(ev, dict) and ev.get("type") == "gate_remediation_scheduled"
+            for ev in result["events"]
+        )
+        assert any(
+            isinstance(ev, dict) and ev.get("type") == "fix_packet_created"
             for ev in result["events"]
         )
 

@@ -3364,6 +3364,57 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             if isinstance(remediation_step, dict)
             else 0
         )
+        latest_fix_packet = next(
+            (
+                e
+                for e in reversed(merged_events)
+                if isinstance(e, dict) and str(e.get("type", "")) == "fix_packet_created"
+            ),
+            None,
+        )
+        latest_downstream_lock = next(
+            (
+                e
+                for e in reversed(merged_events)
+                if isinstance(e, dict) and str(e.get("type", "")) == "downstream_locked"
+            ),
+            None,
+        )
+        supervisory_decisions = [
+            e
+            for e in merged_events
+            if isinstance(e, dict) and str(e.get("type", "")).startswith("master_")
+        ][-20:]
+        risk_action_queue = [
+            e
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", ""))
+            in {
+                "risk_action_evaluated",
+                "approval_required",
+                "approval_granted",
+                "approval_denied",
+                "master_risk_escalation",
+            }
+        ][-20:]
+        required_approval_actions = [
+            e for e in risk_action_queue if str(e.get("type", "")) == "approval_required"
+        ][-20:]
+        spawn_history = [
+            e
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", ""))
+            in {"spawn_requested", "spawn_started", "spawn_completed", "subtask_spawned"}
+        ][-20:]
+        active_consultations = [
+            e
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", ""))
+            in {"agent_consult_requested", "agent_consult_completed", "consultation_visible"}
+        ][-20:]
 
         total_tokens = int((cost or {}).get("total_tokens") or task.total_tokens or 0)
         total_cost_usd = float((cost or {}).get("total_cost_usd") or task.total_cost_usd or 0.0)
@@ -3489,6 +3540,17 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "confidence_score": confidence_score,
             "error": error_reason,
             "ui_summary": ui_summary,
+            "active_fix_packet": latest_fix_packet or {},
+            "downstream_lock_reason": (
+                str(latest_downstream_lock.get("reason", "") or "")
+                if isinstance(latest_downstream_lock, dict)
+                else ""
+            ),
+            "active_consultations": active_consultations,
+            "spawn_history": spawn_history,
+            "supervisory_decisions": supervisory_decisions,
+            "risk_action_queue": risk_action_queue,
+            "required_approval_actions": required_approval_actions,
         }
 
     @app.post("/v1/tasks")
@@ -3838,6 +3900,18 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "subtasks_blocked": sum(
                 1 for e in merged_events if str(e.get("type", "")) == "subtask_blocked"
             ),
+            "consultation_visible": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "consultation_visible"
+            ),
+            "spawn_started": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "spawn_started"
+            ),
+            "spawn_completed": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "spawn_completed"
+            ),
+            "debate_adjudicated": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "debate_adjudicated"
+            ),
         }
 
         return {
@@ -3889,6 +3963,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             elif action in {"gate_failed", "gate_passed"}:
                 category = "quality_gate"
                 decision = "deny" if action == "gate_failed" else "allow"
+            elif action in {"risk_action_evaluated", "approval_required", "master_risk_escalation"}:
+                category = "governance_risk"
+                decision = "pending" if action == "approval_required" else "info"
             elif action in {"task_failed", "task_completed"}:
                 category = "task"
                 decision = "deny" if action == "task_failed" else "allow"
@@ -3919,6 +3996,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "approval_requested",
                 "approval_granted",
                 "approval_denied",
+                "risk_action_evaluated",
+                "approval_required",
+                "master_risk_escalation",
             }:
                 continue
             ts_value = ev.get("created_at")
@@ -3941,6 +4021,12 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 category = "policy"
             elif ev_type.startswith("approval_"):
                 category = "approval"
+            elif ev_type in {"risk_action_evaluated", "master_risk_escalation"}:
+                category = "governance_risk"
+                decision = "info"
+            elif ev_type == "approval_required":
+                category = "governance_risk"
+                decision = "pending"
 
             summary = ""
             if ev_type == "integration_invoked":
@@ -3960,6 +4046,13 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             elif ev_type == "replan_failed":
                 trigger_reason = ev.get("trigger_reason", "unknown")
                 summary = f"Replan failed: {trigger_reason} — budget exhausted"
+            elif ev_type in {"risk_action_evaluated", "master_risk_escalation", "approval_required"}:
+                summary = str(
+                    ev.get("summary")
+                    or ev.get("reason")
+                    or ev.get("action")
+                    or "Governance risk evaluated"
+                )
             else:
                 summary = ev_type.replace("_", " ")
 
@@ -3994,6 +4087,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "approval_events": sum(1 for t in timeline if t.get("category") == "approval"),
             "replan_events": sum(1 for t in timeline if t.get("category") == "replan"),
             "policy_events": sum(1 for t in timeline if t.get("category") == "policy"),
+            "governance_risk_events": sum(
+                1 for t in timeline if t.get("category") == "governance_risk"
+            ),
             "quality_gate_events": sum(1 for t in timeline if t.get("category") == "quality_gate"),
         }
 

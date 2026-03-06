@@ -39,6 +39,21 @@ _KEYWORD_RULES: list[tuple[str, str, str]] = [
         "new_project",
         "high",
     ),
+    (
+        r"\b(?:create\s+(?:a\s+|an\s+)?(?:app|application|service|platform|system|saas|tool))\b",
+        "new_project",
+        "high",
+    ),
+    (
+        r"\b(?:create\s+(?:a\s+|an\s+)?new\s+folder)\b",
+        "new_project",
+        "medium",
+    ),
+    (
+        r"\b(?:create\s+\w+(?:\s+\w+){0,4}\s+(?:saas|platform|system|service|application|app|tool)\s+in\s+(?:python|typescript|javascript|go|rust|java|node(?:\.js)?))\b",
+        "new_project",
+        "high",
+    ),
     (r"\b(?:init(?:ialize)?|scaffold|bootstrap|start\s+(?:a\s+)?new)\b", "new_project", "medium"),
     (r"\b(?:new\s+repo(?:sitory)?|from\s+scratch|brand\s*new)\b", "new_project", "high"),
     (r"\b(?:set\s*up\s+(?:a\s+)?(?:project|repo|codebase))\b", "new_project", "medium"),
@@ -88,7 +103,7 @@ _KEYWORD_RULES: list[tuple[str, str, str]] = [
         "medium",
     ),
     # Feature (broad catch — must be LAST)
-    (r"\b(?:add|implement|build|create|develop|integrate|enable|support)\b", "feature", "medium"),
+    (r"\b(?:add|implement|develop|integrate|enable|support)\b", "feature", "medium"),
 ]
 
 # Compile once at import time for speed.
@@ -157,7 +172,7 @@ def classify_by_keywords(description: str) -> DeterministicClassification:
 # Every task type has a floor team that guarantees basic competence.
 
 MINIMUM_TEAM: dict[str, list[str]] = {
-    "new_project": ["planner", "coder", "reviewer"],
+    "new_project": ["planner", "lead", "coder", "reviewer"],
     "feature": ["planner", "coder", "reviewer"],
     "bug": ["coder", "reviewer"],
     "refactor": ["coder", "reviewer"],
