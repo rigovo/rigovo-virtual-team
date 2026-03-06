@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,22 @@ MS_PER_SECOND = 1000
 STREAM_CHUNK_MIN_SIZE = 4  # Minimum chars before emitting stream event
 MAX_TOOL_ROUNDS = 25  # Safety limit to prevent infinite tool loops
 TOKEN_EXTENSION_STEP = 50_000
+MAX_FS_SCAN_FILES = 20_000
+ROLES_REQUIRING_FILE_WRITES = {"coder", "qa", "devops", "sre"}
+_FS_IGNORE_DIRS = {
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    "release",
+    "out",
+}
 
 # Per-role max_tokens — sized to what each role actually produces.
 # Per-role max_tokens — sized to what each role actually produces.
@@ -461,12 +478,21 @@ def _build_agent_messages(
     # Add fix packet if retrying
     fix_packets = state.get("fix_packets", [])
     if fix_packets:
+        retry_count = int(state.get("retry_count", 0) or 0)
+        max_retries = int(state.get("max_retries", 5) or 5)
         messages.append(
             {
                 "role": "user",
                 "content": f"[FIX REQUIRED]: {fix_packets[-1]}",
             }
         )
+        guidance = (
+            f"RETRY MODE ({retry_count}/{max_retries}): Address every violation in the fix packet. "
+            "Do not re-summarize old context. Produce concrete corrections now."
+        )
+        if current_role in ROLES_REQUIRING_FILE_WRITES:
+            guidance += " You must call write_file and produce actual file changes."
+        messages.append({"role": "user", "content": guidance})
 
     return messages
 
@@ -988,6 +1014,7 @@ def _handle_consult_agent(
             "from_role": from_role,
             "to_role": to_role,
             "message_id": request_id,
+            "question_preview": question[:220],
         }
     )
 
@@ -1016,6 +1043,7 @@ def _handle_consult_agent(
                 "from_role": from_role,
                 "to_role": to_role,
                 "message_id": request_id,
+                "response_preview": answer[:220],
             }
         )
         return json.dumps(
@@ -1095,6 +1123,7 @@ def _fulfill_pending_consults(
                     "from_role": msg.get("from_role", ""),
                     "to_role": current_role,
                     "message_id": msg.get("id", ""),
+                    "response_preview": answer[:220],
                 }
             )
 
@@ -1175,6 +1204,7 @@ async def _run_agentic_loop(
     tool_executor: ToolExecutor,
     agent_config: dict[str, Any],
     role: str,
+    stream_identity: str | None = None,
     state: TaskState | None = None,
     agent_messages: list[dict[str, Any]] | None = None,
     events: list[dict[str, Any]] | None = None,
@@ -1200,10 +1230,23 @@ async def _run_agentic_loop(
     run_command_counts: dict[str, int] = {}  # Guard against repeated shell loops
     agent_messages = agent_messages if agent_messages is not None else []
     events = events if events is not None else []
+    stream_role = str(stream_identity or role or "agent")
     temperature = agent_config.get("temperature", DEFAULT_TEMPERATURE)
     # Use per-role max_tokens for smarter token allocation
     max_tokens = agent_config.get("max_tokens") or ROLE_MAX_TOKENS.get(role, DEFAULT_MAX_TOKENS)
     subagent_enabled, max_subtasks_per_step, max_subtask_rounds = _resolve_subagent_policy(state)
+    require_file_write = role in ROLES_REQUIRING_FILE_WRITES
+    retry_count = int((state or {}).get("retry_count", 0) or 0)
+    fix_packets = list((state or {}).get("fix_packets", []) or [])
+    latest_fix_packet = str(fix_packets[-1]).lower() if fix_packets else ""
+    no_files_fix_active = (
+        "no-files" in latest_fix_packet
+        or "wrote 0 files" in latest_fix_packet
+        or "no files" in latest_fix_packet
+    )
+    enforce_file_write_on_retry = require_file_write and (retry_count > 0 or no_files_fix_active)
+    write_file_calls = 0
+    no_file_nudges_sent = 0
 
     # Intent-aware file read cap — prevents planner from reading entire codebase
     # for brainstorming/research tasks.  0 = unlimited.
@@ -1245,12 +1288,38 @@ async def _run_agentic_loop(
             # Stream the text to the callback if available
             if stream_callback:
                 try:
-                    stream_callback(role, response.content)
+                    stream_callback(stream_role, response.content)
                 except Exception:
                     logger.debug("Stream callback error for %s", role)
 
         # Check if LLM wants to call tools
         if not response.tool_calls:
+            if (
+                enforce_file_write_on_retry
+                and write_file_calls == 0
+                and round_num + 1 < max_rounds
+                and no_file_nudges_sent < 2
+            ):
+                no_file_nudges_sent += 1
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "BLOCKER: You are a code-producing role and have not written any files yet. "
+                            "Call write_file now and produce at least one concrete file change before "
+                            "continuing."
+                        ),
+                    }
+                )
+                events.append(
+                    {
+                        "type": "no_files_nudge",
+                        "role": role,
+                        "round": int(round_num + 1),
+                        "reason": "no_tool_calls_without_write_file",
+                    }
+                )
+                continue
             # No tool calls — agent is done
             logger.info(
                 "Agent %s: finished after %d rounds (no more tool calls)", role, round_num + 1
@@ -1263,6 +1332,9 @@ async def _run_agentic_loop(
             role,
             len(response.tool_calls),
             [tc.get("name", "?") for tc in response.tool_calls],
+        )
+        write_file_calls += sum(
+            1 for tc in response.tool_calls if str(tc.get("name", "")) == "write_file"
         )
 
         # Build the assistant message with tool_use content blocks
@@ -1292,6 +1364,37 @@ async def _run_agentic_loop(
             nonlocal total_cached_input_tokens
             nonlocal total_cache_write_tokens
             nonlocal provider_cache_hits
+            tool_name = str(tc.get("name", "")).strip()
+            if (
+                enforce_file_write_on_retry
+                and write_file_calls == 0
+                and tool_name
+                in {
+                    "read_file",
+                    "list_directory",
+                    "search_codebase",
+                    "run_command",
+                    "spawn_subtask",
+                }
+            ):
+                events.append(
+                    {
+                        "type": "no_files_nudge",
+                        "role": role,
+                        "round": int(round_num + 1),
+                        "reason": "blocked_non_write_tool_before_first_write",
+                        "tool": tool_name,
+                    }
+                )
+                return tc, json.dumps(
+                    {
+                        "status": "blocked_until_write_file",
+                        "error": (
+                            "Retry remediation requires at least one write_file call before "
+                            f"using '{tool_name}'. Produce concrete file edits now."
+                        ),
+                    }
+                )
             if tc["name"] == "spawn_subtask":
                 if not subagent_enabled:
                     result_str = json.dumps(
@@ -1494,7 +1597,8 @@ async def _run_agentic_loop(
                 if stream_callback:
                     try:
                         stream_callback(
-                            role, f"\n  ⚡ {tc['name']}({_summarize_input(tc['input'])})\n"
+                            stream_role,
+                            f"\n  ⚡ {tc['name']}({_summarize_input(tc['input'])})\n",
                         )
                     except Exception as exc:
                         logger.debug("Stream callback failed for parallel tool result: %s", exc)
@@ -1511,7 +1615,10 @@ async def _run_agentic_loop(
             _, result_str = await _exec_single_tool(tc)
             if stream_callback:
                 try:
-                    stream_callback(role, f"\n  ⚡ {tc['name']}({_summarize_input(tc['input'])})\n")
+                    stream_callback(
+                        stream_role,
+                        f"\n  ⚡ {tc['name']}({_summarize_input(tc['input'])})\n",
+                    )
                 except Exception as exc:
                     logger.debug("Stream callback failed for tool result: %s", exc)
             tool_results_content.append(
@@ -1523,6 +1630,31 @@ async def _run_agentic_loop(
             )
 
         messages.append({"role": "user", "content": tool_results_content})
+
+        if (
+            enforce_file_write_on_retry
+            and write_file_calls == 0
+            and round_num + 1 < max_rounds
+            and no_file_nudges_sent < 2
+        ):
+            no_file_nudges_sent += 1
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "BLOCKER: stop reconnaissance. Your next action must include write_file. "
+                        "Produce at least one real file modification now."
+                    ),
+                }
+            )
+            events.append(
+                {
+                    "type": "no_files_nudge",
+                    "role": role,
+                    "round": int(round_num + 1),
+                    "reason": "read_only_round_without_write_file",
+                }
+            )
 
     else:
         logger.warning("Agent %s: hit max tool rounds (%d)", role, max_rounds)
@@ -1576,6 +1708,67 @@ def _summarize_input(tool_input: dict[str, Any]) -> str:
     if "pattern" in tool_input:
         return f'"{tool_input["pattern"]}"'
     return json.dumps(tool_input)[:60]
+
+
+def _git_tracked_changes(root: Path) -> set[str] | None:
+    """Return changed/untracked paths from git status, or None if unavailable."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+
+    changed: set[str] = set()
+    for line in result.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:].strip()
+        if not path:
+            continue
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        changed.add(path)
+    return changed
+
+
+def _scan_tree_signature(root: Path) -> dict[str, tuple[int, int]]:
+    """Return lightweight signature map of project files for fallback diff."""
+    signature: dict[str, tuple[int, int]] = {}
+    count = 0
+    for path in root.rglob("*"):
+        if count >= MAX_FS_SCAN_FILES:
+            break
+        if not path.is_file():
+            continue
+        if any(part in _FS_IGNORE_DIRS for part in path.parts):
+            continue
+        try:
+            rel = str(path.relative_to(root))
+            stat = path.stat()
+        except OSError:
+            continue
+        signature[rel] = (int(stat.st_mtime_ns), int(stat.st_size))
+        count += 1
+    return signature
+
+
+def _fallback_fs_changes(
+    before: dict[str, tuple[int, int]],
+    after: dict[str, tuple[int, int]],
+) -> list[str]:
+    changed: list[str] = []
+    keys = set(before) | set(after)
+    for rel in sorted(keys):
+        if before.get(rel) != after.get(rel):
+            changed.append(rel)
+    return changed
 
 
 async def execute_agent_node(
@@ -1738,6 +1931,13 @@ async def execute_agent_node(
     )
 
     start_time = time.monotonic()
+    # Baseline filesystem state to capture file writes made outside write_file tool
+    # (e.g. generated by run_command scripts).
+    execution_root = Path(getattr(tool_executor, "_execution_root", project_root))
+    git_changed_before = _git_tracked_changes(execution_root)
+    fs_signature_before = (
+        _scan_tree_signature(execution_root) if git_changed_before is None else None
+    )
     cached_input_tokens = 0
     cache_write_tokens = 0
     cache_source = "none"
@@ -1802,6 +2002,7 @@ async def execute_agent_node(
                 stream_callback=stream_callback,
                 batch_timeout=batch_timeout,
                 max_rounds=intent_max_rounds,
+                stream_identity=current_instance or current_role,
             )
             cached_input_tokens = int(subtask_metrics.get("cached_input_tokens", 0) or 0)
             cache_write_tokens = int(subtask_metrics.get("cache_write_tokens", 0) or 0)
@@ -1831,6 +2032,14 @@ async def execute_agent_node(
             )
             cache_saved_tokens = cached_input_tokens
             cache_saved_cost_usd = round(max(0.0, uncached_baseline_cost - cost), 6)
+
+            if not files_changed:
+                git_changed_after = _git_tracked_changes(execution_root)
+                if git_changed_before is not None and git_changed_after is not None:
+                    files_changed = sorted(list(git_changed_after - git_changed_before))
+                elif fs_signature_before is not None:
+                    fs_signature_after = _scan_tree_signature(execution_root)
+                    files_changed = _fallback_fs_changes(fs_signature_before, fs_signature_after)
         elif stream_callback:
             # --- Streaming mode for text-only agents (no tools) ---
             idle_timeout = runtime_agent_config.get("idle_timeout", DEFAULT_IDLE_TIMEOUT)

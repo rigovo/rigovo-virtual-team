@@ -30,6 +30,58 @@ def _get_instances_by_role(state: TaskState, role: str) -> list[str]:
     return [iid for iid, cfg in agents.items() if cfg.get("role") == role]
 
 
+def _latest_gate_passed_by_instance(state: TaskState) -> dict[str, bool]:
+    """Return latest gate pass/fail status for each instance from gate history."""
+    history = state.get("gate_history", []) or []
+    latest: dict[str, bool] = {}
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        instance = str(entry.get("role", "") or "").strip()
+        if not instance:
+            continue
+        if "passed" in entry:
+            latest[instance] = bool(entry.get("passed"))
+    return latest
+
+
+def _resolve_remediation_lock_target(
+    state: TaskState,
+    completed_roles: set[str],
+    blocked_roles: set[str],
+) -> str:
+    """Resolve forced remediation target when a source role failed Rigour gates.
+
+    Source-role-first lock:
+    - If active_feedback identifies a target coder and that coder's latest gate is failing,
+      force that coder before downstream reviewers/QA/security.
+    - Otherwise, if any coder instance has unresolved gate failure, force that coder.
+    """
+    latest = _latest_gate_passed_by_instance(state)
+    if not latest:
+        return ""
+
+    active_feedback = state.get("active_feedback", {}) or {}
+    target_coder = str(active_feedback.get("target_coder", "") or "").strip()
+    if (
+        target_coder
+        and latest.get(target_coder) is False
+        and target_coder not in blocked_roles
+        and target_coder not in completed_roles
+    ):
+        return target_coder
+
+    for coder_instance in _get_instances_by_role(state, "coder"):
+        if (
+            latest.get(coder_instance) is False
+            and coder_instance not in blocked_roles
+            and coder_instance not in completed_roles
+        ):
+            return coder_instance
+
+    return ""
+
+
 # ── Reclassification check ──────────────────────────────────────────────
 
 
@@ -301,6 +353,36 @@ def advance_to_next_agent(state: TaskState) -> dict:
         }
 
     blocked_roles = _compute_blocked_roles(execution_dag, completed_roles, blocked_roles)
+
+    lock_target = _resolve_remediation_lock_target(state, completed_roles, blocked_roles)
+    if lock_target:
+        events = list(state.get("events", []))
+        events.append(
+            {
+                "type": "remediation_lock",
+                "target_instance": lock_target,
+                "reason": "source_role_gate_failed",
+            }
+        )
+        next_index = (
+            pipeline_order.index(lock_target)
+            if lock_target in pipeline_order
+            else len(pipeline_order)
+        )
+        return {
+            "current_agent_index": next_index,
+            "current_agent_role": lock_target,
+            "current_instance_id": lock_target,
+            "ready_roles": [lock_target],
+            "completed_roles": sorted(completed_roles),
+            "blocked_roles": sorted(blocked_roles),
+            "debate_target_role": ("" if current_instance == debate_target else debate_target),
+            "fix_packets": [],
+            "retry_count": 0,
+            "status": "routing_next_agent",
+            "error": "",
+            "events": events,
+        }
 
     ready_roles: list[str] = []
     for instance_id in pipeline_order:

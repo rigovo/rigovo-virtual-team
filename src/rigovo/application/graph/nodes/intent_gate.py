@@ -91,8 +91,8 @@ INTENT_PROFILES: dict[str, IntentProfile] = {
     "build": IntentProfile(
         intent="build",
         max_agents=6,  # Completion-first default, scale up only with approval
-        max_tool_rounds=10,
-        max_file_reads=0,  # 0 = unlimited
+        max_tool_rounds=6,  # Avoid planner reconnaissance loops on large repos
+        max_file_reads=25,  # Cap early survey; coder can read deeper where needed
         token_budget=200_000,
         planner_mode="survey",
         confidence=0.0,

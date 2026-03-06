@@ -285,11 +285,15 @@ function ProcessingState({
   taskType,
   latestDecision,
   startedAt,
+  masterThinkingMs,
+  masterWaitingMs,
 }: {
   status: string;
   taskType?: string;
   latestDecision?: string;
   startedAt?: string | null;
+  masterThinkingMs?: number | null;
+  masterWaitingMs?: number | null;
 }) {
   const st = status.toLowerCase();
   const isFailed = st.includes("fail") || st.includes("reject");
@@ -313,6 +317,8 @@ function ProcessingState({
   const secs = elapsed % 60;
   const fallbackElapsed = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
   const elapsedStr = elapsedFromStart ?? fallbackElapsed;
+  const hasSplitTiming =
+    (masterThinkingMs ?? 0) > 0 || (masterWaitingMs ?? 0) > 0;
 
   if (isTerminal) {
     return (
@@ -365,6 +371,12 @@ function ProcessingState({
           <p className="text-[11px]" style={{ color: "var(--t3)" }}>
             Coordinating virtual team
           </p>
+          {hasSplitTiming && (
+            <p className="text-[11px]" style={{ color: "var(--t3)" }}>
+              thinking {fmtDuration(masterThinkingMs)} • waiting{" "}
+              {fmtDuration(masterWaitingMs)}
+            </p>
+          )}
         </div>
       </div>
       <div className="mt-4 rounded-xl border border-[var(--border)] bg-[rgba(0,0,0,0.03)] p-4">
@@ -1004,6 +1016,10 @@ function FailureBar({
   onSelect: (agent: string) => void;
   pipelineError?: string | null;
 }) {
+  const normalizeFailureText = (raw: string): string =>
+    raw
+      .replace(/Quality gate failed/gi, "Rigour gate failed")
+      .replace(/\bQuality Gates\b/g, "Rigour Gates");
   const failedStep = steps.find((s) => s.status === "failed");
 
   // Case 1: A specific agent step failed
@@ -1034,7 +1050,7 @@ function FailureBar({
             failed
           </span>
           {reason && (
-            <span className="td-failure-reason">{reason.slice(0, 160)}</span>
+          <span className="td-failure-reason">{reason.slice(0, 160)}</span>
           )}
         </div>
         <span className="td-failure-cta">Inspect →</span>
@@ -1050,7 +1066,7 @@ function FailureBar({
         <div className="td-failure-body">
           <span className="td-failure-who">Pipeline failed</span>
           <span className="td-failure-reason">
-            {pipelineError.slice(0, 200)}
+            {normalizeFailureText(pipelineError).slice(0, 200)}
           </span>
         </div>
       </div>
@@ -1283,20 +1299,42 @@ export default function TaskDetail({
   const missionTokens = summary?.tokens_total ?? 0;
   const missionCost = summary?.cost_total_usd ?? 0;
   const runElapsedMs = summary?.elapsed_ms ?? null;
+  const masterThinkingMs = summary?.master_thinking_ms ?? null;
+  const masterWaitingMs = summary?.master_waiting_ms ?? null;
   const baselineTokens = summary?.baseline_tokens ?? null;
   const consultCount = summary?.consult_count ?? 0;
   const debateCount = summary?.debate_count ?? 0;
   const cacheSavedTokens = summary?.cache_saved_tokens ?? 0;
   const cacheSavedCostUsd = summary?.cache_saved_cost_usd ?? 0;
   const cacheHitRate = summary?.cache_hit_rate ?? null;
+  const budgetSoftExtensionsUsed = summary?.budget_soft_extensions_used ?? 0;
+  const budgetAutoCompactions = summary?.budget_auto_compactions ?? 0;
+  const budgetApprovalPending = summary?.budget_token_approval_pending ?? false;
+  const budgetApprovalRequested = summary?.budget_token_approval_requested ?? 0;
+  const budgetApprovalGranted = summary?.budget_token_approval_granted ?? 0;
+  const budgetAutoApprovedExtensions =
+    summary?.budget_auto_approved_extensions ?? 0;
+  const remediationRoleName = summary?.remediation_role_name ?? null;
+  const remediationFailedGates = summary?.remediation_failed_gates ?? 0;
   const nextExpectedReason = summary?.next_expected_reason ?? null;
   const gatesFailedSummary = summary?.gates_failed ?? gatesFailed;
   const gatesTotalSummary = summary?.gates_total ?? allGates.length;
+  const gateRemediationPending =
+    (summary?.remediation_pending ?? false) ||
+    (isActive &&
+    (gatesFailedSummary > 0 ||
+      String(nextExpectedReason || "")
+        .toLowerCase()
+        .includes("gate remediation")));
   const hasAdvancedMeta =
     tierMismatch ||
     replanCount > 0 ||
     consultCount > 0 ||
     debateCount > 0 ||
+    budgetSoftExtensionsUsed > 0 ||
+    budgetAutoCompactions > 0 ||
+    budgetApprovalPending ||
+    budgetAutoApprovedExtensions > 0 ||
     cacheSavedTokens > 0 ||
     cacheSavedCostUsd > 0 ||
     (isActive && Boolean(nextRole)) ||
@@ -1304,13 +1342,17 @@ export default function TaskDetail({
   const progress = progressFromSteps(detail?.steps ?? []);
   const nowLabel = isApproval
     ? "Awaiting approval"
+    : budgetApprovalPending
+      ? "Awaiting token extension approval"
     : isFailed
       ? "Execution failed"
-      : isCompleted
-        ? "Run completed"
-        : nextRole
-          ? `Running · next ${canonicalAgentLabel(nextRole)}`
-          : `Running · ${progress.completed}/${progress.total || expectedAgents || 0} done`;
+    : isCompleted
+      ? "Run completed"
+    : gateRemediationPending
+      ? "Running · remediating gate failure"
+    : nextRole
+      ? `Running · next ${canonicalAgentLabel(nextRole)}`
+      : `Running · ${progress.completed}/${progress.total || expectedAgents || 0} done`;
   const healthTone: "neutral" | "good" | "risk" =
     isFailed || gatesFailedSummary > 0
       ? "risk"
@@ -1327,11 +1369,13 @@ export default function TaskDetail({
           : "Monitoring";
   const actionLabel = isApproval
     ? "Approve or reject"
+    : budgetApprovalPending
+      ? "Approve extension"
     : isFailed
       ? "Inspect and resume"
-      : isCompleted
-        ? "Review outputs"
-        : "Monitor execution";
+    : isCompleted
+      ? "Review outputs"
+      : "Monitor execution";
 
   useEffect(() => {
     setShowAdvancedMeta(false);
@@ -1409,6 +1453,9 @@ export default function TaskDetail({
                 {gatesFailedSummary !== 1 ? "s" : ""} failed
               </span>
             )}
+            {budgetApprovalPending && (
+              <span className="td-approval-chip">✋ Token extension pending</span>
+            )}
             {hasAdvancedMeta && (
               <button
                 type="button"
@@ -1441,6 +1488,28 @@ export default function TaskDetail({
                     {cacheSavedCostUsd > 0
                       ? ` · $${cacheSavedCostUsd.toFixed(4)}`
                       : ""}
+                  </span>
+                )}
+                {(budgetAutoCompactions > 0 || budgetSoftExtensionsUsed > 0) && (
+                  <span className="td-type-badge">
+                    budget runtime: compaction {budgetAutoCompactions} · soft extension{" "}
+                    {budgetSoftExtensionsUsed}
+                  </span>
+                )}
+                {budgetApprovalRequested > 0 && (
+                  <span className="td-type-badge">
+                    token approvals: {budgetApprovalGranted}/{budgetApprovalRequested} granted
+                  </span>
+                )}
+                {budgetAutoApprovedExtensions > 0 && (
+                  <span className="td-type-badge">
+                    auto-approved extensions: {budgetAutoApprovedExtensions}
+                  </span>
+                )}
+                {gateRemediationPending && remediationRoleName && (
+                  <span className="td-gate-fail-chip">
+                    remediating: {remediationRoleName}
+                    {remediationFailedGates > 0 ? ` (${remediationFailedGates} failed gate${remediationFailedGates !== 1 ? "s" : ""})` : ""}
                   </span>
                 )}
                 {isActive && nextRole && (
@@ -1623,6 +1692,8 @@ export default function TaskDetail({
                     mission?.decision_trace?.slice(-1)[0]?.summary
                   }
                   startedAt={detail?.started_at ?? detail?.created_at ?? null}
+                  masterThinkingMs={masterThinkingMs}
+                  masterWaitingMs={masterWaitingMs}
                 />
               </div>
             ) : (
@@ -1635,9 +1706,7 @@ export default function TaskDetail({
                 totalFiles={totalFiles}
                 totalCost={mapTotalCost}
                 expectedAgents={expectedAgents}
-                nextExpectedRole={
-                  nextRole ? canonicalAgentLabel(nextRole) : null
-                }
+                nextExpectedRole={nextRole ? canonicalAgentLabel(nextRole) : null}
                 replanCount={replanCount}
                 gatesTotal={gatesTotalSummary}
                 gatesFailed={gatesFailedSummary}
@@ -1659,6 +1728,8 @@ export default function TaskDetail({
                     mission?.decision_trace?.slice(-1)[0]?.summary
                   }
                   startedAt={detail?.started_at ?? detail?.created_at ?? null}
+                  masterThinkingMs={masterThinkingMs}
+                  masterWaitingMs={masterWaitingMs}
                 />
               </div>
             ) : (
@@ -1693,7 +1764,11 @@ export default function TaskDetail({
             totalFiles={totalFiles}
             expectedAgents={expectedAgents}
             nextExpectedRole={nextRole ? canonicalAgentLabel(nextRole) : null}
-            nextExpectedReason={nextExpectedReason}
+            nextExpectedReason={
+              gateRemediationPending
+                ? "awaiting gate remediation"
+                : nextExpectedReason
+            }
             replanCount={replanCount}
             onOpenFiles={openFilesDrawer}
             isApproval={isApproval}

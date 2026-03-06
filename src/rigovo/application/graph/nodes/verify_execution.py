@@ -23,6 +23,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from rigovo.application.graph.agent_identity import (
+    resolve_agent_output,
+    resolve_base_role,
+    resolve_current_instance_id,
+)
 from rigovo.application.graph.state import TaskState
 from rigovo.infrastructure.filesystem.command_runner import CommandRunner
 
@@ -354,7 +359,7 @@ def _verify_qa(
             )
             return checks
 
-    # Run each test file individually for precise feedback
+    # Run each test file individually for precise feedback.
     lang = project_info.get("language", "unknown")
     for test_file in runnable_test_files:
         if lang == "python":
@@ -376,7 +381,50 @@ def _verify_qa(
             _run_verification_command(runner, cmd, f"run_test:{Path(test_file).name}", timeout=180)
         )
 
+    # If QA authored broader automation scope, run the project suite too.
+    # This catches cross-test regressions that per-file execution misses.
+    test_cmd = str(project_info.get("test_cmd") or "").strip()
+    if test_cmd and _should_run_full_qa_suite(files_changed, runnable_test_files):
+        checks.append(_run_verification_command(runner, test_cmd, "qa_full_suite", timeout=300))
+
     return checks
+
+
+def _should_run_full_qa_suite(
+    files_changed: list[str],
+    runnable_test_files: list[str],
+) -> bool:
+    """Heuristic trigger for full-suite QA verification.
+
+    We escalate when QA likely touched automation breadth (e2e/integration/config)
+    or produced enough test files that isolated runs are insufficient.
+    """
+    if len(runnable_test_files) >= 3:
+        return True
+
+    lower_paths = [str(p).lower() for p in files_changed]
+    full_suite_markers = (
+        "e2e",
+        "integration",
+        "acceptance",
+        "playwright",
+        "cypress",
+        "selenium",
+        "testplan",
+        "test_plan",
+    )
+    if any(any(marker in path for marker in full_suite_markers) for path in lower_paths):
+        return True
+
+    config_markers = (
+        "playwright.config",
+        "cypress.config",
+        "jest.config",
+        "vitest.config",
+        "pytest.ini",
+        "tox.ini",
+    )
+    return any(any(marker in path for marker in config_markers) for path in lower_paths)
 
 
 def _verify_devops(
@@ -488,13 +536,16 @@ async def verify_execution_node(
     """
     await asyncio.sleep(0)
 
-    current_instance = state.get("current_instance_id") or state.get("current_agent_role") or ""
+    current_instance = resolve_current_instance_id(state)
     agents_cfg = (state.get("team_config") or {}).get("agents") or {}
     agent_config = agents_cfg.get(current_instance) or {}
     current_role = agent_config.get("role", current_instance)
 
     # Resolve base role — handles "coder-1" → "coder", "backend-engineer-1" → "backend-engineer"
-    base_role = _resolve_base_role(current_role)
+    base_role = resolve_base_role(state, current_instance)
+    if base_role == current_instance:
+        # Backward-compatible fallback when team config does not provide a role.
+        base_role = _resolve_base_role(current_role)
 
     # Skip non-verifiable roles
     if base_role not in VERIFIABLE_ROLES:
@@ -506,7 +557,7 @@ async def verify_execution_node(
         )
 
     # Get the agent's output
-    agent_output = (state.get("agent_outputs") or {}).get(current_instance) or {}
+    agent_output = resolve_agent_output(state, current_instance, current_role)
     files_changed = agent_output.get("files_changed") or []
 
     if not files_changed:

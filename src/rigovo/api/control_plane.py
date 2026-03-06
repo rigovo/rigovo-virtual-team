@@ -53,8 +53,8 @@ _ROLE_LABELS: dict[str, str] = {
     "sre": "SRE Engineer",
     "lead": "Tech Lead",
     "memory": "Knowledge Base",
-    "rigour": "Quality Gates",
-    "trinity": "Quality Gates",
+    "rigour": "Rigour Gates",
+    "trinity": "Rigour Gates",
 }
 _ROLE_KEYWORDS: dict[str, str] = {
     "master": "master",
@@ -196,6 +196,7 @@ _live_task_classification: dict[
     str, dict[str, Any]
 ] = {}  # task_id -> classification data (set early)
 _classification_cleanup_tasks: dict[str, Any] = {}  # task_id -> asyncio.Task for TTL cleanup
+_active_task_runs: dict[str, float] = {}  # task_id -> epoch start time for in-process runner
 
 
 def _schedule_classification_cleanup(task_id: str, ttl_seconds: int = 300) -> None:
@@ -361,6 +362,48 @@ def _on_agent_event(event: dict) -> None:
     """
     etype = event.get("type", "")
     task_id = event.get("task_id", "")
+
+    if etype in ("task_finalized", "task_failed") and task_id:
+        # Clean up live caches after terminal transitions.
+        _live_agent_progress.pop(task_id, None)
+        _live_task_events.pop(task_id, None)
+        _active_task_runs.pop(task_id, None)
+        # Keep classification briefly so completed/failed detail still resolves.
+        _schedule_classification_cleanup(task_id, ttl_seconds=300)
+        return
+
+    if etype == "agent_streaming" and task_id:
+        role = str(event.get("role", "") or "").strip()
+        instance_id = str(event.get("instance_id", "") or "").strip()
+        if not role:
+            return
+        if task_id not in _live_agent_progress:
+            _live_agent_progress[task_id] = {}
+        task_steps = _live_agent_progress[task_id]
+        role_key, canonical_instance, canonical_name = _canonical_agent_identity(
+            instance_id or role,
+            str(event.get("name", "") or ""),
+        )
+        step_key = canonical_instance or role_key or role
+        existing = task_steps.get(step_key, {})
+        chunk = str(event.get("chunk", "") or "")
+        existing_output = str(existing.get("output", "") or "")
+        merged_output = (existing_output + chunk)[-24000:]
+        task_steps[step_key] = {
+            **existing,
+            "agent": canonical_instance,
+            "agent_role": role_key,
+            "agent_instance": canonical_instance,
+            "agent_name": canonical_name,
+            "status": "running",
+            "started_at": existing.get("started_at") or datetime.now(timezone.utc).isoformat(),
+            "completed_at": None,
+            "output": merged_output,
+            "files_changed": existing.get("files_changed", []),
+            "gate_results": existing.get("gate_results", []),
+            "last_activity_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return
 
     # deterministic_classified fires INSTANTLY (<50ms) before the LLM call
     if etype == "deterministic_classified" and task_id:
@@ -541,14 +584,11 @@ def _on_agent_event(event: dict) -> None:
             existing_gates = existing.get("gate_results", [])
             existing_gates.append(gate_entry)
             existing["gate_results"] = existing_gates
+            if not passed:
+                existing["status"] = "failed"
     elif etype in ("task_finalized", "task_failed"):
-        # Clean up live agent progress and events, but KEEP classification
-        # in cache with a TTL so the UI can still fetch it after task ends.
-        _live_agent_progress.pop(task_id, None)
-        _live_task_events.pop(task_id, None)
-        # DO NOT pop _live_task_classification here — it's needed for the
-        # task detail API even after failure.  Instead, schedule TTL cleanup.
-        _schedule_classification_cleanup(task_id, ttl_seconds=300)
+        # handled in early terminal branch above
+        return
 
 
 def _on_runtime_event(event: dict) -> None:
@@ -1094,6 +1134,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     try:
         emitter = container.get_event_emitter()
         emitter.on("agent_started", _on_agent_event)
+        emitter.on("agent_streaming", _on_agent_event)
         emitter.on("agent_complete", _on_agent_event)
         emitter.on("gate_results", _on_agent_event)
         emitter.on("task_finalized", _on_agent_event)
@@ -1115,6 +1156,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "approval_requested",
             "approval_granted",
             "approval_denied",
+            "no_files_nudge",
+            "gate_remediation_scheduled",
+            "gate_retries_exhausted",
         ]:
             emitter.on(evt_name, _on_runtime_event)
         logger.info("Live agent progress tracking enabled")
@@ -1342,6 +1386,13 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
 
         _bg_logger = _logging.getLogger("rigovo.api.background")
         real_task_id = use_task_id or task_id
+        if real_task_id in _active_task_runs:
+            _bg_logger.info(
+                "Skipping duplicate background run for task %s (already active)",
+                real_task_id,
+            )
+            return
+        _active_task_runs[real_task_id] = time.time()
         try:
             # Read parallel setting from config (default True for speed)
             enable_parallel = getattr(
@@ -1449,6 +1500,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                     _bg_logger.info("Marked task %s as failed", real_task_id)
             except Exception as db_exc:
                 _bg_logger.warning("Could not mark task %s as failed: %s", real_task_id, db_exc)
+        finally:
+            _active_task_runs.pop(real_task_id, None)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -3129,6 +3182,10 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             (s for s in steps if isinstance(s, dict) and str(s.get("status", "")) == "running"),
             None,
         )
+        token_approval_requested = 0
+        token_approval_granted = 0
+        token_approval_denied = 0
+        token_approval_pending = False
         if task.status == TaskStatus.FAILED:
             next_expected_reason = None
         elif running_step is not None:
@@ -3144,6 +3201,54 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             collab_events = []
         live_events = _live_task_events.get(task_id, [])
         merged_events = [*collab_events, *(live_events if isinstance(live_events, list) else [])]
+        token_approval_requested = sum(
+            1
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", "")) == "approval_requested"
+            and str(e.get("checkpoint", "")) == "token_budget_exceeded"
+        )
+        token_approval_granted = sum(
+            1
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", "")) == "approval_granted"
+            and str(e.get("checkpoint", "")) == "token_budget_exceeded"
+        )
+        token_approval_denied = sum(
+            1
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", "")) == "approval_denied"
+            and str(e.get("checkpoint", "")) == "token_budget_exceeded"
+        )
+        token_approval_pending = token_approval_requested > (
+            token_approval_granted + token_approval_denied
+        )
+        remediation_step = next(
+            (
+                s
+                for s in reversed(steps)
+                if isinstance(s, dict)
+                and any(
+                    isinstance(g, dict) and not bool(g.get("passed", False))
+                    for g in (s.get("gate_results") or [])
+                )
+            ),
+            None,
+        )
+        remediation_role = (
+            str(remediation_step.get("agent_role", "") or "").strip().lower()
+            if isinstance(remediation_step, dict)
+            else ""
+        )
+        if task.status != TaskStatus.FAILED:
+            if token_approval_pending:
+                next_expected_reason = "awaiting token extension approval"
+            elif gates_failed > 0 and remediation_role:
+                next_expected_reason = f"awaiting gate remediation by {remediation_role}"
+            if gates_failed > 0 and remediation_role:
+                next_expected_role = remediation_role
         consult_count = sum(
             1
             for e in merged_events
@@ -3205,6 +3310,50 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         provider_cached_input_tokens = sum(
             int(s.get("cached_input_tokens", 0) or 0) for s in steps if isinstance(s, dict)
         )
+        soft_extensions_from_events = sum(
+            1
+            for e in merged_events
+            if isinstance(e, dict) and str(e.get("type", "")) == "budget_soft_extension_applied"
+        )
+        auto_compactions_from_events = sum(
+            1
+            for e in merged_events
+            if isinstance(e, dict) and str(e.get("type", "")) == "auto_compaction_applied"
+        )
+        auto_approved_extensions = sum(
+            1
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", "")) == "approval_granted"
+            and str(e.get("checkpoint", "")) == "token_budget_exceeded"
+            and "auto-approved" in str(e.get("feedback", "")).lower()
+        )
+        remediation_step = next(
+            (
+                s
+                for s in reversed(steps)
+                if isinstance(s, dict)
+                and any(
+                    isinstance(g, dict) and not bool(g.get("passed", False))
+                    for g in (s.get("gate_results") or [])
+                )
+            ),
+            None,
+        )
+        remediation_role = (
+            str(remediation_step.get("agent_role", "") or "").strip().lower()
+            if isinstance(remediation_step, dict)
+            else ""
+        )
+        remediation_failed_gates = (
+            sum(
+                1
+                for g in (remediation_step.get("gate_results") or [])
+                if isinstance(g, dict) and not bool(g.get("passed", False))
+            )
+            if isinstance(remediation_step, dict)
+            else 0
+        )
 
         total_tokens = int((cost or {}).get("total_tokens") or task.total_tokens or 0)
         total_cost_usd = float((cost or {}).get("total_cost_usd") or task.total_cost_usd or 0.0)
@@ -3212,6 +3361,31 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         if task.started_at:
             end_ts = task.completed_at or datetime.utcnow()
             elapsed_ms = max(0, int((end_ts - task.started_at).total_seconds() * 1000))
+        now_utc = datetime.utcnow()
+        agent_execution_ms = 0
+        for s in steps:
+            if not isinstance(s, dict):
+                continue
+            dur = s.get("duration_ms")
+            if isinstance(dur, (int, float)) and int(dur) > 0:
+                agent_execution_ms += int(dur)
+                continue
+            status_val = str(s.get("status", "")).strip().lower()
+            started_raw = s.get("started_at")
+            if status_val == "running" and isinstance(started_raw, str) and started_raw:
+                try:
+                    start_dt = datetime.fromisoformat(started_raw.replace("Z", "+00:00"))
+                    if start_dt.tzinfo is not None:
+                        start_dt = start_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    agent_execution_ms += max(0, int((now_utc - start_dt).total_seconds() * 1000))
+                except Exception:
+                    continue
+        if elapsed_ms is None:
+            master_waiting_ms = 0
+            master_thinking_ms = 0
+        else:
+            master_waiting_ms = max(0, min(agent_execution_ms, elapsed_ms))
+            master_thinking_ms = max(0, elapsed_ms - master_waiting_ms)
 
         raw_baseline = (task.approval_data or {}).get("baseline_tokens")
         try:
@@ -3233,6 +3407,8 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "tokens_total": total_tokens,
             "cost_total_usd": total_cost_usd,
             "elapsed_ms": elapsed_ms,
+            "master_thinking_ms": master_thinking_ms,
+            "master_waiting_ms": master_waiting_ms,
             "baseline_tokens": baseline_tokens,
             "saved_pct": (
                 round(max(0.0, (baseline_tokens - total_tokens) / baseline_tokens * 100.0), 2)
@@ -3251,16 +3427,31 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "cache_saved_tokens": cache_saved_tokens,
             "cache_saved_cost_usd": cache_saved_cost_usd,
             "provider_cached_input_tokens": provider_cached_input_tokens,
-            "budget_soft_extensions_used": int(
-                adaptive_runtime.get("budget_soft_extensions_used", 0) or 0
+            "budget_soft_extensions_used": max(
+                int(adaptive_runtime.get("budget_soft_extensions_used", 0) or 0),
+                int(soft_extensions_from_events),
             ),
-            "budget_auto_compactions": int(adaptive_runtime.get("budget_auto_compactions", 0) or 0),
+            "budget_auto_compactions": max(
+                int(adaptive_runtime.get("budget_auto_compactions", 0) or 0),
+                int(auto_compactions_from_events),
+            ),
+            "budget_token_approval_requested": int(token_approval_requested),
+            "budget_token_approval_granted": int(token_approval_granted),
+            "budget_token_approval_denied": int(token_approval_denied),
+            "budget_token_approval_pending": bool(token_approval_pending),
+            "budget_auto_approved_extensions": int(auto_approved_extensions),
             "checkpoint_policy_hash": str(checkpoint_contract.get("policy_hash", "")),
             "checkpoint_memory_snapshot_hash": str(
                 checkpoint_contract.get("memory_snapshot_hash", "")
             ),
             "gates_total": gates_total,
             "gates_failed": gates_failed,
+            "remediation_pending": bool(gates_failed > 0),
+            "remediation_role": remediation_role or None,
+            "remediation_role_name": (
+                _canonical_agent_identity(remediation_role, "")[2] if remediation_role else None
+            ),
+            "remediation_failed_gates": int(remediation_failed_gates),
             "next_expected_role": next_expected_role,
             "next_expected_role_name": (
                 _canonical_agent_identity(next_expected_role or "", "")[2]
@@ -3434,15 +3625,49 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
     ) -> dict:
         _, task = await _load_task(task_id)
 
-        # Guard: don't spawn another run if already running
-        if task.status in (
+        # Guard: don't spawn another run if an in-process execution is actually active.
+        active_statuses = (
             TaskStatus.RUNNING,
             TaskStatus.ASSEMBLING,
             TaskStatus.ROUTING,
             TaskStatus.CLASSIFYING,
             TaskStatus.QUALITY_CHECK,
-        ):
-            return {"status": "already_running", "task_id": task_id}
+        )
+        if task.status in active_statuses:
+            if task_id in _active_task_runs:
+                return {"status": "already_running", "task_id": task_id}
+
+            live_steps = _live_agent_progress.get(task_id, {})
+            has_running_live_step = any(
+                isinstance(step, dict) and str(step.get("status", "")) == "running"
+                for step in live_steps.values()
+            )
+            recent_runtime_signal = False
+            live_events = _live_task_events.get(task_id, [])
+            if isinstance(live_events, list) and live_events:
+                now_ts = time.time()
+                for ev in reversed(live_events[-25:]):
+                    if not isinstance(ev, dict):
+                        continue
+                    ts = ev.get("created_at")
+                    if isinstance(ts, (int, float)) and (now_ts - float(ts)) <= 20:
+                        recent_runtime_signal = True
+                        break
+
+            if has_running_live_step or recent_runtime_signal:
+                return {"status": "already_running", "task_id": task_id}
+
+            # Stale active-status recovery: no in-process runner and no live activity.
+            _live_agent_progress.pop(task_id, None)
+            _live_task_events.pop(task_id, None)
+            _active_task_runs.pop(task_id, None)
+            await _append_audit(
+                AuditAction.TASK_STARTED,
+                task,
+                summary="Recovered stale running state before resume",
+                metadata={"source": "api.resume", "stale_recovery": True},
+                actor=req.actor,
+            )
 
         # Restore the original tier so approval gates behave identically to first run
         restored_tier = getattr(task, "tier", "auto") or "auto"

@@ -272,7 +272,9 @@ class RunTaskCommand:
         self._event_emitter = event_emitter
         self._db = db
         self._approval_handler = approval_handler
-        self._max_retries = max_retries
+        # Require at least one remediation pass after an initial gate failure.
+        # With current gate accounting, max_retries=1 means "no retry", so clamp to 2.
+        self._max_retries = max(2, int(max_retries or 0))
         self._team_configs = team_configs or {}
         self._consultation_policy = consultation_policy or {}
         self._subagent_policy = subagent_policy or {}
@@ -534,10 +536,47 @@ class RunTaskCommand:
             history_mgr = HistoryStateManager()
             timeline = history_mgr.load_timeline(str(task_id), task.checkpoint_timeline)
             resume_ctx = history_mgr.build_resume_context(str(task_id))
+            resume_instance_id = ""
+            resume_phase = ""
+
+            # Strict resume: restore per-agent outputs and compute exact resume point.
+            # If an agent has code output but unresolved gates, resume from verification/gate
+            # instead of re-running execute_agent from scratch.
+            restored_outputs: dict[str, dict[str, Any]] = {}
+            completed_with_pass: list[str] = []
+            unresolved_step = None
+            for step in task.pipeline_steps:
+                role = str(getattr(step, "agent_role", "") or "").strip()
+                if not role:
+                    continue
+                restored_outputs[role] = {
+                    "summary": str(getattr(step, "summary", "") or ""),
+                    "files_changed": list(getattr(step, "files_changed", []) or []),
+                    "execution_log": list(getattr(step, "execution_log", []) or []),
+                    "execution_verified": bool(getattr(step, "execution_verified", False)),
+                }
+                gate_passed = getattr(step, "gate_passed", None)
+                if gate_passed is True:
+                    completed_with_pass.append(role)
+                elif gate_passed is False and unresolved_step is None:
+                    unresolved_step = step
+
+            if restored_outputs:
+                initial_state["agent_outputs"] = restored_outputs
+            if completed_with_pass:
+                initial_state["completed_roles"] = completed_with_pass
+
+            if unresolved_step is not None:
+                resume_instance_id = str(getattr(unresolved_step, "agent_role", "") or "").strip()
+                # If execution wasn't verified previously, restart at verification.
+                # Otherwise restart directly at quality_check.
+                if bool(getattr(unresolved_step, "execution_verified", False)):
+                    resume_phase = "quality_check"
+                else:
+                    resume_phase = "verify_execution"
 
             initial_state["is_resuming"] = True
             initial_state["checkpoint_timeline"] = task.checkpoint_timeline
-            initial_state["completed_roles"] = timeline.completed_agents
             initial_state["resume_context"] = {
                 "is_resuming": True,
                 "resumed_from_checkpoint": resume_ctx.resumed_from_checkpoint,
@@ -547,11 +586,13 @@ class RunTaskCommand:
                 "previous_agent_summaries": resume_ctx.previous_agent_summaries,
                 "accumulated_tokens": resume_ctx.accumulated_tokens,
                 "accumulated_cost": resume_ctx.accumulated_cost,
+                "resume_instance_id": resume_instance_id,
+                "resume_from_phase": resume_phase,
             }
             logger.info(
                 "Resume context injected: %d agents already completed, resuming from %s",
-                len(resume_ctx.completed_agents),
-                resume_ctx.resumed_from_checkpoint,
+                len(initial_state.get("completed_roles", [])),
+                resume_phase or resume_ctx.resumed_from_checkpoint,
             )
 
         # --- 3. Resolve default agents (fallback safety)
@@ -565,6 +606,7 @@ class RunTaskCommand:
                 self._emit_sync(
                     "agent_streaming",
                     {
+                        "task_id": str(task_id),
                         "role": role,
                         "chunk": chunk,
                     },
@@ -662,6 +704,16 @@ class RunTaskCommand:
                         break
 
             if not failure_reason:
+                retry_count = int(final_state.get("retry_count", 0) or 0)
+                max_retries = int(final_state.get("max_retries", 5) or 5)
+                if retry_count >= max_retries:
+                    role = final_state.get("current_agent_role", "unknown")
+                    failure_reason = (
+                        f"Rigour remediation exhausted ({retry_count}/{max_retries}) "
+                        f"for agent '{role}'"
+                    )
+
+            if not failure_reason:
                 # Check quality gate failures
                 gate_results = final_state.get("gate_results", {})
                 if isinstance(gate_results, dict) and not gate_results.get("passed", True):
@@ -672,10 +724,10 @@ class RunTaskCommand:
                             for v in violations[:3]
                             if isinstance(v, dict)
                         )
-                        failure_reason = f"Quality gate failed: {viol_summary}"
+                        failure_reason = f"Rigour gate failed: {viol_summary}"
                     else:
                         failure_reason = (
-                            f"Quality gate failed (score: {gate_results.get('score', 'N/A')})"
+                            f"Rigour gate failed (score: {gate_results.get('score', 'N/A')})"
                         )
 
             if not failure_reason:
@@ -683,16 +735,11 @@ class RunTaskCommand:
                 gate_history = final_state.get("gate_history", [])
                 for entry in reversed(gate_history):
                     if isinstance(entry, dict) and not entry.get("passed", True):
-                        failure_reason = f"Quality gate failed for {entry.get('role', 'unknown')}: {entry.get('message', '')}"
+                        failure_reason = (
+                            f"Rigour gate failed for {entry.get('role', 'unknown')}: "
+                            f"{entry.get('message', '')}"
+                        )
                         break
-
-            if not failure_reason:
-                # Check if we hit a recursion limit (LangGraph)
-                retry_count = final_state.get("retry_count", 0)
-                max_retries = final_state.get("max_retries", 5)
-                if retry_count >= max_retries:
-                    role = final_state.get("current_agent_role", "unknown")
-                    failure_reason = f"Max retries ({max_retries}) exhausted for agent '{role}'"
 
             # Write detailed failure log for debugging
             _write_failure_log(str(self._project_root), str(task_id), failure_reason, final_state)
@@ -825,10 +872,15 @@ class RunTaskCommand:
                     "agent_consult_completed",
                     "debate_round",
                     "feedback_loop",
+                    "remediation_lock",
                     "cache_hit",
                     "cache_miss",
                     "artifact_cache_hit",
                     "artifact_cache_miss",
+                    "budget_warning_internal",
+                    "budget_soft_extension_applied",
+                    "auto_compaction_applied",
+                    "budget_exceeded",
                     "integration_invoked",
                     "integration_blocked",
                     "replan_triggered",
@@ -942,6 +994,7 @@ class RunTaskCommand:
             "task_finalized",
             {
                 "type": "task_finalized",
+                "task_id": str(task_id),
                 "status": status,
                 "total_cost": task.total_cost_usd,
                 "total_tokens": task.total_tokens,

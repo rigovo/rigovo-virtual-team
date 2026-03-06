@@ -175,6 +175,8 @@ export interface CollabEvent {
   from_role?: string;
   to_role?: string;
   message_id?: string;
+  question_preview?: string;
+  response_preview?: string;
   round?: number;
   reviewer_feedback?: string;
   kind?: string;
@@ -196,6 +198,7 @@ export interface CollabMessage {
   to_role: string;
   content: string;
   status: string;
+  linked_to?: string;
   created_at?: number;
 }
 
@@ -307,25 +310,44 @@ function CollabRow({
   messages: CollabMessage[];
   index: number;
 }) {
-  // Primary lookup: by message_id. Fallback: match by role pair + type
+  // Primary lookup: by message_id. Fallback: message links / role pair / event previews.
   const msgContent = (() => {
-    if (event.message_id) {
-      const byId = messages.find((m) => m.id === event.message_id)?.content;
-      if (byId) return byId;
+    if (event.type === "agent_consult_requested" && event.message_id) {
+      const requestContent = messages.find((m) => m.id === event.message_id)?.content;
+      if (requestContent) return requestContent;
     }
-    // Secondary: find matching message by from/to roles
+    if (event.type === "agent_consult_completed" && event.message_id) {
+      // Completion events reference request id; response payload is linked_to that request.
+      const responseContent = messages.find(
+        (m) => m.type === "consult_response" && m.linked_to === event.message_id,
+      )?.content;
+      if (responseContent) return responseContent;
+      if (event.response_preview) return event.response_preview;
+    }
     if (event.from_role || event.to_role) {
       const typeMap: Record<string, string> = {
         agent_consult_requested: "consult_request",
         agent_consult_completed: "consult_response",
       };
-      const matched = messages.find(
+      const matchedDirect = messages.find(
         (m) =>
           m.from_role === event.from_role &&
           m.to_role === event.to_role &&
           (!typeMap[event.type] || m.type === typeMap[event.type]),
       );
-      if (matched?.content) return matched.content;
+      if (matchedDirect?.content) return matchedDirect.content;
+      if (event.type === "agent_consult_completed") {
+        const matchedReverse = messages.find(
+          (m) =>
+            m.from_role === event.to_role &&
+            m.to_role === event.from_role &&
+            m.type === "consult_response",
+        );
+        if (matchedReverse?.content) return matchedReverse.content;
+      }
+    }
+    if (event.type === "agent_consult_requested" && event.question_preview) {
+      return event.question_preview;
     }
     return undefined;
   })();

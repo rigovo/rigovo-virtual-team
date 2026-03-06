@@ -454,6 +454,53 @@ class TestVerifyExecutionNode(unittest.IsolatedAsyncioTestCase):
         assert result["execution_verification"]["status"] == "failed"
         assert result["execution_verification"]["passed"] is False
 
+    @patch("rigovo.application.graph.nodes.verify_execution.Path.is_dir", return_value=True)
+    @patch("rigovo.application.graph.nodes.verify_execution.CommandRunner")
+    @patch("rigovo.application.graph.nodes.verify_execution._detect_project_type")
+    async def test_qa_runs_full_suite_for_e2e_scope(self, mock_detect, mock_runner_cls, _mock_isdir):
+        """QA automation/e2e scope should run targeted tests and full suite."""
+        mock_detect.return_value = {
+            "language": "python",
+            "build_cmd": None,
+            "test_cmd": "python -m pytest --tb=short -q",
+            "validate_cmds": [],
+        }
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = {
+            "command": "python -m pytest --tb=short -q",
+            "exit_code": 0,
+            "stdout": "10 passed",
+            "stderr": "",
+            "timed_out": False,
+        }
+        mock_runner_cls.return_value = mock_runner
+
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Build e2e automation",
+            "project_root": "/tmp/test-project",
+            "current_agent_role": "qa",
+            "current_instance_id": "qa-1",
+            "team_config": {
+                "agents": {"qa-1": {"role": "qa", "name": "QA"}},
+            },
+            "agent_outputs": {
+                "qa-1": {
+                    "summary": "Added e2e coverage",
+                    "files_changed": ["tests/e2e/test_checkout.py"],
+                },
+            },
+            "events": [],
+        }
+
+        result = await verify_execution_node(state)
+
+        assert result["execution_verification"]["status"] == "passed"
+        assert mock_runner.run.call_count == 2
+        commands = [str(call.kwargs.get("command") or call.args[0]) for call in mock_runner.run.call_args_list]
+        assert any("tests/e2e/test_checkout.py" in cmd for cmd in commands)
+        assert any(cmd == "python -m pytest --tb=short -q" for cmd in commands)
+
     async def test_verification_history_accumulates(self):
         """Verification history includes entries from all agents."""
         state: TaskState = {

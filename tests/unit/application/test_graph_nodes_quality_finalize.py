@@ -106,6 +106,44 @@ class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
         assert len(result["events"]) == 1
         assert result["events"][0]["passed"] is True
 
+    async def test_quality_check_uses_current_instance_id_for_agent_output(self):
+        """Instance-id keyed outputs should be used for gating and no-files checks."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "current_agent_role": "coder",  # legacy field may carry base role
+            "current_instance_id": "coder-1",
+            "team_config": {
+                "agents": {
+                    "coder-1": {"role": "coder", "name": "Software Engineer 1"},
+                },
+                "gates_after": ["coder-1"],  # canonical pipeline key is instance id
+            },
+            "agent_outputs": {
+                "coder-1": {
+                    "summary": "Implemented auth endpoints",
+                    "files_changed": ["src/auth.py"],
+                }
+            },
+            "project_root": "/project",
+            "events": [],
+        }
+
+        mock_gate = AsyncMock()
+        mock_gate.run.return_value = GateResult(
+            status="passed",
+            gates_run=1,
+            gates_passed=1,
+            violations=[],
+        )
+
+        result = await quality_check_node(state, [mock_gate])
+
+        assert result["gate_results"]["passed"] is True
+        assert result["status"] == "gate_passed_coder-1"
+        # Gate input should use canonical base role for role policy.
+        gate_input = mock_gate.run.call_args.args[0]
+        assert gate_input.agent_role == "coder"
+
     async def test_quality_check_gate_failed_builds_fix_packet(self):
         """Test quality_check_node builds fix packet on gate failure."""
         state: TaskState = {
@@ -155,7 +193,11 @@ class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
         assert result["retry_count"] == 1
         assert "fix_packets" in result
         assert len(result["fix_packets"]) == 1
-        assert len(result["events"]) == 1
+        assert len(result["events"]) >= 1
+        assert any(
+            isinstance(ev, dict) and ev.get("type") == "gate_remediation_scheduled"
+            for ev in result["events"]
+        )
 
     async def test_quality_check_accumulates_violations(self):
         """Test quality_check_node accumulates violations from multiple gates."""
@@ -166,9 +208,7 @@ class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
                 "agents": {},
                 "gates_after": ["backend"],
             },
-            "agent_outputs": {
-                "backend": {"summary": "Changes", "files_changed": ["src/file.py"]}
-            },
+            "agent_outputs": {"backend": {"summary": "Changes", "files_changed": ["src/file.py"]}},
             "project_root": "/project",
             "retry_count": 1,
             "max_retries": 3,
@@ -224,9 +264,7 @@ class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
                 "gates_after": ["coder"],
                 "pipeline_order": ["coder", "reviewer"],
             },
-            "agent_outputs": {
-                "coder": {"summary": "Changes", "files_changed": ["src/file.py"]}
-            },
+            "agent_outputs": {"coder": {"summary": "Changes", "files_changed": ["src/file.py"]}},
             "project_root": "/project",
             "deep_mode": "always",
             "deep_pro": True,
@@ -256,9 +294,7 @@ class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
                 "gates_after": ["coder", "qa"],
                 "pipeline_order": ["planner", "coder", "reviewer", "qa"],
             },
-            "agent_outputs": {
-                "coder": {"summary": "Changes", "files_changed": ["src/file.py"]}
-            },
+            "agent_outputs": {"coder": {"summary": "Changes", "files_changed": ["src/file.py"]}},
             "project_root": "/project",
             "deep_mode": "final",
             "deep_pro": False,
@@ -386,6 +422,7 @@ class TestFinalizeNode(unittest.IsolatedAsyncioTestCase):
 
 
 # ── Phase 7: Persona enforcement tests for quality_check_node ──────────
+
 
 class TestQualityCheckPersonaEnforcement(unittest.IsolatedAsyncioTestCase):
     """Test persona boundary enforcement in quality_check_node."""

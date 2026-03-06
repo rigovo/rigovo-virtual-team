@@ -724,6 +724,10 @@ class GraphBuilder:
                     len(skip_set),
                     ", ".join(sorted(skip_set)),
                 )
+        resume_ctx = state.get("resume_context", {}) or {}
+        resume_instance_id = str(resume_ctx.get("resume_instance_id", "") or "").strip()
+        resume_from_phase = str(resume_ctx.get("resume_from_phase", "") or "").strip()
+        resume_phase_consumed = False
 
         for i, instance_id in enumerate(pipeline_order):
             # Skip agents that completed in previous execution
@@ -735,12 +739,30 @@ class GraphBuilder:
             state["current_agent_role"] = instance_id  # Config key = instance_id
             state["current_instance_id"] = instance_id
 
-            update = await self._run_execute_with_budget_approval(state)
-            state.update(update)
+            skip_execute = (
+                state.get("is_resuming")
+                and not resume_phase_consumed
+                and resume_instance_id == instance_id
+                and resume_from_phase in {"verify_execution", "quality_check"}
+                and bool((state.get("agent_outputs") or {}).get(instance_id))
+            )
+
+            if skip_execute:
+                logger.info(
+                    "Strict resume: skipping execute_agent for %s and resuming from %s",
+                    instance_id,
+                    resume_from_phase,
+                )
+                # One-shot behavior: consume the strict resume hint after first use.
+                resume_phase_consumed = True
+            else:
+                update = await self._run_execute_with_budget_approval(state)
+                state.update(update)
 
             # Phase 4: execution verification before quality gates
-            update = await verify_execution_node(state)
-            state.update(update)
+            if not skip_execute or resume_from_phase == "verify_execution":
+                update = await verify_execution_node(state)
+                state.update(update)
 
             # Late-binding reclassification check
             if state.get("reclassify_requested") and int(state.get("reclassify_count", 0) or 0) < 1:

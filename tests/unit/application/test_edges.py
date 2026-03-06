@@ -848,3 +848,67 @@ class TestSMEGapFixes:
         result = advance_to_next_agent(state)
         # Should NOT route coder back to itself
         assert result.get("ready_roles", []) == [] or result["current_agent_role"] != "coder"
+
+
+class TestSourceRoleFirstRemediationLock:
+    """Ensure downstream roles wait until source coder remediation passes."""
+
+    def test_lock_routes_back_to_coder_when_latest_gate_failed(self):
+        state = {
+            "team_config": {
+                "pipeline_order": ["planner-1", "coder-1", "reviewer-1", "qa-1"],
+                "execution_dag": {
+                    "planner-1": [],
+                    "coder-1": ["planner-1"],
+                    "reviewer-1": ["coder-1"],
+                    "qa-1": ["coder-1"],
+                },
+                "agents": {
+                    "planner-1": {"role": "planner"},
+                    "coder-1": {"role": "coder"},
+                    "reviewer-1": {"role": "reviewer"},
+                    "qa-1": {"role": "qa"},
+                },
+            },
+            "current_agent_role": "reviewer-1",
+            "current_instance_id": "reviewer-1",
+            "completed_roles": ["planner-1"],
+            "blocked_roles": [],
+            "gate_history": [{"role": "coder-1", "passed": False}],
+            "active_feedback": {"target_coder": "coder-1"},
+            "events": [],
+        }
+
+        result = advance_to_next_agent(state)
+        assert result["current_instance_id"] == "coder-1"
+        assert result["ready_roles"] == ["coder-1"]
+        assert any(e.get("type") == "remediation_lock" for e in result["events"])
+
+    def test_lock_released_after_coder_subsequent_pass(self):
+        state = {
+            "team_config": {
+                "pipeline_order": ["planner-1", "coder-1", "reviewer-1"],
+                "execution_dag": {
+                    "planner-1": [],
+                    "coder-1": ["planner-1"],
+                    "reviewer-1": ["coder-1"],
+                },
+                "agents": {
+                    "planner-1": {"role": "planner"},
+                    "coder-1": {"role": "coder"},
+                    "reviewer-1": {"role": "reviewer"},
+                },
+            },
+            "current_agent_role": "coder-1",
+            "current_instance_id": "coder-1",
+            "completed_roles": ["planner-1"],
+            "blocked_roles": [],
+            "gate_history": [
+                {"role": "coder-1", "passed": False},
+                {"role": "coder-1", "passed": True},
+            ],
+            "events": [],
+        }
+
+        result = advance_to_next_agent(state)
+        assert result["current_instance_id"] == "reviewer-1"

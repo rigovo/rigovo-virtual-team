@@ -26,6 +26,11 @@ from rigovo.application.context.rigour_supervisor import (
     PersonaViolation,
     RigourSupervisor,
 )
+from rigovo.application.graph.agent_identity import (
+    resolve_agent_output,
+    resolve_base_role,
+    resolve_current_instance_id,
+)
 from rigovo.application.graph.state import TaskState
 from rigovo.domain.entities.quality import (
     FixItem,
@@ -356,11 +361,14 @@ async def quality_check_node(
     Phase 7: Now also enforces persona boundaries and role-aware severity.
     """
     current_role = state["current_agent_role"]
+    current_instance = resolve_current_instance_id(state)
     team_config = state["team_config"]
     gates_after = team_config.get("gates_after", [])
 
     # Resolve base role for instance-based agents (e.g., "backend-engineer-1" → "coder")
-    base_role = team_config.get("agents", {}).get(current_role, {}).get("role", current_role)
+    agents_cfg = team_config.get("agents", {})
+    agent_cfg = agents_cfg.get(current_instance) or agents_cfg.get(current_role) or {}
+    base_role = resolve_base_role(state, current_instance)
 
     # Contract failures are hard-stop gate failures (no retry loop).
     status = str(state.get("status", ""))
@@ -415,14 +423,18 @@ async def quality_check_node(
         return await _validate_master_agent_output(state, current_role)
 
     # Only run gates on code-producing roles
-    if current_role not in gates_after:
+    # Gates may be configured by instance-id (preferred) or base role (legacy).
+    should_gate = (
+        current_instance in gates_after or current_role in gates_after or base_role in gates_after
+    )
+    if not should_gate:
         # Phase 7: Still run persona checks on non-gated roles.
         # Forbidden file writes by non-code roles ARE enforced as failures.
-        agent_output = state.get("agent_outputs", {}).get(current_role, {})
+        agent_output = resolve_agent_output(state, current_instance, current_role)
         output_summary = agent_output.get("summary", "")
         files_changed = agent_output.get("files_changed", [])
         persona_violations = _check_persona_boundaries(
-            current_role,
+            current_instance,
             base_role,
             files_changed,
             output_summary,
@@ -450,7 +462,7 @@ async def quality_check_node(
             events.append(
                 {
                     "type": "gate_results",
-                    "role": current_role,
+                    "role": current_instance,
                     "passed": False,
                     "gates_run": 1,
                     "violations": len(hard_violations),
@@ -458,7 +470,7 @@ async def quality_check_node(
                 }
             )
             gate_history = list(state.get("gate_history", []))
-            gate_history.append({"role": current_role, **gate_summary})
+            gate_history.append({"role": current_instance, **gate_summary})
 
             # Build fix packet for retry
             fix_items = [
@@ -484,7 +496,7 @@ async def quality_check_node(
                 "gate_history": gate_history,
                 "fix_packets": state.get("fix_packets", []) + [fix_packet.to_prompt()],
                 "retry_count": retry_count,
-                "status": f"gate_failed_{current_role}",
+                "status": f"gate_failed_{current_instance}",
                 "events": events,
             }
 
@@ -492,7 +504,7 @@ async def quality_check_node(
         events.append(
             {
                 "type": "gate_results",
-                "role": current_role,
+                "role": current_instance,
                 "status": "skipped",
                 "passed": True,
             }
@@ -501,7 +513,7 @@ async def quality_check_node(
             events.append(
                 {
                     "type": "persona_check",
-                    "role": current_role,
+                    "role": current_instance,
                     "violations": len(soft_violations),
                     "details": [pv.message for pv in soft_violations[:5]],
                 }
@@ -511,7 +523,7 @@ async def quality_check_node(
         gate_history = list(state.get("gate_history", []))
         gate_history.append(
             {
-                "role": current_role,
+                "role": current_instance,
                 "status": GateStatus.SKIPPED,
                 "passed": True,
                 "reason": "gates_skipped",
@@ -526,19 +538,20 @@ async def quality_check_node(
         return {
             "gate_results": {"status": "skipped", "passed": True},
             "gate_history": gate_history,
-            "status": f"gates_skipped_{current_role}",
+            "status": f"gates_skipped_{current_instance}",
             "events": events,
         }
 
     # Get files changed by the current agent
-    agent_output = state.get("agent_outputs", {}).get(current_role, {})
+    agent_output = resolve_agent_output(state, current_instance, current_role)
     files_changed = agent_output.get("files_changed", [])
 
     # Code-producing agents MUST produce files. If they didn't, that's a failure.
     if base_role in CODE_PRODUCING_ROLES and not files_changed:
+        agent_label = str(agent_cfg.get("name", "")).strip() or current_instance
         violation = Violation(
             gate_id="no-files-produced",
-            message=f"Agent '{current_role}' is expected to produce code but wrote 0 files",
+            message=f"Agent '{agent_label}' ({current_instance}) is expected to produce code but wrote 0 files",
             severity=ViolationSeverity.ERROR,
             suggestion="Use the write_file tool to create or modify files",
         )
@@ -569,31 +582,45 @@ async def quality_check_node(
             "violations": [_serialize_violation(violation)],
         }
         gate_history = list(state.get("gate_history", []))
-        gate_history.append({"role": current_role, **gate_summary})
+        gate_history.append({"role": current_instance, **gate_summary})
+        events = list(state.get("events", []))
+        events.append(
+            {
+                "type": "gate_results",
+                "role": current_instance,
+                "passed": False,
+                "gates_run": 1,
+                "violations": 1,
+                "reason": "no_files_produced",
+            }
+        )
+        events.append(
+            {
+                "type": (
+                    "gate_remediation_scheduled"
+                    if retry_count < max_retries
+                    else "gate_retries_exhausted"
+                ),
+                "role": current_instance,
+                "reason": "no_files_produced",
+                "retry_count": retry_count,
+                "max_retries": max_retries,
+            }
+        )
         return {
             "gate_results": gate_summary,
             "gate_history": gate_history,
             "fix_packets": state.get("fix_packets", []) + [fix_packet.to_prompt()],
             "retry_count": retry_count,
-            "status": f"gate_failed_{current_role}",
-            "events": state.get("events", [])
-            + [
-                {
-                    "type": "gate_results",
-                    "role": current_role,
-                    "passed": False,
-                    "gates_run": 1,
-                    "violations": 1,
-                    "reason": "no_files_produced",
-                }
-            ],
+            "status": f"gate_failed_{current_instance}",
+            "events": events,
         }
 
     run_deep, run_pro = _resolve_deep_mode(state, current_role)
     gate_input = GateInput(
         project_root=state.get("project_root", "."),
         files_changed=files_changed,
-        agent_role=current_role,
+        agent_role=base_role,
         deep=run_deep,
         pro=run_pro,
     )
@@ -620,7 +647,7 @@ async def quality_check_node(
     # Phase 7: Check persona boundaries
     output_summary = agent_output.get("summary", "")
     persona_violations = _check_persona_boundaries(
-        current_role,
+        current_instance,
         base_role,
         files_changed,
         output_summary,
@@ -646,7 +673,7 @@ async def quality_check_node(
         "pro": run_pro,
     }
     gate_history = list(state.get("gate_history", []))
-    gate_history.append({"role": current_role, **gate_summary})
+    gate_history.append({"role": current_instance, **gate_summary})
 
     update: dict[str, Any] = {
         "gate_results": gate_summary,
@@ -655,7 +682,7 @@ async def quality_check_node(
         + [
             {
                 "type": "gate_results",
-                "role": current_role,
+                "role": current_instance,
                 "deep": run_deep,
                 "pro": run_pro,
                 "passed": all_passed,
@@ -714,8 +741,21 @@ async def quality_check_node(
 
         update["fix_packets"] = state.get("fix_packets", []) + [fix_packet.to_prompt()]
         update["retry_count"] = retry_count
-        update["status"] = f"gate_failed_{current_role}"
+        update["status"] = f"gate_failed_{current_instance}"
+        update["events"] = list(update.get("events", [])) + [
+            {
+                "type": (
+                    "gate_remediation_scheduled"
+                    if retry_count < max_retries
+                    else "gate_retries_exhausted"
+                ),
+                "role": current_instance,
+                "reason": "gates_failed",
+                "retry_count": retry_count,
+                "max_retries": max_retries,
+            }
+        ]
     else:
-        update["status"] = f"gate_passed_{current_role}"
+        update["status"] = f"gate_passed_{current_instance}"
 
     return update

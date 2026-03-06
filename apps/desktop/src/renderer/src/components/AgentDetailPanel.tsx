@@ -24,7 +24,8 @@ const ROLE_META: Record<string, { label: string; subtitle: string; color: string
   devops:   { label: "DevOps Engineer",     subtitle: "Infrastructure",      color: "#818cf8", icon: "⚙️"  },
   sre:      { label: "SRE Engineer",        subtitle: "Reliability",         color: "#2dd4bf", icon: "📈" },
   lead:     { label: "Tech Lead",           subtitle: "Technical Leadership",color: "#a3a3a3", icon: "🎯" },
-  rigour:   { label: "Quality Gates",       subtitle: "Rigour Analysis",     color: "#22d3ee", icon: "⚡" },
+  rigour:   { label: "Rigour Gates",        subtitle: "Rigour Analysis",     color: "#22d3ee", icon: "⚡" },
+  trinity:  { label: "Rigour Gates",        subtitle: "Rigour Analysis",     color: "#22d3ee", icon: "⚡" },
   memory:   { label: "Knowledge Base",      subtitle: "Semantic Memory",     color: "#c084fc", icon: "🧬" },
   docs:     { label: "Technical Writer",    subtitle: "Documentation",       color: "#a8a29e", icon: "📝" },
 };
@@ -142,6 +143,11 @@ function ConsultationList({ role, collab }: { role: string; collab: Collaboratio
   if (events.length === 0) return null;
 
   const msgMap = Object.fromEntries(collab.messages.map(m => [m.id, m]));
+  const responseByRequest = Object.fromEntries(
+    collab.messages
+      .filter(m => m.type === "consult_response" && m.linked_to)
+      .map(m => [String(m.linked_to), m]),
+  );
 
   return (
     <div className="adp-section">
@@ -159,8 +165,13 @@ function ConsultationList({ role, collab }: { role: string; collab: Collaboratio
           const otherRaw   = isRequest ? e.to_role : e.from_role;
           const otherLabel = roleMeta(otherRaw || "agent").label;
           const color      = isDebate ? "#fb923c" : "#60a5fa";
-          const msg        = e.message_id ? msgMap[e.message_id] : null;
-          const snippet    = msg?.content ?? (isDebate ? e.reviewer_feedback : null) ?? "";
+          const msg = e.message_id ? msgMap[e.message_id] : null;
+          const response = e.message_id ? responseByRequest[e.message_id] : null;
+          const snippet = isRequest
+            ? (msg?.content ?? e.question_preview ?? "")
+            : isResponse
+              ? (response?.content ?? e.response_preview ?? "")
+              : (e.reviewer_feedback ?? "");
           return (
             <div key={i} className="adp-consult-card">
               <div className="adp-consult-row">
@@ -194,6 +205,11 @@ function TeamCommsPanel({ collab }: { collab: CollaborationData | null }) {
   if (comms.length === 0) return null;
 
   const msgMap = Object.fromEntries(collab.messages.map(m => [m.id, m]));
+  const responseByRequest = Object.fromEntries(
+    collab.messages
+      .filter(m => m.type === "consult_response" && m.linked_to)
+      .map(m => [String(m.linked_to), m]),
+  );
 
   return (
     <div className="adp-section">
@@ -209,8 +225,13 @@ function TeamCommsPanel({ collab }: { collab: CollaborationData | null }) {
           const isDebate = e.type === "debate_round";
           const fromLabel = roleMeta(e.from_role ?? "system").label;
           const toLabel   = roleMeta(e.to_role ?? "agent").label;
-          const msg  = e.message_id ? msgMap[e.message_id] : null;
-          const text = msg?.content ?? (isDebate ? (e.reviewer_feedback ?? "") : "");
+          const msg = e.message_id ? msgMap[e.message_id] : null;
+          const response = e.message_id ? responseByRequest[e.message_id] : null;
+          const text = isDebate
+            ? (e.reviewer_feedback ?? "")
+            : e.type === "agent_consult_requested"
+              ? (msg?.content ?? e.question_preview ?? "")
+              : (response?.content ?? e.response_preview ?? "");
           return (
             <div key={i} className="adp-comms-item">
               <div className="adp-comms-header">
@@ -505,6 +526,7 @@ export default function AgentDetailPanel({
 
   const activeRole = resolveActiveRole(selectedRole, steps);
   const step = activeRole ? steps.find(s => s.agent === activeRole) : null;
+  const syntheticRole = activeRole && !step ? resolveBaseRole(activeRole) : null;
   const activeBaseRole = step?.agent_role || (activeRole ? resolveBaseRole(activeRole) : null);
   const activeCostKey = (step?.agent_instance || activeRole || "").toLowerCase();
   const agentCost =
@@ -534,6 +556,10 @@ export default function AgentDetailPanel({
     ).size;
   const isActive = !taskStatus.toLowerCase().includes("complete") && !taskStatus.toLowerCase().includes("fail") && !taskStatus.toLowerCase().includes("reject");
   const hasRunning = steps.some(s => s.status === "running");
+  const gateRemediationPending =
+    String(nextExpectedReason || "").toLowerCase().includes("gate remediation");
+  const budgetApprovalPending =
+    String(nextExpectedReason || "").toLowerCase().includes("token extension approval");
 
   return (
     <div className="adp-root">
@@ -550,7 +576,11 @@ export default function AgentDetailPanel({
               <div className="adp-section-hdr">
                 <span className="adp-section-icon">⏳</span>
                 <span className="adp-section-title">
-                  Waiting for next agent{nextExpectedRole ? `: ${nextExpectedRole}` : ""}
+                  {budgetApprovalPending
+                    ? "Awaiting token extension approval"
+                    : gateRemediationPending
+                    ? `Remediating gate failure${nextExpectedRole ? `: ${nextExpectedRole}` : ""}`
+                    : `Waiting for next agent${nextExpectedRole ? `: ${nextExpectedRole}` : ""}`}
                 </span>
               </div>
               {nextExpectedReason && (
@@ -570,6 +600,74 @@ export default function AgentDetailPanel({
           />
           <ConsultationList role={activeBaseRole || activeRole} collab={collab} />
           <AgentOutput step={step} />
+          <TeamCommsPanel collab={collab} />
+        </div>
+      )}
+
+      {activeRole && !step && syntheticRole && (
+        <div className="adp-content">
+          <div className="adp-agent-hdr">
+            <div
+              className="adp-agent-badge"
+              style={{
+                borderColor: roleMeta(syntheticRole).color + "44",
+                background: roleMeta(syntheticRole).color + "12",
+              }}
+            >
+              <span className="adp-agent-icon">{roleMeta(syntheticRole).icon}</span>
+              <div>
+                <span className="adp-agent-codename" style={{ color: roleMeta(syntheticRole).color }}>
+                  {roleMeta(syntheticRole).label}
+                </span>
+                <span className="adp-agent-role">{roleMeta(syntheticRole).subtitle}</span>
+              </div>
+              <span className="adp-agent-status" style={{ color: "#a3a3a3" }}>
+                ACTIVE
+              </span>
+            </div>
+          </div>
+
+          {syntheticRole === "master" && (
+            <div className="adp-section">
+              <div className="adp-section-hdr">
+                <span className="adp-section-icon">🧭</span>
+                <span className="adp-section-title">Orchestration</span>
+              </div>
+              <p className="adp-no-output" style={{ marginTop: 6 }}>
+                {isActive
+                  ? `Coordinating pipeline execution. ${nextExpectedRole ? `Next owner: ${nextExpectedRole}.` : ""}`
+                  : "Run orchestration completed."}
+              </p>
+            </div>
+          )}
+
+          {(syntheticRole === "trinity" || syntheticRole === "rigour") && (
+            <div className="adp-section">
+              <div className="adp-section-hdr">
+                <span className="adp-section-icon">⚡</span>
+                <span className="adp-section-title">Rigour gate summary</span>
+              </div>
+              {(() => {
+                const allGates = steps.flatMap((s) => s.gate_results ?? []);
+                const failed = allGates.filter((g) => !g.passed);
+                const passed = allGates.filter((g) => g.passed);
+                return (
+                  <>
+                    <p className="adp-no-output" style={{ marginTop: 6 }}>
+                      {failed.length > 0
+                        ? `${failed.length} failed · ${passed.length} passed`
+                        : `${passed.length} passed`}
+                    </p>
+                    {failed.slice(0, 5).map((g, i) => (
+                      <p key={i} className="adp-comms-snippet">
+                        {String(g.message || g.gate || "Gate violation")}
+                      </p>
+                    ))}
+                  </>
+                );
+              })()}
+            </div>
+          )}
           <TeamCommsPanel collab={collab} />
         </div>
       )}

@@ -225,6 +225,8 @@ export interface TaskDetail {
     tokens_total?: number;
     cost_total_usd?: number;
     elapsed_ms?: number | null;
+    master_thinking_ms?: number;
+    master_waiting_ms?: number;
     baseline_tokens?: number | null;
     saved_pct?: number | null;
     consult_count?: number;
@@ -237,10 +239,19 @@ export interface TaskDetail {
     provider_cached_input_tokens?: number;
     budget_soft_extensions_used?: number;
     budget_auto_compactions?: number;
+    budget_token_approval_requested?: number;
+    budget_token_approval_granted?: number;
+    budget_token_approval_denied?: number;
+    budget_token_approval_pending?: boolean;
+    budget_auto_approved_extensions?: number;
     checkpoint_policy_hash?: string;
     checkpoint_memory_snapshot_hash?: string;
     gates_total?: number;
     gates_failed?: number;
+    remediation_pending?: boolean;
+    remediation_role?: string | null;
+    remediation_role_name?: string | null;
+    remediation_failed_gates?: number;
     next_expected_role?: string | null;
     next_expected_role_name?: string | null;
     next_expected_reason?: string | null;

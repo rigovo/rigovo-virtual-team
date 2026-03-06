@@ -73,7 +73,7 @@ const NODE_META: Record<
   master: { codename: "◎", label: "Chief Architect", color: "#a5b4fc" },
   planner: { codename: "PM", label: "Project Manager", color: "#a5b4fc" },
   coder: { codename: "SE", label: "Software Engineer", color: "#a5b4fc" },
-  trinity: { codename: "QG", label: "Quality Gates", color: "#94a3b8" },
+  trinity: { codename: "QG", label: "Rigour Gates", color: "#94a3b8" },
   reviewer: { codename: "CR", label: "Code Reviewer", color: "#a5b4fc" },
   security: { codename: "SC", label: "Security Engineer", color: "#a5b4fc" },
   qa: { codename: "QA", label: "QA Engineer", color: "#a5b4fc" },
@@ -247,6 +247,11 @@ function findStepForNode(
 /** Check if any step matches a given base role. */
 function hasStepForNode(steps: TaskStep[], nodeId: string): boolean {
   return steps.some((s) => resolveBaseRole(s.agent_role || s.agent) === nodeId);
+}
+
+function hasFailedGate(step?: TaskStep): boolean {
+  if (!step?.gate_results || step.gate_results.length === 0) return false;
+  return step.gate_results.some((g) => g && g.passed === false);
 }
 
 function isWorkRole(role: string): boolean {
@@ -485,11 +490,26 @@ export default function NeuralCalibrationMap({
           : "idle";
       } else {
         const step = findStepForNode(steps, id);
-        map[id] = (step?.status as NodeStatus) ?? "idle";
+        // Gate failure blocks downstream handoff even if the step status itself is "complete".
+        if (isActive && step?.status === "complete" && hasFailedGate(step)) {
+          map[id] = "failed";
+        } else {
+          map[id] = (step?.status as NodeStatus) ?? "idle";
+        }
       }
     }
     return map;
   }, [steps, isActive, isComplete, isFailed, gatesFailed]);
+
+  const blockedRolesByGate = useMemo(() => {
+    const blocked = new Set<string>();
+    for (const id of Object.keys(NODE_META)) {
+      if (!isWorkRole(id)) continue;
+      const step = findStepForNode(steps, id);
+      if (isActive && hasFailedGate(step)) blocked.add(id);
+    }
+    return blocked;
+  }, [steps, isActive]);
 
   /* ── Nodes in pipeline ────────────────────────────────────────────── */
   const inPipeline = useMemo(() => {
@@ -559,10 +579,13 @@ export default function NeuralCalibrationMap({
 
     return allEdges.map((e) => {
       const fromStatus = nodeStatuses[e.from];
+      const blocked = blockedRolesByGate.has(e.from);
       // Only animate edges while pipeline is actively running.
       // Once complete or failed, all edges go static (no more pulses).
       const active =
-        isActive && (fromStatus === "running" || fromStatus === "complete");
+        isActive &&
+        !blocked &&
+        (fromStatus === "running" || fromStatus === "complete");
       return {
         id: e.id,
         source: e.from,
@@ -576,7 +599,7 @@ export default function NeuralCalibrationMap({
         } satisfies SignalEdgeData,
       };
     });
-  }, [nodeStatuses, inPipeline, isActive]);
+  }, [nodeStatuses, inPipeline, isActive, blockedRolesByGate]);
 
   /* ── Node click ───────────────────────────────────────────────────── */
   const onNodeClick: NodeMouseHandler = useCallback(

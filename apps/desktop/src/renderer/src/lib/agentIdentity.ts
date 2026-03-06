@@ -11,9 +11,9 @@ const CANONICAL_LABELS: Record<string, string> = {
   devops: "DevOps Engineer",
   sre: "SRE Engineer",
   docs: "Technical Writer",
-  rigour: "Quality Gates",
+  rigour: "Rigour Gates",
   memory: "Knowledge Base",
-  trinity: "Quality Gates",
+  trinity: "Rigour Gates",
   system: "System",
 };
 
