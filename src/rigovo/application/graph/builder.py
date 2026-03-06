@@ -368,7 +368,7 @@ class GraphBuilder:
                             "type": "team_routed",
                             "team_name": "engineering",
                             "reasoning": "No team config provided; using default engineering team.",
-                        }
+                        },
                     ],
                 }
             return await route_team_node(

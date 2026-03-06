@@ -156,8 +156,7 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     "search_codebase": {
         "name": "search_codebase",
         "description": (
-            "Search for text/regex patterns across the codebase. Returns "
-            "matching lines."
+            "Search for text/regex patterns across the codebase. Returns matching lines."
         ),
         "parameters": {
             "type": "object",
@@ -166,8 +165,7 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "file_glob": {
                     "type": "string",
                     "description": (
-                        "File glob to filter (e.g. '*.ts', '**/*.py'). "
-                        "Default: all files."
+                        "File glob to filter (e.g. '*.ts', '**/*.py'). Default: all files."
                     ),
                 },
                 "max_results": {"type": "integer", "description": "Max results. Default: 50."},
@@ -197,8 +195,7 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     "read_dependencies": {
         "name": "read_dependencies",
         "description": (
-            "Read project dependency files (package.json, pyproject.toml, "
-            "requirements.txt, etc.)."
+            "Read project dependency files (package.json, pyproject.toml, requirements.txt, etc.)."
         ),
         "parameters": {
             "type": "object",
@@ -293,8 +290,7 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "target_id": {
                     "type": "string",
                     "description": (
-                        "Capability id inside plugin (connector id, mcp server "
-                        "id, action id)."
+                        "Capability id inside plugin (connector id, mcp server id, action id)."
                     ),
                 },
                 "operation": {
@@ -351,15 +347,13 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "file_path": {
                     "type": "string",
                     "description": (
-                        "Relative path to the file to analyze (e.g. "
-                        "'src/auth/provider.py')."
+                        "Relative path to the file to analyze (e.g. 'src/auth/provider.py')."
                     ),
                 },
                 "max_depth": {
                     "type": "integer",
                     "description": (
-                        "How many levels of transitive dependencies to follow. "
-                        "Default: 3."
+                        "How many levels of transitive dependencies to follow. Default: 3."
                     ),
                     "default": 3,
                 },

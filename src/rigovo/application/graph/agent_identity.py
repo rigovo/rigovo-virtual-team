@@ -37,4 +37,3 @@ def resolve_agent_output(state: TaskState, instance_id: str, current_role: str) 
         return output
     output = outputs.get(current_role)
     return output if isinstance(output, dict) else {}
-

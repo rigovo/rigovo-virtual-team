@@ -70,6 +70,6 @@ async def finalize_node(state: TaskState) -> dict[str, Any]:
                 "files_changed": files_changed,
                 "retries": state.get("retry_count", 0),
                 "memories_stored": len(state.get("memories_to_store", [])),
-            }
+            },
         ],
     }

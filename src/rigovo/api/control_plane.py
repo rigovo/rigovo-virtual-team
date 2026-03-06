@@ -428,8 +428,7 @@ def _on_agent_event(event: dict) -> None:
             "target_root": event.get("target_root", ""),
             "target_mode": event.get("target_mode", ""),
             "reasoning": (
-                "Deterministic classification "
-                f"(confidence: {event.get('confidence', 0):.0%})"
+                f"Deterministic classification (confidence: {event.get('confidence', 0):.0%})"
             ),
             "agent_count": 0,
             "agent_instances": [],
@@ -1424,7 +1423,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                         },
                     ],
                     "messages": [],
-                }
+                },
             }
         elif scenario == "resumable_running":
             task.status = TaskStatus.RUNNING

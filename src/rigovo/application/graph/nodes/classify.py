@@ -680,9 +680,11 @@ def _looks_greenfield_intent(description: str) -> bool:
 
 
 def _derive_target_root(state: TaskState, classification: dict[str, Any]) -> tuple[str, str]:
-    workspace_root = Path(
-        str(state.get("workspace_root") or state.get("project_root") or ".")
-    ).expanduser().resolve()
+    workspace_root = (
+        Path(str(state.get("workspace_root") or state.get("project_root") or "."))
+        .expanduser()
+        .resolve()
+    )
     existing_target = str(state.get("target_root") or "").strip()
     workspace_type = classification.get("workspace_type", "existing_project")
     if workspace_type == "managed_workspace_project":

@@ -402,8 +402,7 @@ async def _validate_master_agent_output(
                     Violation(
                         gate_id="master-circular-dependency",
                         message=(
-                            "Circular dependency detected in pipeline "
-                            f"involving '{agent_id}'"
+                            f"Circular dependency detected in pipeline involving '{agent_id}'"
                         ),
                         severity=ViolationSeverity.ERROR,
                         suggestion=(
@@ -432,8 +431,7 @@ async def _validate_master_agent_output(
             Violation(
                 gate_id="master-missing-architecture",
                 message=(
-                    "Staffing plan should include architecture_notes "
-                    "(key architectural decisions)"
+                    "Staffing plan should include architecture_notes (key architectural decisions)"
                 ),
                 severity=ViolationSeverity.WARNING,
                 suggestion="Add architectural guidance for the team",
@@ -682,9 +680,9 @@ async def quality_check_node(
                     fix_packet=fix_packet,
                     gate_source="persona_violation",
                     affected_files=files_changed,
-                remediation_phase="diagnose",
-                retry_count=retry_count,
-                max_retries=max_retries,
+                    remediation_phase="diagnose",
+                    retry_count=retry_count,
+                    max_retries=max_retries,
                     extra_events=[
                         {
                             "type": "gate_results",
@@ -927,7 +925,7 @@ async def quality_check_node(
                 "gates_run": total_gates_run,
                 "violations": len(filtered_violations),
                 "reason": "gates_passed" if all_passed else "gates_failed",
-            }
+            },
         ],
     }
 
@@ -944,8 +942,7 @@ async def quality_check_node(
                     message=str(detail)[:500],
                     severity=ViolationSeverity.ERROR,
                     suggestion=(
-                        "Fix the runtime errors. The code must compile, "
-                        "build, and pass tests."
+                        "Fix the runtime errors. The code must compile, build, and pass tests."
                     ),
                     category="correctness",
                 )
