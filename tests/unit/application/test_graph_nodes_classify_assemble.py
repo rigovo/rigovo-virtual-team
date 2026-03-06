@@ -5,21 +5,20 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 from uuid import NAMESPACE_DNS, uuid4, uuid5
 
-from rigovo.application.graph.nodes.classify import classify_node
 from rigovo.application.graph.nodes.assemble import assemble_node
+from rigovo.application.graph.nodes.classify import classify_node
 from rigovo.application.graph.nodes.route_team import route_team_node
-from rigovo.application.graph.state import TaskState, AgentOutput
+from rigovo.application.graph.state import TaskState
 from rigovo.application.master.classifier import (
     AgentAssignment,
-    ClassificationResult,
     StaffingPlan,
 )
 from rigovo.application.master.router import RoutingResult
-from rigovo.domain.entities.task import TaskType, TaskComplexity
+from rigovo.domain.entities.task import TaskComplexity, TaskType
 from rigovo.domain.interfaces.llm_provider import LLMResponse, LLMUsage
 
 
@@ -133,7 +132,9 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
         # (Fast-path triggers only when confidence >= 0.85.)
         state: TaskState = {
             "task_id": "task-1",
-            "description": "The authentication flow has inconsistencies across different client platforms",
+            "description": (
+                "The authentication flow has inconsistencies across different client platforms"
+            ),
             "events": [],
         }
         mock_llm = AsyncMock()
@@ -169,7 +170,10 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
         # enforce_minimum_team guarantees bug minimum team [coder, reviewer]
         # Mock plan had [coder-1] → enforce adds reviewer → 2 agents
         agents = result["staffing_plan"]["agents"]
-        assert len(agents) >= 2, f"Expected >=2 agents (minimum bug team), got {len(agents)}: {[a['role'] for a in agents]}"
+        assert len(agents) >= 2, (
+            f"Expected >=2 agents (minimum bug team), got {len(agents)}: "
+            f"{[a['role'] for a in agents]}"
+        )
         agent_roles = {a["role"] for a in agents}
         assert "coder" in agent_roles, "Bug minimum team must include coder"
         assert "reviewer" in agent_roles, "Bug minimum team must include reviewer"
@@ -177,7 +181,11 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
         # With an ambiguous description the deterministic brain falls back to "feature"
         # (no keyword match) — the master classifier then upgrades it to "bug".
         assert "deterministic_classification" in result
-        assert result["deterministic_classification"]["task_type"] in ("bug", "feature", "investigation")
+        assert result["deterministic_classification"]["task_type"] in (
+            "bug",
+            "feature",
+            "investigation",
+        )
         # Verify deterministic_classified event fires BEFORE task_classified
         event_types = [e["type"] for e in result["events"]]
         assert "deterministic_classified" in event_types
@@ -236,12 +244,55 @@ class TestClassifyNode(unittest.IsolatedAsyncioTestCase):
         mock_classifier.analyze.assert_awaited_once()
         assert result["classification"]["task_type"] == "new_project"
         assert result["classification"]["workspace_type"] == "new_project"
-        assert result["staffing_plan"]["reasoning"] == "Master Brain must review greenfield product asks."
+        assert (
+            result["staffing_plan"]["reasoning"]
+            == "Master Brain must review greenfield product asks."
+        )
         assert result["staffing_plan"]["task_type"] == "new_project"
         assert "lead" in {agent["role"] for agent in result["staffing_plan"]["agents"]}
         assert result["cost_accumulator"]["master_agent"]["tokens"] == 0
         assert result["events"][-1].get("fast_path") is not True
         assert result["supervisory_decisions"][0]["workspace_type"] == "new_project"
+
+    async def test_classify_node_greenfield_existing_workspace_uses_new_subfolder_target(self):
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Create Identity api saas",
+            "project_root": "/tmp/existing-repo",
+            "workspace_root": "/tmp/existing-repo",
+            "events": [],
+            "project_snapshot": type("Snapshot", (), {"workspace_type": "existing_project"})(),
+        }
+        mock_llm = AsyncMock()
+        mock_classifier = AsyncMock()
+        mock_classifier.analyze.return_value = StaffingPlan(
+            task_type=TaskType.NEW_PROJECT,
+            complexity=TaskComplexity.HIGH,
+            workspace_type="existing_project",
+            domain_analysis="Greenfield identity api",
+            architecture_notes="Use a child folder in the mounted workspace.",
+            agents=[
+                AgentAssignment(
+                    instance_id="planner-1",
+                    role="planner",
+                    specialisation="requirements",
+                    assignment="Plan a new identity api product",
+                    depends_on=[],
+                    verification="Plan approved",
+                )
+            ],
+            risks=[],
+            acceptance_criteria=["Scaffolded in a child folder"],
+            reasoning="Greenfield intent inside an existing mounted boundary.",
+        )
+
+        result = await classify_node(state, mock_llm, classifier=mock_classifier)
+
+        assert result["classification"]["workspace_type"] == "new_subfolder_project"
+        assert result["classification"]["task_type"] == "new_project"
+        assert result["target_mode"] == "new_subfolder_project"
+        assert result["target_root"].endswith("identity-api-saas")
+        assert "existing-repo/identity-api-saas" in result["target_root"]
 
 
 class TestRouteTeamNode(unittest.IsolatedAsyncioTestCase):
@@ -254,8 +305,20 @@ class TestRouteTeamNode(unittest.IsolatedAsyncioTestCase):
             "events": [],
         }
         available_teams = [
-            {"id": "engineering", "name": "Engineering", "domain": "engineering", "agents": {}, "pipeline_order": []},
-            {"id": "content", "name": "Content", "domain": "content", "agents": {}, "pipeline_order": []},
+            {
+                "id": "engineering",
+                "name": "Engineering",
+                "domain": "engineering",
+                "agents": {},
+                "pipeline_order": [],
+            },
+            {
+                "id": "content",
+                "name": "Content",
+                "domain": "content",
+                "agents": {},
+                "pipeline_order": [],
+            },
         ]
         mock_llm = AsyncMock()
         mock_router = AsyncMock()
@@ -336,9 +399,7 @@ class TestAssembleNode(unittest.IsolatedAsyncioTestCase):
         mock_assembler.execution_dag = {}
         mock_assembler.parallel_groups = []
 
-        result = await assemble_node(
-            state, agents=[agent1, agent2], assembler=mock_assembler
-        )
+        result = await assemble_node(state, agents=[agent1, agent2], assembler=mock_assembler)
 
         assert "team_config" in result
         assert result["team_config"]["pipeline_order"] == ["backend", "frontend"]

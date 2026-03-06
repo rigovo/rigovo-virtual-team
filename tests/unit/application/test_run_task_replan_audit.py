@@ -97,6 +97,29 @@ class TestRunTaskReplanAudit(unittest.IsolatedAsyncioTestCase):
         mock_create.assert_called_once_with(expected_checkpoint_db)
         assert graph_builder.received_checkpointer == "checkpoint-sentinel"
 
+    def test_resolve_effective_project_root_prefers_explicit_workspace_path(self):
+        cmd = RunTaskCommand.__new__(RunTaskCommand)
+        cmd._project_root = Path("/tmp/command-root")
+
+        result = cmd._resolve_effective_project_root(uuid4(), "/tmp/mounted-or-cloned-root")
+
+        assert result == Path("/tmp/mounted-or-cloned-root").resolve()
+
+    def test_resolve_effective_project_root_falls_back_to_managed_workspace(self):
+        cmd = RunTaskCommand.__new__(RunTaskCommand)
+        cmd._project_root = Path("/tmp/rigovo-source")
+
+        with patch.object(
+            RunTaskCommand,
+            "_looks_like_rigovo_source",
+            return_value=True,
+        ):
+            task_id = uuid4()
+            result = cmd._resolve_effective_project_root(task_id, "")
+
+        expected = Path.home() / ".rigovo" / "workspace" / f"task-{str(task_id)[:8]}"
+        assert result == expected.resolve()
+
 
 if __name__ == "__main__":
     unittest.main()

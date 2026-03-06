@@ -60,6 +60,7 @@ _FS_IGNORE_DIRS = {
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
+    ".rigovo",
     "dist",
     "build",
     "release",
@@ -160,8 +161,7 @@ class RoleExecutionContract:
 ROLE_EXECUTION_CONTRACTS: dict[str, RoleExecutionContract] = {
     "planner": RoleExecutionContract(
         goal_template=(
-            "Turn the task into an executable delivery plan with clear sequencing "
-            "and risks."
+            "Turn the task into an executable delivery plan with clear sequencing and risks."
         ),
         allowed_tools=("list_directory", "read_file", "search_codebase", "consult_agent"),
         required_verifications=("plan covers files, order, acceptance criteria, and constraints",),
@@ -203,8 +203,7 @@ ROLE_EXECUTION_CONTRACTS: dict[str, RoleExecutionContract] = {
     ),
     "reviewer": RoleExecutionContract(
         goal_template=(
-            "Independently verify implementation quality, correctness, and "
-            "residual risk."
+            "Independently verify implementation quality, correctness, and residual risk."
         ),
         allowed_tools=("read_file", "search_codebase", "consult_agent"),
         required_verifications=("review verdict", "specific findings or explicit pass rationale"),
@@ -538,9 +537,9 @@ def _build_expert_context_block(
     if verification_history:
         role_violations: list[str] = []
         for entry in verification_history:
-            if (
-                entry.get("role") == current_role or entry.get("instance_id") == current_role
-            ) and (not entry.get("passed", True) and entry.get("failure_details")):
+            if (entry.get("role") == current_role or entry.get("instance_id") == current_role) and (
+                not entry.get("passed", True) and entry.get("failure_details")
+            ):
                 role_violations.extend(entry.get("failure_details", []))
 
         if role_violations:
@@ -870,6 +869,11 @@ def _build_agent_messages(
     intent_profile = state.get("intent_profile") or {}
     planner_mode = intent_profile.get("planner_mode", "survey")
     intent_type = intent_profile.get("intent", "build")
+    classification = state.get("classification", {})
+    intent = classification.get("task_type", state.get("task_type", "unknown"))
+    workspace_mode = classification.get("workspace_type", "existing_project")
+    target_root = str(state.get("target_root") or state.get("project_root") or ".")
+    target_mode = str(state.get("target_mode") or workspace_mode)
 
     if current_role == "planner" and planner_mode == "think":
         _planner_imperative = (
@@ -884,6 +888,13 @@ def _build_agent_messages(
             "to the investigation. Do NOT survey the entire codebase. Limit your file reads "
             "to the specific area under investigation."
         )
+    elif current_role == "planner" and workspace_mode in {"new_project", "new_subfolder_project"}:
+        _planner_imperative = (
+            "This is a greenfield build target. Do NOT begin with broad codebase "
+            "reconnaissance. First produce the product, architecture, folder, and "
+            "implementation plan for the target root. Only inspect files if they are "
+            "directly relevant to the chosen target boundary."
+        )
     else:
         _planner_imperative = "Read the codebase now and produce the implementation plan."
 
@@ -893,21 +904,15 @@ def _build_agent_messages(
         "reviewer": "Read the changed files now and produce your review verdict.",
         "security": "Read the changed files now and produce your security audit.",
         "qa": (
-            "Read the changed files and write the test files now using write_file, "
-            "then run them."
+            "Read the changed files and write the test files now using write_file, then run them."
         ),
         "devops": "Read existing configs now and write all updated files using write_file.",
         "sre": (
-            "Read the changed files now and write any missing reliability code "
-            "using write_file."
+            "Read the changed files now and write any missing reliability code using write_file."
         ),
         "lead": "Read the plan and relevant architecture files now and give your verdict.",
     }
     action_imperative = action_imperatives.get(current_role, "Execute your task now.")
-
-    classification = state.get("classification", {})
-    intent = classification.get("task_type", state.get("task_type", "unknown"))
-    workspace_mode = classification.get("workspace_type", "existing_project")
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
@@ -917,6 +922,8 @@ def _build_agent_messages(
                 f"Task: {state['description']}\n\n"
                 f"Intent: {intent}\n"
                 f"Workspace mode: {workspace_mode}\n"
+                f"Target mode: {target_mode}\n"
+                f"Target root: {target_root}\n"
                 f"Current objective: {_step_objective(state, agent_config, current_role)}\n"
                 f"START NOW: {action_imperative}\n"
                 "Do not describe what you will do. Do it."
@@ -2018,11 +2025,7 @@ async def _run_agentic_loop(
                         "child_role": specialist_role,
                         "expected_artifacts": ["summary", "files_changed", "verification delta"],
                         "files_context": files_context[:8],
-                        **(
-                            requested_contract
-                            if isinstance(requested_contract, dict)
-                            else {}
-                        ),
+                        **(requested_contract if isinstance(requested_contract, dict) else {}),
                     }
                     estimated_cost_delta = round(
                         max(0.02, 0.02 + (len(files_context) * 0.005)),
@@ -2082,9 +2085,7 @@ async def _run_agentic_loop(
                         "You are a coding agent.",
                     )
                     if state is not None:
-                        team_agents = (
-                            state.get("team_config", {}).get("agents", {}) or {}
-                        )
+                        team_agents = state.get("team_config", {}).get("agents", {}) or {}
                         sibling_cfg = next(
                             (
                                 cfg
@@ -2157,12 +2158,8 @@ async def _run_agentic_loop(
                             "files_changed": len(sub_result.get("files_changed", []) or []),
                             "input_tokens": sub_in,
                             "output_tokens": sub_out,
-                            "execution_verified": bool(
-                                sub_result.get("execution_verified", False)
-                            ),
-                            "pending_consults": len(
-                                sub_result.get("pending_consults", []) or []
-                            ),
+                            "execution_verified": bool(sub_result.get("execution_verified", False)),
+                            "pending_consults": len(sub_result.get("pending_consults", []) or []),
                             "merge_status": "ready_for_parent_merge",
                         }
                     )
@@ -2455,6 +2452,13 @@ async def _run_agentic_loop(
     )
 
 
+def _is_internal_runtime_path(path: str) -> bool:
+    normalized = str(path or "").replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized == ".rigovo" or normalized.startswith(".rigovo/")
+
+
 def _extract_written_files(messages: list[dict[str, Any]]) -> list[str]:
     """Extract file paths from write_file tool calls in message history."""
     files = []
@@ -2469,7 +2473,7 @@ def _extract_written_files(messages: list[dict[str, Any]]) -> list[str]:
                 and block.get("name") == "write_file"
             ):
                 path = block.get("input", {}).get("path", "")
-                if path and path not in files:
+                if path and not _is_internal_runtime_path(path) and path not in files:
                     files.append(path)
     return files
 
@@ -2513,6 +2517,8 @@ def _git_tracked_changes(root: Path) -> set[str] | None:
             continue
         if " -> " in path:
             path = path.split(" -> ", 1)[1].strip()
+        if _is_internal_runtime_path(path):
+            continue
         changed.add(path)
     return changed
 
@@ -2530,6 +2536,8 @@ def _scan_tree_signature(root: Path) -> dict[str, tuple[int, int]]:
             continue
         try:
             rel = str(path.relative_to(root))
+            if _is_internal_runtime_path(rel):
+                continue
             stat = path.stat()
         except OSError:
             continue
@@ -2594,7 +2602,7 @@ async def execute_agent_node(
                     "type": "agent_timeout",
                     "role": current_instance,
                     "error": f"Instance '{current_instance}' not configured",
-                }
+                },
             ],
         }
     agent_config = agents[current_instance]
@@ -2684,7 +2692,8 @@ async def execute_agent_node(
     tool_defs = _resolve_tool_definitions(runtime_agent_config, current_role)
 
     # --- Create ToolExecutor ---
-    project_root = Path(state.get("project_root", "."))
+    project_root = Path(str(state.get("target_root") or state.get("project_root") or "."))
+    project_root.mkdir(parents=True, exist_ok=True)
     tool_executor = ToolExecutor(
         project_root,
         integration_catalog=state.get("integration_catalog", {}),

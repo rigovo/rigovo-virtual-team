@@ -202,6 +202,9 @@ export interface TaskDetail {
   description: string;
   status: string;
   task_type: string;
+  workspace_root?: string | null;
+  target_root?: string | null;
+  target_mode?: string | null;
   /** Task complexity from Master Agent classification (Phase 1) */
   complexity?: "low" | "medium" | "high" | "critical" | null;
   tier: Tier;
@@ -266,6 +269,9 @@ export interface TaskDetail {
     next_expected_role?: string | null;
     next_expected_role_name?: string | null;
     next_expected_reason?: string | null;
+    workspace_root?: string | null;
+    target_root?: string | null;
+    target_mode?: string | null;
   };
 }
 

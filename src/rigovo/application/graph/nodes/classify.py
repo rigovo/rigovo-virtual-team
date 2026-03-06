@@ -6,7 +6,7 @@ Two-phase classification:
    This fires a ``deterministic_classified`` event so the UI can show
    the task type immediately.
 
-2. **Master Agent LLM** (10–30s): Full SME analysis that produces a
+2. **Master Agent LLM** (10-30s): Full SME analysis that produces a
    staffing plan.  The LLM receives the deterministic result as a hint
    and can upgrade (e.g., feature → security) but NEVER downgrade the
    classification or produce fewer agents than the minimum team table.
@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from rigovo.application.cache_utils import stable_hash, usage_to_dict
@@ -43,7 +44,9 @@ def _enum_or_str_value(value: Any) -> str:
     return str(getattr(value, "value", value))
 
 
-def _master_decision_event(plan_dict: dict[str, Any], classification: dict[str, Any]) -> dict[str, Any]:
+def _master_decision_event(
+    plan_dict: dict[str, Any], classification: dict[str, Any]
+) -> dict[str, Any]:
     """Build a durable supervisory event from the final Master staffing plan."""
     return {
         "type": "master_decision",
@@ -85,9 +88,11 @@ investigation, new_project]
      "build a Flask app", "create a React app", "write a CLI tool", "init a project")
    - Use "feature" for adding functionality to an EXISTING project
 2. complexity: one of [low, medium, high, critical]
-3. workspace_type: one of [new_project, existing_project]
+3. workspace_type: one of [new_project, existing_project, new_subfolder_project]
    - "new_project" = blank workspace, build the full project structure from scratch
    - "existing_project" = workspace has established code, match existing patterns
+   - "new_subfolder_project" = workspace already has code, but the user wants a
+     new product in a new child folder
 4. reasoning: a brief explanation
 
 Respond with ONLY valid JSON:
@@ -182,11 +187,9 @@ async def classify_node(
             classification = {
                 "task_type": det_result.task_type,
                 "complexity": det_result.complexity,
-                "workspace_type": "new_project"
-                if det_result.task_type == "new_project"
-                else "existing_project",
                 "reasoning": "Master classification timed out; used deterministic fallback.",
             }
+            classification = _normalize_greenfield_classification(state, classification)
             plan_dict = {
                 "task_type": det_result.task_type,
                 "complexity": det_result.complexity,
@@ -228,8 +231,11 @@ async def classify_node(
                 }
             )
             events.append(_master_decision_event(plan_dict, classification))
+            target_root, target_mode = _derive_target_root(state, classification)
             return {
                 "classification": classification,
+                "target_root": target_root,
+                "target_mode": target_mode,
                 "deterministic_classification": deterministic_classification,
                 "staffing_plan": plan_dict,
                 "supervisory_decisions": [_master_decision_event(plan_dict, classification)],
@@ -250,11 +256,12 @@ async def classify_node(
             classification = {
                 "task_type": det_result.task_type,
                 "complexity": det_result.complexity,
-                "workspace_type": "new_project"
-                if det_result.task_type == "new_project"
-                else "existing_project",
-                "reasoning": f"Master classification failed ({type(e).__name__}); used deterministic fallback.",
+                "reasoning": (
+                    f"Master classification failed ({type(e).__name__}); "
+                    "used deterministic fallback."
+                ),
             }
+            classification = _normalize_greenfield_classification(state, classification)
             plan_dict = {
                 "task_type": det_result.task_type,
                 "complexity": det_result.complexity,
@@ -296,8 +303,11 @@ async def classify_node(
                 }
             )
             events.append(_master_decision_event(plan_dict, classification))
+            target_root, target_mode = _derive_target_root(state, classification)
             return {
                 "classification": classification,
+                "target_root": target_root,
+                "target_mode": target_mode,
                 "deterministic_classification": deterministic_classification,
                 "staffing_plan": plan_dict,
                 "supervisory_decisions": [_master_decision_event(plan_dict, classification)],
@@ -328,10 +338,10 @@ async def classify_node(
         )
 
         # ── ENFORCE COMPLEXITY FLOOR — LLM cannot downgrade ─────────
-        _COMPLEXITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        complexity_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
         llm_complexity = _enum_or_str_value(plan.complexity)
         det_complexity = det_result.complexity
-        if _COMPLEXITY_ORDER.get(llm_complexity, 1) < _COMPLEXITY_ORDER.get(det_complexity, 1):
+        if complexity_order.get(llm_complexity, 1) < complexity_order.get(det_complexity, 1):
             logger.info(
                 "Enforcing complexity floor: LLM=%s < deterministic=%s → using %s",
                 llm_complexity,
@@ -350,17 +360,19 @@ async def classify_node(
 
         # Override task_type with deterministic if LLM returned something weaker
         # (e.g., LLM said "feature" when keywords clearly said "new_project")
-        if det_result.is_deterministic and det_result.confidence >= 0.85:
-            if (
-                det_result.task_type == "new_project"
-                and classification["task_type"] != "new_project"
-            ):
-                logger.info(
-                    "Enforcing task_type floor: LLM=%s but deterministic=%s → using new_project",
-                    classification["task_type"],
-                    det_result.task_type,
-                )
-                classification["task_type"] = "new_project"
+        if (
+            det_result.is_deterministic
+            and det_result.confidence >= 0.85
+            and det_result.task_type == "new_project"
+            and classification["task_type"] != "new_project"
+        ):
+            logger.info(
+                "Enforcing task_type floor: LLM=%s but deterministic=%s → using new_project",
+                classification["task_type"],
+                det_result.task_type,
+            )
+            classification["task_type"] = "new_project"
+        classification = _normalize_greenfield_classification(state, classification)
 
         # Rebuild plan with enforced agents
         plan_dict = _serialize_staffing_plan(plan)
@@ -394,8 +406,11 @@ async def classify_node(
         master_decision = _master_decision_event(plan_dict, classification)
         events.append(master_decision)
 
+        target_root, target_mode = _derive_target_root(state, classification)
         return {
             "classification": classification,
+            "target_root": target_root,
+            "target_mode": target_mode,
             "deterministic_classification": deterministic_classification,
             "staffing_plan": plan_dict,
             "supervisory_decisions": [master_decision],
@@ -506,18 +521,19 @@ async def classify_node(
             "reasoning": "Failed to parse classification, defaulting to feature/medium.",
         }
 
-    if "workspace_type" not in classification:
-        classification["workspace_type"] = _derive_workspace_type(state, classification)
+    classification = _normalize_greenfield_classification(state, classification)
+    target_root, target_mode = _derive_target_root(state, classification)
 
     # Apply deterministic floor to fallback classification too
     if det_result.is_deterministic and det_result.confidence >= 0.85:
-        _COMPLEXITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
-        if _COMPLEXITY_ORDER.get(
+        complexity_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        if complexity_order.get(
             classification.get("complexity", "medium"), 1
-        ) < _COMPLEXITY_ORDER.get(det_result.complexity, 1):
+        ) < complexity_order.get(det_result.complexity, 1):
             classification["complexity"] = det_result.complexity
         if det_result.task_type == "new_project":
             classification["task_type"] = "new_project"
+    classification = _normalize_greenfield_classification(state, classification)
 
     events.append(
         {
@@ -543,6 +559,8 @@ async def classify_node(
 
     return {
         "classification": classification,
+        "target_root": target_root,
+        "target_mode": target_mode,
         "deterministic_classification": deterministic_classification,
         "supervisory_decisions": [],
         "status": "classified",
@@ -559,14 +577,49 @@ async def classify_node(
 
 def _derive_workspace_type(state: TaskState, classification: dict[str, Any]) -> str:
     """Derive workspace_type when the LLM didn't produce it."""
-    if classification.get("task_type") == "new_project":
-        return "new_project"
+    explicit = str(classification.get("workspace_type") or "").strip()
+    if explicit in {"new_project", "existing_project", "new_subfolder_project"}:
+        if explicit == "existing_project" and _looks_greenfield_intent(
+            str(state.get("description", ""))
+        ):
+            snapshot = state.get("project_snapshot")
+            if (
+                snapshot is not None
+                and getattr(snapshot, "workspace_type", "existing_project") != "new_project"
+            ):
+                return "new_subfolder_project"
+        return explicit
+
+    task_type = classification.get("task_type")
     snapshot = state.get("project_snapshot")
-    if snapshot is not None:
-        wt = getattr(snapshot, "workspace_type", "existing_project")
-        if wt == "new_project":
-            return "new_project"
+    snapshot_type = (
+        getattr(snapshot, "workspace_type", "existing_project")
+        if snapshot is not None
+        else "existing_project"
+    )
+
+    if task_type == "new_project" or _looks_greenfield_intent(str(state.get("description", ""))):
+        if snapshot is not None and snapshot_type != "new_project":
+            return "new_subfolder_project"
+        return "new_project"
+
+    if snapshot_type == "new_project":
+        return "new_project"
     return "existing_project"
+
+
+def _normalize_greenfield_classification(
+    state: TaskState, classification: dict[str, Any]
+) -> dict[str, Any]:
+    """Align task type with greenfield workspace intent when needed."""
+    normalized = dict(classification)
+    workspace_type = _derive_workspace_type(state, normalized)
+    normalized["workspace_type"] = workspace_type
+    if workspace_type in {"new_project", "new_subfolder_project"} and _looks_greenfield_intent(
+        str(state.get("description", ""))
+    ):
+        normalized["task_type"] = "new_project"
+    return normalized
 
 
 def _serialize_staffing_plan(plan: StaffingPlan) -> dict[str, Any]:
@@ -602,3 +655,65 @@ def _serialize_staffing_plan(plan: StaffingPlan) -> dict[str, Any]:
         "execution_dag": plan.execution_dag,
         "parallel_groups": plan.parallel_groups,
     }
+
+
+def _looks_greenfield_intent(description: str) -> bool:
+    text = description.lower()
+    strong_markers = (
+        "from scratch",
+        "new project",
+        "new app",
+        "new api",
+        "new service",
+        "new saas",
+        "scaffold",
+        "bootstrap",
+        "create identity",
+        "create auth",
+        "build auth",
+    )
+    if any(marker in text for marker in strong_markers):
+        return True
+    verbs = ("create", "build", "make", "scaffold", "bootstrap", "develop")
+    nouns = ("saas", "api", "app", "service", "platform", "system", "backend", "product")
+    return any(v in text for v in verbs) and any(n in text for n in nouns)
+
+
+def _derive_target_root(state: TaskState, classification: dict[str, Any]) -> tuple[str, str]:
+    workspace_root = Path(
+        str(state.get("workspace_root") or state.get("project_root") or ".")
+    ).expanduser().resolve()
+    existing_target = str(state.get("target_root") or "").strip()
+    workspace_type = classification.get("workspace_type", "existing_project")
+    if workspace_type == "managed_workspace_project":
+        return str(workspace_root), workspace_type
+
+    if existing_target:
+        target_path = Path(existing_target).expanduser().resolve()
+        try:
+            target_path.relative_to(workspace_root)
+        except ValueError:
+            target_path = workspace_root
+        else:
+            if workspace_type == str(state.get("target_mode") or "").strip():
+                return str(target_path), workspace_type
+
+    if workspace_type == "new_subfolder_project":
+        target_root = workspace_root / _suggest_project_folder_name(
+            state.get("description", "task")
+        )
+        target_root.mkdir(parents=True, exist_ok=True)
+        return str(target_root), workspace_type
+    return str(workspace_root), workspace_type
+
+
+def _suggest_project_folder_name(description: str) -> str:
+    import re
+
+    text = re.sub(r"[^a-z0-9]+", "-", description.lower()).strip("-")
+    if not text:
+        return "rigovo-project"
+    stop = {"create", "build", "make", "new", "a", "an", "the", "in", "for", "from", "scratch"}
+    parts = [part for part in text.split("-") if part and part not in stop]
+    slug = "-".join(parts[:5]).strip("-")
+    return slug or "rigovo-project"

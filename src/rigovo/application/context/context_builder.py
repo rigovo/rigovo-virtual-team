@@ -201,11 +201,12 @@ class ContextBuilder:
         # 1b. Workspace-type quality contract addendum
         if project_snapshot is not None:
             wt = getattr(project_snapshot, "workspace_type", "existing_project")
-            if wt == "new_project":
+            if wt in {"new_project", "new_subfolder_project"}:
                 ctx.quality_contract += (
-                    "\n\nWORKSPACE IS A NEW PROJECT: There are no existing patterns to match. "
-                    "Create the full project structure from scratch. Choose sensible "
-                    "framework defaults. Do not look for files that don't exist yet."
+                    "\n\nWORKSPACE IS A GREENFIELD TARGET: There are no existing "
+                    "patterns to match. Create the full project structure from scratch. "
+                    "Choose sensible framework defaults. Do not look for files that "
+                    "don't exist yet."
                 )
             else:
                 ctx.quality_contract += (

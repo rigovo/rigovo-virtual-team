@@ -61,6 +61,16 @@ def _resolve_remediation_lock_target(
     if not latest:
         return ""
 
+    active_fix_packet = state.get("active_fix_packet", {}) or {}
+    remediation_owner = str(active_fix_packet.get("remediation_owner", "") or "").strip()
+    if (
+        remediation_owner
+        and remediation_owner in latest
+        and latest.get(remediation_owner) is False
+        and remediation_owner not in blocked_roles
+    ):
+        return remediation_owner
+
     active_feedback = state.get("active_feedback", {}) or {}
     target_coder = str(active_feedback.get("target_coder", "") or "").strip()
     if (
@@ -176,9 +186,10 @@ def _should_trigger_replan(state: TaskState) -> bool:
     gate_results = state.get("gate_results", {}) or {}
 
     # Contract failures always warrant replan (structural mismatch)
-    if bool(policy.get("trigger_contract_failures", True)):
-        if gate_results.get("reason") == "contract_failed" or bool(state.get("contract_stage")):
-            return True
+    if bool(policy.get("trigger_contract_failures", True)) and (
+        gate_results.get("reason") == "contract_failed" or bool(state.get("contract_stage"))
+    ):
+        return True
 
     # Since we only get here when retries are exhausted, always allow
     # replan as a recovery mechanism (the agent genuinely couldn't self-fix)
@@ -297,7 +308,6 @@ def advance_to_next_agent(state: TaskState) -> dict:
     if not execution_dag:
         next_index = state.get("current_agent_index", 0) + 1
         next_instance = pipeline_order[next_index] if next_index < len(pipeline_order) else ""
-        next_role = agents_cfg.get(next_instance, {}).get("role", next_instance)
         return {
             "current_agent_index": next_index,
             "current_agent_role": next_instance,  # Backward compat: config keyed by instance_id
@@ -639,9 +649,13 @@ def prepare_debate_round(state: TaskState) -> dict:
         # No actionable feedback — shouldn't happen but be defensive
         return {
             "debate_round": debate_round,
-            "events": list(state.get("events", []))
-            + [
-                {"type": "feedback_loop", "round": debate_round, "status": "no_actionable_feedback"}
+            "events": [
+                *list(state.get("events", [])),
+                {
+                    "type": "feedback_loop",
+                    "round": debate_round,
+                    "status": "no_actionable_feedback",
+                },
             ],
         }
 
@@ -694,12 +708,12 @@ def prepare_debate_round(state: TaskState) -> dict:
 
     # Build combined fix packet with all feedback.
     # Truncate each summary to prevent token waste (2000 chars max per source).
-    _MAX_FEEDBACK_CHARS = 2000
+    max_feedback_chars = 2000
     fix_packet_parts: list[str] = []
     for src_instance, src_role, summary in active_sources:
         src_name = agents_cfg.get(src_instance, {}).get("name", src_role.title())
-        truncated_summary = summary[:_MAX_FEEDBACK_CHARS]
-        if len(summary) > _MAX_FEEDBACK_CHARS:
+        truncated_summary = summary[:max_feedback_chars]
+        if len(summary) > max_feedback_chars:
             truncated_summary += "... (truncated)"
         fix_packet_parts.append(
             f"[{src_role.upper()} FEEDBACK — Round {debate_round}]\n"

@@ -65,6 +65,14 @@ ADAPTIVE_BUDGET_CEILINGS: dict[str, int] = {
 }
 
 
+def _is_internal_runtime_path(path: str) -> bool:
+    """Return True for internal Rigovo runtime artifacts."""
+    normalized = str(path or "").replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized == ".rigovo" or normalized.startswith(".rigovo/")
+
+
 def _percentile(sorted_values: list[int], percentile: float) -> int:
     """Linear-interpolated percentile over already-sorted positive integers."""
     if not sorted_values:
@@ -190,7 +198,11 @@ def _write_failure_log(
             for role, output in agent_outputs.items():
                 if isinstance(output, dict):
                     summary = str(output.get("summary", ""))[:300]
-                    files = output.get("files_changed", [])
+                    files = [
+                        path
+                        for path in output.get("files_changed", [])
+                        if not _is_internal_runtime_path(path)
+                    ]
                     lines.append(f"  [{role}] {summary}")
                     if files:
                         lines.append(f"    Files: {', '.join(files[:10])}")
@@ -463,11 +475,14 @@ class RunTaskCommand:
             "task_id": str(task_id),
             "workspace_id": str(self._workspace_id),
             "tier": (
-                task.tier
-                if getattr(task, "tier", "") in {"auto", "notify", "approve"}
-                else "auto"
+                task.tier if getattr(task, "tier", "") in {"auto", "notify", "approve"} else "auto"
             ),
             "project_root": str(effective_project_root),
+            "workspace_root": str(effective_project_root),
+            "target_root": str(effective_project_root),
+            "target_mode": "managed_workspace_project"
+            if str(effective_project_root).startswith(str(Path.home() / ".rigovo" / "workspace"))
+            else "existing_project",
             "worktree_mode": str(os.environ.get("RIGOVO_WORKTREE_MODE", "project")),
             "worktree_root": str(os.environ.get("RIGOVO_WORKTREE_ROOT", "")),
             "filesystem_sandbox_mode": str(
@@ -569,7 +584,11 @@ class RunTaskCommand:
                     continue
                 restored_outputs[role] = {
                     "summary": str(getattr(step, "summary", "") or ""),
-                    "files_changed": list(getattr(step, "files_changed", []) or []),
+                    "files_changed": [
+                        path
+                        for path in list(getattr(step, "files_changed", []) or [])
+                        if not _is_internal_runtime_path(path)
+                    ],
                     "execution_log": list(getattr(step, "execution_log", []) or []),
                     "execution_verified": bool(getattr(step, "execution_verified", False)),
                 }
@@ -870,10 +889,10 @@ class RunTaskCommand:
                             else (
                                 f"{gates_run} gate{'s' if gates_run != 1 else ''} passed"
                                 if passed
-                            else (
-                                f"{violation_count} violation"
-                                f"{'s' if violation_count != 1 else ''}"
-                            )
+                                else (
+                                    f"{violation_count} violation"
+                                    f"{'s' if violation_count != 1 else ''}"
+                                )
                             ),
                             "severity": "info" if passed else "error",
                             "violation_count": violation_count,
@@ -916,7 +935,11 @@ class RunTaskCommand:
                     total_tokens=output.get("tokens", 0),
                     cost_usd=output.get("cost", 0.0),
                     summary=output.get("summary", ""),
-                    files_changed=output.get("files_changed", []),
+                    files_changed=[
+                        path
+                        for path in output.get("files_changed", [])
+                        if not _is_internal_runtime_path(path)
+                    ],
                     cached_input_tokens=int(output.get("cached_input_tokens", 0) or 0),
                     cache_write_tokens=int(output.get("cache_write_tokens", 0) or 0),
                     cache_source=str(output.get("cache_source", "none") or "none"),
@@ -1167,7 +1190,7 @@ class RunTaskCommand:
         Priority:
         1) Explicit workspace_path from user/UI (create it if needed).
         2) Configured project_root, unless it looks like Rigovo's own source tree.
-        3) Fallback to ~/.rigovo/projects/task-<id8>.
+        3) Fallback to ~/.rigovo/workspace/task-<id8>.
         """
         requested = workspace_path.strip()
         if requested:
@@ -1179,7 +1202,7 @@ class RunTaskCommand:
         if not self._looks_like_rigovo_source(root):
             return root
 
-        fallback = Path.home() / ".rigovo" / "projects" / f"task-{str(task_id)[:8]}"
+        fallback = Path.home() / ".rigovo" / "workspace" / f"task-{str(task_id)[:8]}"
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback.resolve()
 
@@ -1518,7 +1541,7 @@ class RunTaskCommand:
         for output in items:
             if isinstance(output, dict):
                 for f in output.get("files_changed", []):
-                    if f not in seen:
+                    if f not in seen and not _is_internal_runtime_path(f):
                         files.append(f)
                         seen.add(f)
         return files

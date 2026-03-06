@@ -172,20 +172,20 @@ def classify_by_keywords(description: str) -> DeterministicClassification:
 # Every task type has a floor team that guarantees basic competence.
 
 MINIMUM_TEAM: dict[str, list[str]] = {
-    "new_project": ["planner", "lead", "coder", "reviewer"],
-    "feature": ["planner", "coder", "reviewer"],
-    "bug": ["coder", "reviewer"],
-    "refactor": ["coder", "reviewer"],
-    "test": ["coder", "qa"],
-    "docs": ["planner", "coder"],
-    "infra": ["planner", "devops", "reviewer"],
-    "security": ["planner", "security", "coder", "reviewer"],
-    "performance": ["coder", "reviewer"],
-    "investigation": ["planner", "coder"],
+    "new_project": ["lead", "coder", "reviewer", "qa"],
+    "feature": ["lead", "coder", "reviewer", "qa"],
+    "bug": ["lead", "coder", "reviewer", "qa"],
+    "refactor": ["lead", "coder", "reviewer", "qa"],
+    "test": ["lead", "coder", "reviewer", "qa"],
+    "docs": ["lead", "coder", "reviewer", "qa"],
+    "infra": ["lead", "coder", "reviewer", "qa", "devops", "sre"],
+    "security": ["lead", "coder", "reviewer", "qa", "security"],
+    "performance": ["lead", "coder", "reviewer", "qa"],
+    "investigation": ["lead", "coder", "reviewer", "qa"],
 }
 
 # Default minimum if task_type not in table
-_DEFAULT_MINIMUM = ["planner", "coder", "reviewer"]
+_DEFAULT_MINIMUM = ["lead", "coder", "reviewer", "qa"]
 
 
 @dataclass

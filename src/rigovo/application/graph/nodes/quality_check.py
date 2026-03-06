@@ -42,6 +42,19 @@ from rigovo.domain.entities.quality import (
 from rigovo.domain.interfaces.quality_gate import GateInput, QualityGate
 
 
+def _is_internal_runtime_path(path: str) -> bool:
+    """Return True for internal Rigovo runtime artifacts."""
+    normalized = str(path or "").replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized == ".rigovo" or normalized.startswith(".rigovo/")
+
+
+def _filter_user_files(files_changed: list[str]) -> list[str]:
+    """Exclude internal runtime artifacts from quality and persona checks."""
+    return [path for path in files_changed if not _is_internal_runtime_path(path)]
+
+
 def _serialize_violation(violation: Violation) -> dict[str, Any]:
     return {
         "rule": violation.gate_id,
@@ -60,19 +73,26 @@ def _serialize_fix_packet(
     packet: FixPacket,
     *,
     role: str,
+    failing_role: str,
     gate_source: str,
     affected_files: list[str],
     remediation_phase: str,
+    target_root: str,
+    target_mode: str,
     allowed_patch_scope: list[str] | None = None,
     required_verification_commands: list[str] | None = None,
 ) -> dict[str, Any]:
     """Normalize a FixPacket for graph state, persistence, and UI."""
     return {
         "role": role,
+        "remediation_owner": role,
+        "failing_role": failing_role,
         "gate_source": gate_source,
         "attempt": packet.attempt,
         "max_attempts": packet.max_attempts,
         "affected_files": affected_files,
+        "target_root": target_root,
+        "target_mode": target_mode,
         "allowed_patch_scope": list(allowed_patch_scope or affected_files),
         "required_verification_commands": list(required_verification_commands or []),
         "remediation_phase": remediation_phase,
@@ -93,10 +113,33 @@ def _serialize_fix_packet(
     }
 
 
+def _first_instance_for_role(state: TaskState, role: str) -> str:
+    team_config = state.get("team_config", {})
+    for instance_id in team_config.get("pipeline_order", []):
+        cfg = team_config.get("agents", {}).get(instance_id, {})
+        if cfg.get("role") == role:
+            return instance_id
+    return ""
+
+
+def _resolve_remediation_owner(
+    state: TaskState,
+    *,
+    current_instance: str,
+    base_role: str,
+    gate_source: str,
+) -> str:
+    """Choose the role instance that should own remediation."""
+    if gate_source == "master_structural_validation" or base_role in {"master", "planner"}:
+        return _first_instance_for_role(state, "lead") or current_instance
+    return current_instance
+
+
 def _remediation_update(
     state: TaskState,
     *,
     current_role: str,
+    remediation_owner: str,
     gate_summary: dict[str, Any],
     fix_packet: FixPacket,
     gate_source: str,
@@ -107,18 +150,28 @@ def _remediation_update(
     extra_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the common remediation state payload for failed gate runs."""
+    pipeline_order = list(state.get("team_config", {}).get("pipeline_order", []))
+    remediation_index = (
+        pipeline_order.index(remediation_owner)
+        if remediation_owner in pipeline_order
+        else state.get("current_agent_index", 0)
+    )
     active_fix_packet = _serialize_fix_packet(
         fix_packet,
-        role=current_role,
+        role=remediation_owner,
+        failing_role=current_role,
         gate_source=gate_source,
         affected_files=affected_files,
         remediation_phase=remediation_phase,
+        target_root=str(state.get("target_root") or state.get("project_root") or "."),
+        target_mode=str(state.get("target_mode") or ""),
     )
     events = [
         *list(state.get("events", [])),
         {
             "type": "fix_packet_created",
-            "role": current_role,
+            "role": remediation_owner,
+            "failing_role": current_role,
             "gate_source": gate_source,
             "attempt": retry_count,
             "max_attempts": max_retries,
@@ -127,14 +180,15 @@ def _remediation_update(
         },
         {
             "type": "remediation_started",
-            "role": current_role,
+            "role": remediation_owner,
+            "failing_role": current_role,
             "attempt": retry_count,
             "phase": remediation_phase,
         },
         {
             "type": "downstream_locked",
-            "role": current_role,
-            "reason": f"awaiting gate remediation by {current_role}",
+            "role": remediation_owner,
+            "reason": f"awaiting gate remediation by {remediation_owner}",
         },
         *list(extra_events or []),
     ]
@@ -143,9 +197,12 @@ def _remediation_update(
         "active_fix_packet": active_fix_packet,
         "fix_packets": [*list(state.get("fix_packets", [])), active_fix_packet["prompt"]],
         "retry_count": retry_count,
-        "downstream_lock_reason": f"awaiting gate remediation by {current_role}",
+        "downstream_lock_reason": f"awaiting gate remediation by {remediation_owner}",
+        "current_agent_index": remediation_index,
+        "current_agent_role": remediation_owner,
+        "current_instance_id": remediation_owner,
         "events": events,
-        "status": f"gate_failed_{current_role}",
+        "status": f"gate_failed_{remediation_owner}",
     }
 
 
@@ -446,6 +503,12 @@ async def _validate_master_agent_output(
             _remediation_update(
                 state,
                 current_role=current_role,
+                remediation_owner=_resolve_remediation_owner(
+                    state,
+                    current_instance=current_role,
+                    base_role="master",
+                    gate_source="master_structural_validation",
+                ),
                 gate_summary=gate_summary,
                 fix_packet=fix_packet,
                 gate_source="master_structural_validation",
@@ -545,7 +608,7 @@ async def quality_check_node(
         # Forbidden file writes by non-code roles ARE enforced as failures.
         agent_output = resolve_agent_output(state, current_instance, current_role)
         output_summary = agent_output.get("summary", "")
-        files_changed = agent_output.get("files_changed", [])
+        files_changed = _filter_user_files(agent_output.get("files_changed", []))
         persona_violations = _check_persona_boundaries(
             current_instance,
             base_role,
@@ -609,6 +672,12 @@ async def quality_check_node(
                 **_remediation_update(
                     state,
                     current_role=current_instance,
+                    remediation_owner=_resolve_remediation_owner(
+                        state,
+                        current_instance=current_instance,
+                        base_role=base_role,
+                        gate_source="persona_violation",
+                    ),
                     gate_summary=gate_summary,
                     fix_packet=fix_packet,
                     gate_source="persona_violation",
@@ -675,7 +744,7 @@ async def quality_check_node(
 
     # Get files changed by the current agent
     agent_output = resolve_agent_output(state, current_instance, current_role)
-    files_changed = agent_output.get("files_changed", [])
+    files_changed = _filter_user_files(agent_output.get("files_changed", []))
 
     # Code-producing agents MUST produce files. If they didn't, that's a failure.
     if base_role in CODE_PRODUCING_ROLES and not files_changed:
@@ -746,6 +815,12 @@ async def quality_check_node(
             **_remediation_update(
                 state,
                 current_role=current_instance,
+                remediation_owner=_resolve_remediation_owner(
+                    state,
+                    current_instance=current_instance,
+                    base_role=base_role,
+                    gate_source="no_files_produced",
+                ),
                 gate_summary=gate_summary,
                 fix_packet=fix_packet,
                 gate_source="no_files_produced",
@@ -779,7 +854,7 @@ async def quality_check_node(
 
     run_deep, run_pro = _resolve_deep_mode(state, current_role)
     gate_input = GateInput(
-        project_root=state.get("project_root", "."),
+        project_root=state.get("target_root", state.get("project_root", ".")),
         files_changed=files_changed,
         agent_role=base_role,
         deep=run_deep,
@@ -909,6 +984,12 @@ async def quality_check_node(
             _remediation_update(
                 state,
                 current_role=current_instance,
+                remediation_owner=_resolve_remediation_owner(
+                    state,
+                    current_instance=current_instance,
+                    base_role=base_role,
+                    gate_source="rigour",
+                ),
                 gate_summary=gate_summary,
                 fix_packet=fix_packet,
                 gate_source="rigour",

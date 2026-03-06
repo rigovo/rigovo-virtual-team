@@ -241,6 +241,34 @@ class TestAdvanceToNextAgent:
         assert result["ready_roles"] == ["reviewer"]
         assert any(e.get("type") == "debate_reviewer_rerun" for e in result["events"])
 
+    def test_dag_advance_honors_fix_packet_remediation_owner(self):
+        state = {
+            "team_config": {
+                "pipeline_order": ["lead-1", "planner-1", "coder-1"],
+                "execution_dag": {
+                    "lead-1": [],
+                    "planner-1": ["lead-1"],
+                    "coder-1": ["planner-1"],
+                },
+                "agents": {
+                    "lead-1": {"role": "lead"},
+                    "planner-1": {"role": "planner"},
+                    "coder-1": {"role": "coder"},
+                },
+            },
+            "current_instance_id": "planner-1",
+            "current_agent_role": "planner-1",
+            "completed_roles": ["lead-1"],
+            "blocked_roles": [],
+            "gate_history": [{"role": "lead-1", "passed": False}],
+            "active_fix_packet": {"remediation_owner": "lead-1"},
+            "events": [],
+        }
+        result = advance_to_next_agent(state)
+        assert result["current_agent_role"] == "lead-1"
+        assert result["ready_roles"] == ["lead-1"]
+        assert any(e.get("type") == "remediation_lock" for e in result["events"])
+
 
 class TestPrepareDebateRound:
     def test_prepare_debate_round_resets_reviewer_for_regeneration(self):

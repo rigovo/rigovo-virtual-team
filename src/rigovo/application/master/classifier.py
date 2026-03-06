@@ -28,6 +28,13 @@ from rigovo.domain.interfaces.llm_provider import LLMProvider
 logger = logging.getLogger(__name__)
 
 
+def _normalize_workspace_type(value: Any) -> str:
+    raw = str(value or "existing_project").strip()
+    if raw in {"new_project", "existing_project", "new_subfolder_project"}:
+        return raw
+    return "existing_project"
+
+
 # ── Data structures ────────────────────────────────────────────────────
 
 
@@ -54,7 +61,7 @@ class StaffingPlan:
 
     task_type: TaskType
     complexity: TaskComplexity
-    workspace_type: str  # new_project | existing_project
+    workspace_type: str  # new_project | existing_project | new_subfolder_project
 
     # The SME's domain analysis
     domain_analysis: str  # "This is a payment gateway — PCI-DSS compliance required..."
@@ -129,6 +136,10 @@ class ClassificationResult:
 MASTER_AGENT_SYSTEM_PROMPT = """\
 You are the Master Agent — a Distinguished Engineer staffing virtual engineering teams.
 Given a task + project snapshot, produce a staffing plan as JSON.
+The mounted or cloned workspace is an execution boundary, not automatically
+the product to extend. If the user asks for a new product and the workspace
+already contains code, choose workspace_type="new_subfolder_project" and plan
+the work inside a new child folder.
 
 ROLES: lead, planner, coder, reviewer, security, qa, devops, sre
 CODER specialisations: backend-api, backend-db, frontend-react, fullstack, systems, data-pipeline
@@ -136,7 +147,7 @@ QA specialisations: unit-tests, integration-tests, e2e-tests
 
 RULES:
 - Every task: planner + coder minimum
-- new_project: add lead, devops
+- new_project or new_subfolder_project: add lead, devops
 - API work: add security
 - high/critical: add lead + reviewer + qa
 - Pipeline: planner → coder(s) → reviewer → security → qa → devops → sre → lead (last)
@@ -146,16 +157,20 @@ RULES:
 Respond with ONLY valid JSON:
 {"task_type":"feature|bug|refactor|test|docs|infra|security|performance|investigation|new_project",
 "complexity":"low|medium|high|critical",
-"workspace_type":"new_project|existing_project",
+"workspace_type":"new_project|existing_project|new_subfolder_project",
 "execution_mode":"linear|parallel|supervised_parallel",
 "domain_analysis":"2-3 sentences",
 "architecture_notes":"key patterns",
 "agents":[{"instance_id":"planner-1","role":"planner","specialisation":"requirements","assignment":"...","depends_on":[],"tools_required":[],"verification":"..."}],
 "consultation_requirements":[{"from_role":"coder","to_role":"security","reason":"auth surface"}],
-"spawn_candidates":[{"role":"coder","specialisation":"backend-api","reason":"separable API branch","bounded_assignment":"auth endpoints","estimated_cost_delta_usd":0.4,"estimated_time_delta_ms":120000}],
+"spawn_candidates":[{"role":"coder","specialisation":"backend-api",
+"reason":"separable API branch","bounded_assignment":"auth endpoints",
+"estimated_cost_delta_usd":0.4,"estimated_time_delta_ms":120000}],
 "completion_contract":["working code","verification passed"],
-"risk_actions":[{"kind":"deploy","summary":"deploy to protected environment","policy":"approval_required","severity":"high"}],
-"required_approvals":[{"kind":"budget_extension","summary":"token budget extension beyond policy band","policy":"approval_required"}],
+"risk_actions":[{"kind":"deploy","summary":"deploy to protected environment",
+"policy":"approval_required","severity":"high"}],
+"required_approvals":[{"kind":"budget_extension",
+"summary":"token budget extension beyond policy band","policy":"approval_required"}],
 "supervision_checkpoints":["before_first_implementation","after_first_rigour_failure","before_final_completion"],
 "risks":["..."],
 "acceptance_criteria":["..."],
@@ -318,6 +333,11 @@ class TaskClassifier:
         # Workspace type
         ws_type = getattr(snapshot, "workspace_type", "existing_project")
         parts.append(f"Workspace: {ws_type}")
+        parts.append(
+            "Boundary rule: the mounted/cloned folder is the execution boundary. "
+            "It may be a parent container for a new project, not necessarily "
+            "the existing app to extend."
+        )
 
         # File count
         file_count = getattr(snapshot, "file_count", 0)
@@ -416,7 +436,9 @@ class TaskClassifier:
         return StaffingPlan(
             task_type=task_type,
             complexity=complexity,
-            workspace_type=str(data.get("workspace_type", "existing_project")),
+            workspace_type=_normalize_workspace_type(
+                data.get("workspace_type", "existing_project")
+            ),
             domain_analysis=str(data.get("domain_analysis", "")),
             architecture_notes=str(data.get("architecture_notes", "")),
             agents=agents,
@@ -435,9 +457,7 @@ class TaskClassifier:
                 item for item in data.get("required_approvals", []) if isinstance(item, dict)
             ],
             supervision_checkpoints=[
-                str(item)
-                for item in data.get("supervision_checkpoints", [])
-                if str(item).strip()
+                str(item) for item in data.get("supervision_checkpoints", []) if str(item).strip()
             ],
             risks=list(data.get("risks", [])),
             acceptance_criteria=list(data.get("acceptance_criteria", [])),

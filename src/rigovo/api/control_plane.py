@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from rigovo.config import load_config
 from rigovo.container import Container
 from rigovo.domain.entities.audit_entry import AuditAction, AuditEntry
-from rigovo.domain.entities.task import TaskStatus
+from rigovo.domain.entities.task import Task, TaskStatus
 from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
 from rigovo.infrastructure.persistence.sqlite_settings_repo import SqliteSettingsRepository
 from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
@@ -150,6 +150,19 @@ def _normalize_step_status(raw: str | None) -> str:
     if s == "completed":
         return "complete"
     return s or "pending"
+
+
+def _is_internal_runtime_path(path: str) -> bool:
+    """Return True for internal Rigovo runtime artifacts."""
+    normalized = str(path or "").replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized == ".rigovo" or normalized.startswith(".rigovo/")
+
+
+def _filter_user_files(files: list[str]) -> list[str]:
+    """Exclude internal runtime artifacts from UI-facing file ledgers."""
+    return [path for path in files if not _is_internal_runtime_path(path)]
 
 
 def _canonical_agent_identity(
@@ -399,7 +412,7 @@ def _on_agent_event(event: dict) -> None:
             "started_at": existing.get("started_at") or datetime.now(timezone.utc).isoformat(),
             "completed_at": None,
             "output": merged_output,
-            "files_changed": existing.get("files_changed", []),
+            "files_changed": _filter_user_files(existing.get("files_changed", [])),
             "gate_results": existing.get("gate_results", []),
             "last_activity_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -411,6 +424,9 @@ def _on_agent_event(event: dict) -> None:
             "task_type": event.get("task_type", "feature"),
             "complexity": event.get("complexity", "medium"),
             "workspace_type": "pending_llm",  # Will be refined by task_classified
+            "workspace_root": event.get("workspace_root", ""),
+            "target_root": event.get("target_root", ""),
+            "target_mode": event.get("target_mode", ""),
             "reasoning": (
                 "Deterministic classification "
                 f"(confidence: {event.get('confidence', 0):.0%})"
@@ -430,6 +446,9 @@ def _on_agent_event(event: dict) -> None:
             "workspace_type": _live_task_classification.get(task_id, {}).get(
                 "workspace_type", "existing_project"
             ),
+            "workspace_root": _live_task_classification.get(task_id, {}).get("workspace_root", ""),
+            "target_root": _live_task_classification.get(task_id, {}).get("target_root", ""),
+            "target_mode": _live_task_classification.get(task_id, {}).get("target_mode", ""),
             "reasoning": (
                 f"Reclassified from {event.get('previous_task_type', '?')}: "
                 f"{event.get('reason', '')}"
@@ -449,6 +468,9 @@ def _on_agent_event(event: dict) -> None:
             "task_type": event.get("task_type", "feature"),
             "complexity": event.get("complexity", "medium"),
             "workspace_type": event.get("workspace_type", "existing_project"),
+            "workspace_root": event.get("workspace_root", ""),
+            "target_root": event.get("target_root", ""),
+            "target_mode": event.get("target_mode", ""),
             "reasoning": event.get("reasoning", ""),
             "agent_count": event.get("agent_count", 0),
             "agent_instances": event.get("agent_instances", []),
@@ -529,7 +551,7 @@ def _on_agent_event(event: dict) -> None:
             "status": "complete",
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "output": event.get("summary", existing.get("output", "")),
-            "files_changed": event.get("files_changed", []),
+            "files_changed": _filter_user_files(event.get("files_changed", [])),
             "input_tokens": event.get("input_tokens", 0),
             "output_tokens": event.get("output_tokens", 0),
             "tokens": event.get("tokens", 0),
@@ -641,6 +663,24 @@ class CreateTaskRequest(BaseModel):
 
 class RenameTaskRequest(BaseModel):
     title: str  # Custom display title; overrides description in the inbox/sidebar
+
+
+class TestSessionBootstrapRequest(BaseModel):
+    email: str = "e2e@rigovo.test"
+    full_name: str = "Rigovo E2E"
+    first_name: str = "Rigovo"
+    last_name: str = "E2E"
+    role: str = "admin"
+    workspace_name: str = "Rigovo E2E Workspace"
+    workspace_slug: str = "rigovo-e2e"
+    admin_email: str = "e2e@rigovo.test"
+    region: str = "us-east-1"
+
+
+class TestSeedTaskRequest(BaseModel):
+    scenario: str = "approval_pending"
+    description: str = "Seeded E2E task"
+    tier: str = "approve"
 
 
 class PingResponse(BaseModel):
@@ -1053,6 +1093,12 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     root = project_root or Path.cwd()
     config = load_config(root)
     container = Container(config)
+    test_mode = str(os.environ.get("RIGOVO_TEST_MODE", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     # Expose to module-level event handlers
     global _api_container
@@ -1131,6 +1177,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         logger.debug("API key migration skipped", exc_info=True)
 
     app = FastAPI(title="Rigovo Control Plane API", version="0.1.0")
+    app.state.container = container
+    app.state.project_root = root
+    app.state.test_mode = test_mode
 
     # CORS — allow Electron renderer (file:// sends null origin),
     # Vite dev server, and electron-vite dev server to reach the API.
@@ -1285,6 +1334,112 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         state.identity.pop("workosApiKey", None)
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps(state.model_dump(), indent=2))
+
+    def _require_test_mode() -> None:
+        if not test_mode:
+            raise HTTPException(status_code=404, detail="Not found")
+
+    def _reset_runtime_buffers() -> None:
+        _live_agent_progress.clear()
+        _live_task_classification.clear()
+        _live_task_events.clear()
+        _approval_events.clear()
+        _approval_decisions.clear()
+        _active_task_runs.clear()
+
+    def _reset_persisted_state() -> None:
+        db = container.get_db()
+        tables = [
+            "tasks",
+            "cost_ledger",
+            "audit_log",
+            "memories",
+            "memory_promotion_ledger",
+            "team_cache",
+            "agent_cache",
+            "workspace_cache",
+            "sync_queue",
+            "prompt_cache_exact",
+            "prompt_cache_semantic",
+            "artifact_cache",
+        ]
+        for table in tables:
+            with contextlib.suppress(Exception):
+                db.execute(f"DELETE FROM {table}")
+        with contextlib.suppress(Exception):
+            db.commit()
+
+    def _seed_task_for_test(
+        scenario: str,
+        description: str,
+        tier: str,
+    ) -> Task:
+        task = Task(
+            workspace_id=_workspace_id(),
+            description=description,
+            tier=tier if tier in {"auto", "notify", "approve"} else "approve",
+            workspace_path=str(root),
+            workspace_label=root.name,
+        )
+        task.start()
+
+        if scenario == "approval_pending":
+            task.await_approval(
+                "risk_action_required",
+                {
+                    "checkpoint": "risk_action_required",
+                    "summary": "Deploy to protected environment",
+                    "current_role": "devops",
+                    "kind": "deploy",
+                    "tool_name": "run_command",
+                    "requires_human_approval": True,
+                },
+            )
+        elif scenario == "failed_remediation":
+            task.fail("Rigour remediation exhausted")
+            task.approval_data = {
+                **(task.approval_data or {}),
+                "collaboration": {
+                    "events": [
+                        {
+                            "type": "fix_packet_created",
+                            "role": "coder",
+                            "created_at": time.time() - 3,
+                            "prompt": "FIX REQUIRED",
+                            "items": [
+                                {
+                                    "gate_id": "rigour",
+                                    "file_path": "src/app.py",
+                                    "message": "Missing verification",
+                                    "suggestion": "Add tests",
+                                    "severity": "error",
+                                }
+                            ],
+                        },
+                        {
+                            "type": "downstream_locked",
+                            "role": "coder",
+                            "reason": "awaiting_remediation",
+                            "created_at": time.time() - 2,
+                        },
+                    ],
+                    "messages": [],
+                }
+            }
+        elif scenario == "resumable_running":
+            task.status = TaskStatus.RUNNING
+            task.checkpoint_timeline = [
+                {
+                    "node": "execute_agent",
+                    "status": "running",
+                    "current_role": "coder",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ]
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown test scenario: {scenario}")
+
+        return task
 
     def _auth_result_html(success: bool, detail: str) -> str:
         """Return a simple HTML page for the browser callback tab."""
@@ -2796,6 +2951,82 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         _write_state(cp_state)
         return {"status": "ok"}
 
+    if test_mode:
+
+        @app.post("/v1/test/session/bootstrap")
+        def test_bootstrap_session(req: TestSessionBootstrapRequest) -> dict[str, Any]:
+            _require_test_mode()
+            cp_state = _read_state()
+            cp_state.auth = {
+                "signed_in": True,
+                "email": req.email,
+                "full_name": req.full_name,
+                "first_name": req.first_name,
+                "last_name": req.last_name,
+                "role": req.role,
+            }
+            cp_state.workspace = {
+                "workspaceName": req.workspace_name,
+                "workspaceSlug": req.workspace_slug,
+                "adminEmail": req.admin_email,
+                "deploymentMode": "self_hosted",
+                "region": req.region,
+            }
+            _write_state(cp_state)
+            return {"status": "ok", "session": get_auth_session()}
+
+        @app.post("/v1/test/reset")
+        def test_reset_state() -> dict[str, str]:
+            _require_test_mode()
+            _reset_runtime_buffers()
+            _reset_persisted_state()
+            _write_state(_apply_config_defaults(ControlPlaneState()))
+            return {"status": "ok"}
+
+        @app.post("/v1/test/tasks/seed")
+        async def test_seed_task(req: TestSeedTaskRequest) -> dict[str, Any]:
+            _require_test_mode()
+            task = _seed_task_for_test(req.scenario, req.description, req.tier)
+            task_repo = SqliteTaskRepository(container.get_db())
+            await task_repo.save(task)
+            return {
+                "status": "ok",
+                "task_id": str(task.id),
+                "scenario": req.scenario,
+                "task_status": task.status.value,
+            }
+
+        @app.get("/v1/test/tasks/{task_id}/wait")
+        async def test_wait_for_task(
+            task_id: str,
+            status: str = "",
+            timeout_ms: int = 5000,
+        ) -> dict[str, Any]:
+            _require_test_mode()
+            task_repo, _ = await _load_task(task_id)
+            deadline = time.monotonic() + max(0.1, timeout_ms / 1000.0)
+            expected = status.strip().lower()
+            while time.monotonic() <= deadline:
+                task = await task_repo.get(UUID(task_id))
+                if task is None:
+                    raise HTTPException(status_code=404, detail="Task not found")
+                current = str(task.status.value if hasattr(task.status, "value") else task.status)
+                if not expected or current.lower() == expected:
+                    return {
+                        "status": "ok",
+                        "task_id": task_id,
+                        "task_status": current,
+                    }
+                await asyncio.sleep(0.05)
+            task = await task_repo.get(UUID(task_id))
+            current = str(task.status.value if hasattr(task.status, "value") else task.status)
+            return {
+                "status": "timeout",
+                "task_id": task_id,
+                "task_status": current,
+                "expected_status": expected,
+            }
+
     @app.post("/v1/control/workspace")
     def set_workspace(req: WorkspaceRequest) -> dict[str, Any]:
         state = _read_state()
@@ -3101,7 +3332,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                         "started_at": ps.started_at.isoformat() if ps.started_at else None,
                         "completed_at": ps.completed_at.isoformat() if ps.completed_at else None,
                         "output": ps.summary,
-                        "files_changed": ps.files_changed or [],
+                        "files_changed": _filter_user_files(ps.files_changed or []),
                         "input_tokens": ps.input_tokens,
                         "output_tokens": ps.output_tokens,
                         "tokens": ps.total_tokens,
@@ -3159,7 +3390,29 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         resolved_complexity: str | None = None
         planned_roles: list[str] = []
         live_cls = _live_task_classification.get(task_id)
-        if task.task_type:
+        task_is_active = task.status in {
+            TaskStatus.PENDING,
+            TaskStatus.RUNNING,
+            TaskStatus.AWAITING_APPROVAL,
+            TaskStatus.CLASSIFYING,
+            TaskStatus.ROUTING,
+            TaskStatus.ASSEMBLING,
+            TaskStatus.QUALITY_CHECK,
+        }
+        if live_cls and task_is_active:
+            resolved_task_type = live_cls.get(
+                "task_type",
+                (
+                    str(task.task_type.value)
+                    if task.task_type and hasattr(task.task_type, "value")
+                    else str(task.task_type or "unclassified")
+                ),
+            )
+            resolved_complexity = live_cls.get(
+                "complexity",
+                task.complexity.value if task.complexity else None,
+            )
+        elif task.task_type:
             resolved_task_type = (
                 str(task.task_type.value)
                 if hasattr(task.task_type, "value")
@@ -3495,6 +3748,23 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         if not isinstance(checkpoint_contract, dict):
             checkpoint_contract = {}
 
+        workspace_root = str(
+            (live_cls or {}).get("workspace_root")
+            or (task.approval_data or {}).get("workspace_root")
+            or task.workspace_path
+            or ""
+        )
+        target_root = str(
+            (live_cls or {}).get("target_root")
+            or (task.approval_data or {}).get("target_root")
+            or workspace_root
+        )
+        target_mode = str(
+            (live_cls or {}).get("target_mode")
+            or (task.approval_data or {}).get("target_mode")
+            or ""
+        )
+
         ui_summary = {
             "tier_requested": str(getattr(task, "tier", "auto") or "auto"),
             "tier_effective": _tier_from_task(task),
@@ -3553,6 +3823,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 else None
             ),
             "next_expected_reason": next_expected_reason,
+            "workspace_root": workspace_root or None,
+            "target_root": target_root or None,
+            "target_mode": target_mode or None,
         }
         learning_runtime = (task.approval_data or {}).get("learning_runtime", {})
         if not isinstance(learning_runtime, dict):
@@ -3614,6 +3887,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "approval_data": task.approval_data or {},
             "confidence_score": confidence_score,
             "error": error_reason,
+            "workspace_root": workspace_root or None,
+            "target_root": target_root or None,
+            "target_mode": target_mode or None,
             "ui_summary": ui_summary,
             "active_fix_packet": latest_fix_packet or {},
             "downstream_lock_reason": (
@@ -4437,7 +4713,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             for step in pipeline:
                 raw_role = str(step.get("role", "unknown"))
                 role = _canonical_agent_identity(raw_role, "")[0]
-                files = step.get("files_changed", [])
+                files = _filter_user_files(step.get("files_changed", []))
                 if files:
                     by_agent[role] = files
                     all_files.update(files)
@@ -4460,6 +4736,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 return {"path": file_path, "content": "", "error": "Task not found"}
 
             # Try to find the file in the project working directory
+            if _is_internal_runtime_path(file_path):
+                return {"path": file_path, "content": "", "error": "Internal runtime file"}
+
             project_dir = (task.metadata or {}).get("project_dir", ".")
             full_path = Path(project_dir) / file_path
             if full_path.is_file():
@@ -4474,7 +4753,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             pipeline = (task.metadata or {}).get("pipeline", [])
             for step in pipeline:
                 output = step.get("output", "")
-                files = step.get("files_changed", [])
+                files = _filter_user_files(step.get("files_changed", []))
                 if file_path in files and output:
                     return {
                         "path": file_path,

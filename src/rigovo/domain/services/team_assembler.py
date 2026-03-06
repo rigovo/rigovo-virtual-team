@@ -446,15 +446,15 @@ you tried and what the outcome was. "Assuming it works" is NOT acceptable.
     # ── Legacy: hardcoded pipeline (backward compatibility) ────────────
 
     TASK_PIPELINES: dict[str, list[str]] = {
-        "feature": ["planner", "coder", "reviewer", "qa"],
-        "bug": ["coder", "reviewer"],
-        "refactor": ["coder", "reviewer"],
-        "test": ["qa"],
-        "docs": ["coder"],
-        "infra": ["devops", "sre", "reviewer"],
-        "security": ["security", "coder", "reviewer"],
-        "performance": ["coder", "reviewer"],
-        "investigation": ["planner"],
+        "feature": ["lead", "planner", "coder", "reviewer", "qa"],
+        "bug": ["lead", "coder", "reviewer", "qa"],
+        "refactor": ["lead", "coder", "reviewer", "qa"],
+        "test": ["lead", "coder", "reviewer", "qa"],
+        "docs": ["lead", "planner", "coder", "reviewer", "qa"],
+        "infra": ["lead", "planner", "coder", "reviewer", "qa", "devops", "sre"],
+        "security": ["lead", "planner", "security", "coder", "reviewer", "qa"],
+        "performance": ["lead", "coder", "reviewer", "qa"],
+        "investigation": ["lead", "planner", "coder", "reviewer", "qa"],
     }
 
     def assemble(

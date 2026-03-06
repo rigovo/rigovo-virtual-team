@@ -63,6 +63,7 @@ class TestTeamAssembler:
 
     def test_feature_task_assembles_full_pipeline(self):
         agents = [
+            self._make_agent("lead", 0),
             self._make_agent("planner", 0),
             self._make_agent("coder", 1),
             self._make_agent("reviewer", 2),
@@ -72,14 +73,14 @@ class TestTeamAssembler:
 
         pipeline = self.assembler.assemble(agents, TaskType.FEATURE, TaskComplexity.MEDIUM)
 
-        assert pipeline.agent_count == 4  # planner, coder, reviewer, qa
-        assert pipeline.roles == ["planner", "coder", "reviewer", "qa"]
+        assert pipeline.agent_count == 5
+        assert pipeline.roles == ["lead", "planner", "coder", "reviewer", "qa"]
         # gates_after uses instance_ids (e.g. "coder-1") not bare role names
         assert any(g.startswith("coder") for g in pipeline.gates_after)
 
     def test_bug_task_minimal_pipeline(self):
         agents = [
-            self._make_agent("planner", 0),
+            self._make_agent("lead", 0),
             self._make_agent("coder", 1),
             self._make_agent("reviewer", 2),
             self._make_agent("qa", 3),
@@ -87,7 +88,7 @@ class TestTeamAssembler:
 
         pipeline = self.assembler.assemble(agents, TaskType.BUG, TaskComplexity.LOW)
 
-        assert pipeline.roles == ["coder", "reviewer"]
+        assert pipeline.roles == ["lead", "coder", "reviewer", "qa"]
 
     def test_high_complexity_adds_lead(self):
         agents = [

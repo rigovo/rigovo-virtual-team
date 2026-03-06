@@ -52,7 +52,7 @@ class ClassificationData(TypedDict, total=False):
 
     task_type: str  # feature, bug, refactor, new_project, etc.
     complexity: str  # low, medium, high, critical
-    workspace_type: str  # new_project | existing_project
+    workspace_type: str  # new_project | existing_project | new_subfolder_project
     reasoning: str  # Why this classification
 
 
@@ -80,6 +80,9 @@ class TaskState(TypedDict, total=False):
     workspace_id: str
     description: str
     project_root: str
+    workspace_root: str  # User-selected boundary (mounted folder / clone root / managed workspace)
+    target_root: str  # Actual write target for this task within the workspace boundary
+    target_mode: str  # existing_project|new_project|new_subfolder_project|managed_workspace_project
     worktree_mode: str  # project|git_worktree
     worktree_root: str  # Optional worktree root within project sandbox
     filesystem_sandbox_mode: str  # project_root|worktree
@@ -208,7 +211,9 @@ class TaskState(TypedDict, total=False):
     spawn_history: list[dict[str, Any]]  # Spawned specialists and merge-back contracts
     supervisory_decisions: list[dict[str, Any]]  # Master Brain supervisory reasoning/events
     risk_action_queue: list[dict[str, Any]]  # Risky actions evaluated by policy engine
-    required_approval_actions: list[dict[str, Any]]  # Governance actions currently awaiting approval
+    required_approval_actions: list[
+        dict[str, Any]
+    ]  # Governance actions currently awaiting approval
 
     # --- Status ---
     status: str  # Current phase name

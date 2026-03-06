@@ -931,6 +931,7 @@ function OrchestratorKickoff({
 interface AgentTimelineProps {
   steps: TaskStep[];
   taskType: string;
+  plannedCount?: number;
   collab?: CollaborationData | null;
   gov?: GovernanceData | null;
   costs?: CostData | null;
@@ -940,6 +941,7 @@ interface AgentTimelineProps {
 export default function AgentTimeline({
   steps,
   taskType,
+  plannedCount,
   collab,
   gov,
   costs,
@@ -1072,7 +1074,10 @@ export default function AgentTimeline({
 
   return (
     <div className="space-y-5 pb-4">
-      <OrchestratorKickoff taskType={taskType} count={steps.length} />
+      <OrchestratorKickoff
+        taskType={taskType}
+        count={Math.max(plannedCount ?? 0, steps.length)}
+      />
 
       {visibleSteps.map((step, idx) => {
         const prev = idx > 0 ? visibleSteps[idx - 1] : null;

@@ -1338,6 +1338,10 @@ export default function TaskDetail({
       String(nextExpectedReason || "")
         .toLowerCase()
         .includes("gate remediation")));
+  const workspaceRoot =
+    detail?.workspace_root ?? summary?.workspace_root ?? task.workspacePath ?? null;
+  const targetRoot = detail?.target_root ?? summary?.target_root ?? workspaceRoot;
+  const targetMode = detail?.target_mode ?? summary?.target_mode ?? null;
   const hasAdvancedMeta =
     tierMismatch ||
     replanCount > 0 ||
@@ -1528,6 +1532,9 @@ export default function TaskDetail({
                   <span className="td-type-badge">
                     next: {canonicalAgentLabel(nextRole)}
                   </span>
+                )}
+                {targetMode && (
+                  <span className="td-type-badge">target: {targetMode}</span>
                 )}
                 {summaryMissing && (
                   <span className="td-gate-fail-chip">
@@ -1780,6 +1787,39 @@ export default function TaskDetail({
         <QualitySummaryBar steps={detail!.steps} detail={detail} />
       )}
       {showInsights && mission && <MissionControl mission={mission} />}
+      {uiMode === "full" && (workspaceRoot || targetRoot || targetMode) && (
+        <div
+          className="mt-3 rounded-2xl border px-4 py-3"
+          style={{
+            borderColor: "rgba(96,165,250,0.16)",
+            background: "rgba(15,23,42,0.28)",
+          }}
+        >
+          <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--ui-text-muted)]">
+            Execution Target
+          </div>
+          <div className="mt-2 grid gap-2 text-sm text-[var(--ui-text-primary)] md:grid-cols-3">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--ui-text-muted)]">
+                Workspace Root
+              </div>
+              <div className="mt-1 break-all">{workspaceRoot ?? "—"}</div>
+            </div>
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--ui-text-muted)]">
+                Target Root
+              </div>
+              <div className="mt-1 break-all">{targetRoot ?? "—"}</div>
+            </div>
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--ui-text-muted)]">
+                Target Mode
+              </div>
+              <div className="mt-1">{targetMode ?? "—"}</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Split layout: map or timeline (left) + agent detail (right) ── */}
       <div
@@ -1854,6 +1894,7 @@ export default function TaskDetail({
               <AgentTimeline
                 steps={detail.steps}
                 taskType={detail.task_type ?? "engineering"}
+                plannedCount={expectedAgents}
                 collab={collab}
                 gov={gov}
                 costs={costs}

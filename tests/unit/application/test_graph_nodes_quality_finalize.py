@@ -5,10 +5,15 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock
 
-from rigovo.application.graph.nodes.quality_check import quality_check_node
 from rigovo.application.graph.nodes.finalize import finalize_node
+from rigovo.application.graph.nodes.quality_check import quality_check_node
 from rigovo.application.graph.state import TaskState
-from rigovo.domain.entities.quality import GateResult, Violation, GateStatus, ViolationSeverity
+from rigovo.domain.entities.quality import (
+    GateResult,
+    GateStatus,
+    Violation,
+    ViolationSeverity,
+)
 
 
 class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
@@ -35,6 +40,33 @@ class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
         assert "gates_skipped_architect" in result["status"]
         assert len(result["events"]) == 1
         assert result["events"][0]["status"] == "skipped"
+
+    async def test_quality_check_ignores_internal_runtime_files_for_planner(self):
+        """Internal .rigovo artifacts must not trigger planner persona violations."""
+        state: TaskState = {
+            "task_id": "task-1a",
+            "current_agent_role": "planner",
+            "team_config": {
+                "agents": {"planner": {"role": "planner"}},
+                "gates_after": ["coder"],
+            },
+            "agent_outputs": {
+                "planner": {
+                    "summary": "## Execution Plan\n## Acceptance Criteria\n## Files Touched",
+                    "files_changed": [".rigovo/checkpoints.db-wal"],
+                },
+            },
+            "events": [],
+        }
+
+        mock_gate = AsyncMock()
+
+        result = await quality_check_node(state, [mock_gate])
+
+        assert result["gate_results"]["status"] == "skipped"
+        assert result["gate_results"]["passed"] is True
+        assert result["status"] == "gates_skipped_planner"
+        mock_gate.run.assert_not_called()
 
     async def test_quality_check_hard_fails_on_contract_failure(self):
         """Contract failure from execute node should hard-fail and skip retries."""
@@ -290,6 +322,61 @@ class TestQualityCheckNode(unittest.IsolatedAsyncioTestCase):
         assert gate_input.deep is True
         assert gate_input.pro is True
 
+    async def test_quality_check_uses_target_root_and_reroutes_planner_remediation_to_lead(self):
+        state: TaskState = {
+            "task_id": "task-1",
+            "current_agent_role": "planner-1",
+            "current_instance_id": "planner-1",
+            "current_agent_index": 1,
+            "team_config": {
+                "agents": {
+                    "lead-1": {"role": "lead", "name": "Chief Architect"},
+                    "planner-1": {"role": "planner", "name": "Engineering PM 1"},
+                },
+                "pipeline_order": ["lead-1", "planner-1"],
+                "gates_after": ["planner-1"],
+            },
+            "agent_outputs": {
+                "planner-1": {
+                    "summary": "Wrote implementation files outside planner scope",
+                    "files_changed": ["specs/plan.md"],
+                }
+            },
+            "project_root": "/tmp/mounted-repo",
+            "target_root": "/tmp/mounted-repo/identity-api-saas",
+            "target_mode": "new_subfolder_project",
+            "retry_count": 0,
+            "max_retries": 3,
+            "events": [],
+        }
+
+        violation = Violation(
+            gate_id="persona-forbidden-file",
+            file_path="specs/plan.md",
+            message="Planner should not write implementation artifacts",
+            suggestion="Escalate the architecture correction to lead",
+            severity=ViolationSeverity.ERROR,
+        )
+
+        mock_gate = AsyncMock()
+        mock_gate.run.return_value = GateResult(
+            status=GateStatus.FAILED,
+            gates_run=1,
+            gates_passed=0,
+            violations=[violation],
+        )
+
+        result = await quality_check_node(state, [mock_gate])
+
+        gate_input = mock_gate.run.call_args.args[0]
+        assert gate_input.project_root == "/tmp/mounted-repo/identity-api-saas"
+        assert result["current_agent_role"] == "lead-1"
+        assert result["current_instance_id"] == "lead-1"
+        assert result["active_fix_packet"]["role"] == "lead-1"
+        assert result["active_fix_packet"]["failing_role"] == "planner-1"
+        assert result["active_fix_packet"]["target_root"] == "/tmp/mounted-repo/identity-api-saas"
+        assert result["downstream_lock_reason"] == "awaiting gate remediation by lead-1"
+
     async def test_quality_check_deep_mode_final_only_on_last_gated_role(self):
         """deep_mode=final should run deep only for the last role in gates_after order."""
         state: TaskState = {
@@ -425,6 +512,22 @@ class TestFinalizeNode(unittest.IsolatedAsyncioTestCase):
         files = result["events"][0]["files_changed"]
         assert len(files) == 3
         assert "file.py" in files
+
+    async def test_finalize_node_filters_internal_runtime_files(self):
+        """Internal .rigovo artifacts must never appear in final file ledgers."""
+        state: TaskState = {
+            "task_id": "task-1x",
+            "agent_outputs": {
+                "agent1": {"files_changed": [".rigovo/checkpoints.db-wal", "src/app.py"]},
+                "agent2": {"files_changed": ["tests/test_app.py"]},
+            },
+            "events": [],
+        }
+
+        result = await finalize_node(state)
+
+        files = sorted(result["events"][0]["files_changed"])
+        assert files == ["src/app.py", "tests/test_app.py"]
 
 
 # ── Phase 7: Persona enforcement tests for quality_check_node ──────────

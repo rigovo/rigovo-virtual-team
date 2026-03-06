@@ -310,9 +310,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         mock_cost_calculator = MagicMock()
         mock_cost_calculator.calculate.return_value = 0.05
 
-        result = await execute_agent_node(
-            state, mock_llm_factory, mock_cost_calculator
-        )
+        result = await execute_agent_node(state, mock_llm_factory, mock_cost_calculator)
 
         assert "previous" in result["cost_accumulator"]
         assert "agent-1" in result["cost_accumulator"]
@@ -449,14 +447,16 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 content="",
                 usage=LLMUsage(input_tokens=100, output_tokens=50),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_consult_1",
-                    "name": "consult_agent",
-                    "input": {
-                        "to_role": "security",
-                        "question": "Any blockers?",
-                    },
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_consult_1",
+                        "name": "consult_agent",
+                        "input": {
+                            "to_role": "security",
+                            "question": "Any blockers?",
+                        },
+                    }
+                ],
             ),
             LLMResponse(
                 content="Proceeding with implementation.",
@@ -519,14 +519,16 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 content="",
                 usage=LLMUsage(input_tokens=100, output_tokens=30),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_consult_2",
-                    "name": "consult_agent",
-                    "input": {
-                        "to_role": "security",
-                        "question": "Please review auth flow.",
-                    },
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_consult_2",
+                        "name": "consult_agent",
+                        "input": {
+                            "to_role": "security",
+                            "question": "Please review auth flow.",
+                        },
+                    }
+                ],
             ),
             LLMResponse(
                 content="Coder completed core changes.",
@@ -543,8 +545,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         coder_result = await execute_agent_node(coder_state, coder_factory, cost_calc)
 
         pending = [
-            m for m in coder_result.get("agent_messages", [])
-            if m.get("type") == "consult_request"
+            m for m in coder_result.get("agent_messages", []) if m.get("type") == "consult_request"
         ]
         assert pending and pending[0]["status"] == "pending"
 
@@ -616,14 +617,16 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 content="",
                 usage=LLMUsage(input_tokens=100, output_tokens=20),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_consult_3",
-                    "name": "consult_agent",
-                    "input": {
-                        "to_role": "planner",  # blocked for coder by policy
-                        "question": "Can you re-plan the approach?",
-                    },
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_consult_3",
+                        "name": "consult_agent",
+                        "input": {
+                            "to_role": "planner",  # blocked for coder by policy
+                            "question": "Can you re-plan the approach?",
+                        },
+                    }
+                ],
             ),
             LLMResponse(
                 content="Continuing without external consult.",
@@ -687,14 +690,16 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 content="",
                 usage=LLMUsage(input_tokens=90, output_tokens=20),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_consult_4",
-                    "name": "consult_agent",
-                    "input": {
-                        "to_role": "devops",
-                        "question": "Any release gating concerns?",
-                    },
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_consult_4",
+                        "name": "consult_agent",
+                        "input": {
+                            "to_role": "devops",
+                            "question": "Any release gating concerns?",
+                        },
+                    }
+                ],
             ),
             LLMResponse(
                 content="Proceeding with devops advisory.",
@@ -757,17 +762,19 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 content="",
                 usage=LLMUsage(input_tokens=100, output_tokens=20),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_integration_1",
-                    "name": "invoke_integration",
-                    "input": {
-                        "kind": "connector",
-                        "plugin_id": "acme-slack",
-                        "target_id": "slack",
-                        "operation": "post_message",
-                        "payload": {"channel": "alerts"},
-                    },
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_integration_1",
+                        "name": "invoke_integration",
+                        "input": {
+                            "kind": "connector",
+                            "plugin_id": "acme-slack",
+                            "target_id": "slack",
+                            "operation": "post_message",
+                            "payload": {"channel": "alerts"},
+                        },
+                    }
+                ],
             ),
             LLMResponse(
                 content="Integration step handled.",
@@ -816,15 +823,17 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 content="",
                 usage=LLMUsage(input_tokens=100, output_tokens=20),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_sub_1",
-                    "name": "spawn_subtask",
-                    "input": {
-                        "description": "Write auth helper",
-                        "specialist_role": "qa",
-                        "merge_back_contract": {"expected_artifacts": ["tests", "summary"]},
-                    },
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_sub_1",
+                        "name": "spawn_subtask",
+                        "input": {
+                            "description": "Write auth helper",
+                            "specialist_role": "qa",
+                            "merge_back_contract": {"expected_artifacts": ["tests", "summary"]},
+                        },
+                    }
+                ],
             ),
             # Subtask loop: single completion response
             LLMResponse(
@@ -856,9 +865,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         assert any(e.get("type") == "spawn_started" for e in result["events"])
         assert any(e.get("type") == "spawn_completed" for e in result["events"])
         assert result["spawn_history"]
-        spawn_complete = next(
-            e for e in result["events"] if e.get("type") == "spawn_completed"
-        )
+        spawn_complete = next(e for e in result["events"] if e.get("type") == "spawn_completed")
         assert spawn_complete["specialist_role"] == "qa"
         assert spawn_complete["merge_status"] == "ready_for_parent_merge"
         assert spawn_complete["execution_verified"] is False
@@ -892,11 +899,13 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 content="",
                 usage=LLMUsage(input_tokens=80, output_tokens=20),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_risk_1",
-                    "name": "run_command",
-                    "input": {"command": "terraform apply -auto-approve"},
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_risk_1",
+                        "name": "run_command",
+                        "input": {"command": "terraform apply -auto-approve"},
+                    }
+                ],
             ),
             LLMResponse(
                 content="Stopping for approval.",
@@ -953,11 +962,13 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 content="",
                 usage=LLMUsage(input_tokens=40, output_tokens=10),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_sub_2",
-                    "name": "spawn_subtask",
-                    "input": {"description": "Try blocked subtask"},
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_sub_2",
+                        "name": "spawn_subtask",
+                        "input": {"description": "Try blocked subtask"},
+                    }
+                ],
             ),
             LLMResponse(
                 content="Proceeding without subtask.",
@@ -975,7 +986,6 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
 
         assert any(e.get("type") == "subtask_blocked" for e in result["events"])
         assert result["agent_outputs"]["coder"]["subtask_count"] == 0
-
 
     # ══════════════════════════════════════════════════════════════════════
     # Phase 5: Multi-turn consultation tests
@@ -1039,33 +1049,39 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 content="",
                 usage=LLMUsage(input_tokens=100, output_tokens=20),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_c1",
-                    "name": "consult_agent",
-                    "input": {"to_role": "reviewer", "question": "Any style concerns?"},
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_c1",
+                        "name": "consult_agent",
+                        "input": {"to_role": "reviewer", "question": "Any style concerns?"},
+                    }
+                ],
             ),
             # Round 2: consult security
             LLMResponse(
                 content="",
                 usage=LLMUsage(input_tokens=80, output_tokens=20),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_c2",
-                    "name": "consult_agent",
-                    "input": {"to_role": "security", "question": "Any security concerns?"},
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_c2",
+                        "name": "consult_agent",
+                        "input": {"to_role": "security", "question": "Any security concerns?"},
+                    }
+                ],
             ),
             # Round 3: consult QA
             LLMResponse(
                 content="",
                 usage=LLMUsage(input_tokens=80, output_tokens=20),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_c3",
-                    "name": "consult_agent",
-                    "input": {"to_role": "qa", "question": "All tests pass?"},
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_c3",
+                        "name": "consult_agent",
+                        "input": {"to_role": "qa", "question": "All tests pass?"},
+                    }
+                ],
             ),
             # Final response
             LLMResponse(
@@ -1084,8 +1100,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         result = await execute_agent_node(state, llm_factory, cost_calc)
 
         consult_requests = [
-            m for m in result.get("agent_messages", [])
-            if m.get("type") == "consult_request"
+            m for m in result.get("agent_messages", []) if m.get("type") == "consult_request"
         ]
         assert len(consult_requests) == 3
         targets = {m["to_role"] for m in consult_requests}
@@ -1156,28 +1171,63 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         mock_llm = AsyncMock()
         mock_llm.invoke.side_effect = [
             # Consult 1: reviewer
-            LLMResponse(content="", usage=LLMUsage(input_tokens=50, output_tokens=10),
-                        model="claude-sonnet-4-6",
-                        tool_calls=[{"id": "t1", "name": "consult_agent",
-                                     "input": {"to_role": "reviewer", "question": "Q1"}}]),
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=50, output_tokens=10),
+                model="claude-sonnet-4-6",
+                tool_calls=[
+                    {
+                        "id": "t1",
+                        "name": "consult_agent",
+                        "input": {"to_role": "reviewer", "question": "Q1"},
+                    }
+                ],
+            ),
             # Consult 2: security
-            LLMResponse(content="", usage=LLMUsage(input_tokens=50, output_tokens=10),
-                        model="claude-sonnet-4-6",
-                        tool_calls=[{"id": "t2", "name": "consult_agent",
-                                     "input": {"to_role": "security", "question": "Q2"}}]),
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=50, output_tokens=10),
+                model="claude-sonnet-4-6",
+                tool_calls=[
+                    {
+                        "id": "t2",
+                        "name": "consult_agent",
+                        "input": {"to_role": "security", "question": "Q2"},
+                    }
+                ],
+            ),
             # Consult 3: qa
-            LLMResponse(content="", usage=LLMUsage(input_tokens=50, output_tokens=10),
-                        model="claude-sonnet-4-6",
-                        tool_calls=[{"id": "t3", "name": "consult_agent",
-                                     "input": {"to_role": "qa", "question": "Q3"}}]),
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=50, output_tokens=10),
+                model="claude-sonnet-4-6",
+                tool_calls=[
+                    {
+                        "id": "t3",
+                        "name": "consult_agent",
+                        "input": {"to_role": "qa", "question": "Q3"},
+                    }
+                ],
+            ),
             # Consult 4: devops — should be BLOCKED (limit=3)
-            LLMResponse(content="", usage=LLMUsage(input_tokens=50, output_tokens=10),
-                        model="claude-sonnet-4-6",
-                        tool_calls=[{"id": "t4", "name": "consult_agent",
-                                     "input": {"to_role": "devops", "question": "Q4"}}]),
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=50, output_tokens=10),
+                model="claude-sonnet-4-6",
+                tool_calls=[
+                    {
+                        "id": "t4",
+                        "name": "consult_agent",
+                        "input": {"to_role": "devops", "question": "Q4"},
+                    }
+                ],
+            ),
             # Final
-            LLMResponse(content="Done.", usage=LLMUsage(input_tokens=30, output_tokens=10),
-                        model="claude-sonnet-4-6"),
+            LLMResponse(
+                content="Done.",
+                usage=LLMUsage(input_tokens=30, output_tokens=10),
+                model="claude-sonnet-4-6",
+            ),
         ]
 
         def llm_factory(model: str):
@@ -1189,8 +1239,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         result = await execute_agent_node(state, llm_factory, cost_calc)
 
         consult_requests = [
-            m for m in result.get("agent_messages", [])
-            if m.get("type") == "consult_request"
+            m for m in result.get("agent_messages", []) if m.get("type") == "consult_request"
         ]
         # Only 3 should succeed — the 4th gets a "blocked" tool response
         assert len(consult_requests) == 3
@@ -1244,19 +1293,41 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 ],
             ),
             # Consult 2 to reviewer (follow-up)
-            LLMResponse(content="", usage=LLMUsage(input_tokens=50, output_tokens=10),
-                        model="claude-sonnet-4-6",
-                        tool_calls=[{"id": "t2", "name": "consult_agent",
-                                     "input": {"to_role": "reviewer", "question": "Follow-up",
-                                               "thread_id": "prior-thread"}}]),
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=50, output_tokens=10),
+                model="claude-sonnet-4-6",
+                tool_calls=[
+                    {
+                        "id": "t2",
+                        "name": "consult_agent",
+                        "input": {
+                            "to_role": "reviewer",
+                            "question": "Follow-up",
+                            "thread_id": "prior-thread",
+                        },
+                    }
+                ],
+            ),
             # Consult 3 to reviewer — BLOCKED by per-target limit
-            LLMResponse(content="", usage=LLMUsage(input_tokens=50, output_tokens=10),
-                        model="claude-sonnet-4-6",
-                        tool_calls=[{"id": "t3", "name": "consult_agent",
-                                     "input": {"to_role": "reviewer", "question": "Third try"}}]),
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=50, output_tokens=10),
+                model="claude-sonnet-4-6",
+                tool_calls=[
+                    {
+                        "id": "t3",
+                        "name": "consult_agent",
+                        "input": {"to_role": "reviewer", "question": "Third try"},
+                    }
+                ],
+            ),
             # Final
-            LLMResponse(content="Done.", usage=LLMUsage(input_tokens=30, output_tokens=10),
-                        model="claude-sonnet-4-6"),
+            LLMResponse(
+                content="Done.",
+                usage=LLMUsage(input_tokens=30, output_tokens=10),
+                model="claude-sonnet-4-6",
+            ),
         ]
 
         def llm_factory(model: str):
@@ -1268,8 +1339,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         result = await execute_agent_node(state, llm_factory, cost_calc)
 
         consult_requests = [
-            m for m in result.get("agent_messages", [])
-            if m.get("type") == "consult_request"
+            m for m in result.get("agent_messages", []) if m.get("type") == "consult_request"
         ]
         # Only 2 consult requests to reviewer succeed
         assert len(consult_requests) == 2
@@ -1314,11 +1384,13 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 content="",
                 usage=LLMUsage(input_tokens=80, output_tokens=20),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_devops_1",
-                    "name": "consult_agent",
-                    "input": {"to_role": "devops", "question": "What's the deploy strategy?"},
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_devops_1",
+                        "name": "consult_agent",
+                        "input": {"to_role": "devops", "question": "What's the deploy strategy?"},
+                    }
+                ],
             ),
             LLMResponse(
                 content="Using Helm rolling updates as DevOps advised.",
@@ -1379,18 +1451,37 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         mock_llm = AsyncMock()
         mock_llm.invoke.side_effect = [
             # Consult 1: allowed
-            LLMResponse(content="", usage=LLMUsage(input_tokens=50, output_tokens=10),
-                        model="claude-sonnet-4-6",
-                        tool_calls=[{"id": "t1", "name": "consult_agent",
-                                     "input": {"to_role": "reviewer", "question": "Q1"}}]),
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=50, output_tokens=10),
+                model="claude-sonnet-4-6",
+                tool_calls=[
+                    {
+                        "id": "t1",
+                        "name": "consult_agent",
+                        "input": {"to_role": "reviewer", "question": "Q1"},
+                    }
+                ],
+            ),
             # Consult 2: blocked by policy (max_consults_per_agent=1)
-            LLMResponse(content="", usage=LLMUsage(input_tokens=50, output_tokens=10),
-                        model="claude-sonnet-4-6",
-                        tool_calls=[{"id": "t2", "name": "consult_agent",
-                                     "input": {"to_role": "reviewer", "question": "Q2"}}]),
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=50, output_tokens=10),
+                model="claude-sonnet-4-6",
+                tool_calls=[
+                    {
+                        "id": "t2",
+                        "name": "consult_agent",
+                        "input": {"to_role": "reviewer", "question": "Q2"},
+                    }
+                ],
+            ),
             # Final
-            LLMResponse(content="Done.", usage=LLMUsage(input_tokens=30, output_tokens=10),
-                        model="claude-sonnet-4-6"),
+            LLMResponse(
+                content="Done.",
+                usage=LLMUsage(input_tokens=30, output_tokens=10),
+                model="claude-sonnet-4-6",
+            ),
         ]
 
         def llm_factory(model: str):
@@ -1402,8 +1493,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         result = await execute_agent_node(state, llm_factory, cost_calc)
 
         consult_requests = [
-            m for m in result.get("agent_messages", [])
-            if m.get("type") == "consult_request"
+            m for m in result.get("agent_messages", []) if m.get("type") == "consult_request"
         ]
         assert len(consult_requests) == 1  # Only 1 allowed by policy
 
@@ -1436,11 +1526,13 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 content="",
                 usage=LLMUsage(input_tokens=50, output_tokens=10),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_self",
-                    "name": "consult_agent",
-                    "input": {"to_role": "coder", "question": "Help me think"},
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_self",
+                        "name": "consult_agent",
+                        "input": {"to_role": "coder", "question": "Help me think"},
+                    }
+                ],
             ),
             LLMResponse(
                 content="Proceeding alone.",
@@ -1459,8 +1551,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
 
         # Self-consultation should be silently blocked (no consult messages)
         consult_requests = [
-            m for m in result.get("agent_messages", [])
-            if m.get("type") == "consult_request"
+            m for m in result.get("agent_messages", []) if m.get("type") == "consult_request"
         ]
         assert len(consult_requests) == 0
 
@@ -1501,11 +1592,13 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 content="",
                 usage=LLMUsage(input_tokens=50, output_tokens=10),
                 model="claude-sonnet-4-6",
-                tool_calls=[{
-                    "id": "toolu_cross",
-                    "name": "consult_agent",
-                    "input": {"to_role": "coder-2", "question": "What did you do?"},
-                }],
+                tool_calls=[
+                    {
+                        "id": "toolu_cross",
+                        "name": "consult_agent",
+                        "input": {"to_role": "coder-2", "question": "What did you do?"},
+                    }
+                ],
             ),
             LLMResponse(
                 content="Working independently.",
@@ -1523,11 +1616,83 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         result = await execute_agent_node(state, llm_factory, cost_calc)
 
         consult_requests = [
-            m for m in result.get("agent_messages", [])
-            if m.get("type") == "consult_request"
+            m for m in result.get("agent_messages", []) if m.get("type") == "consult_request"
         ]
         assert len(consult_requests) == 0  # Blocked: same base role
 
 
 if __name__ == "__main__":
     unittest.main()
+
+    async def test_execute_agent_node_greenfield_planner_targets_child_root(self):
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Create Identity api saas",
+            "project_root": "/tmp/mounted-repo/identity-api-saas",
+            "target_root": "/tmp/mounted-repo/identity-api-saas",
+            "target_mode": "new_subfolder_project",
+            "classification": {
+                "task_type": "new_project",
+                "workspace_type": "new_subfolder_project",
+            },
+            "team_config": {
+                "agents": {
+                    "planner": {
+                        "id": "planner-1",
+                        "name": "Planner",
+                        "role": "planner",
+                        "system_prompt": "You are a planner.",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": [],
+                        "enrichment_context": "",
+                    }
+                }
+            },
+            "current_agent_role": "planner",
+            "agent_outputs": {},
+            "events": [],
+        }
+
+        mock_response = LLMResponse(
+            content="Plan created",
+            usage=LLMUsage(input_tokens=120, output_tokens=40),
+            model="claude-sonnet-4-6",
+        )
+        mock_llm = AsyncMock()
+        mock_llm.invoke.return_value = mock_response
+
+        def mock_llm_factory(model: str):
+            return mock_llm
+
+        mock_cost_calculator = MagicMock()
+        mock_cost_calculator.calculate.return_value = 0.05
+
+        await execute_agent_node(state, mock_llm_factory, mock_cost_calculator)
+
+        messages = mock_llm.invoke.call_args.kwargs["messages"]
+        assert "Do NOT begin with broad codebase reconnaissance" in messages[1]["content"]
+        assert "Target root: /tmp/mounted-repo/identity-api-saas" in messages[1]["content"]
+
+    def test_extract_written_files_ignores_internal_rigovo_artifacts(self):
+        from rigovo.application.graph.nodes.execute_agent import _extract_written_files
+
+        files = _extract_written_files(
+            [
+                {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "write_file",
+                            "input": {"path": ".rigovo/checkpoints.db-wal"},
+                        },
+                        {
+                            "type": "tool_use",
+                            "name": "write_file",
+                            "input": {"path": "src/app.py"},
+                        },
+                    ]
+                }
+            ]
+        )
+
+        assert files == ["src/app.py"]

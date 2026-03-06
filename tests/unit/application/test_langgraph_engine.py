@@ -21,7 +21,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from rigovo.application.graph.builder import GraphBuilder
 from rigovo.application.graph.state import TaskState
 from rigovo.domain.entities.agent import Agent
+from rigovo.domain.entities.quality import GateResult, GateStatus, Violation, ViolationSeverity
 from rigovo.domain.interfaces.llm_provider import LLMResponse, LLMUsage
+from rigovo.domain.interfaces.quality_gate import GateInput, QualityGate
 
 # ---------------------------------------------------------------------------
 # Mock LLM that returns context-aware responses
@@ -94,6 +96,32 @@ class _MockLLM:
 
     async def stream(self, *args: Any, **kwargs: Any) -> list:
         return []
+
+
+class _AlwaysFailGate(QualityGate):
+    @property
+    def gate_id(self) -> str:
+        return "rigour"
+
+    @property
+    def name(self) -> str:
+        return "Rigour"
+
+    async def run(self, gate_input: GateInput) -> GateResult:
+        return GateResult(
+            status=GateStatus.FAILED,
+            gates_run=1,
+            gates_passed=0,
+            violations=[
+                Violation(
+                    gate_id="rigour-check",
+                    message="Missing verification",
+                    severity=ViolationSeverity.ERROR,
+                    file_path=(gate_input.files_changed or ["src/feature.py"])[0],
+                    suggestion="Add verification and tests",
+                )
+            ],
+        )
 
 
 _ROLE_ORDER = {"lead": 0, "planner": 1, "coder": 2, "reviewer": 3, "qa": 4, "security": 5}
@@ -393,6 +421,25 @@ class TestLangGraphExecution(unittest.IsolatedAsyncioTestCase):
         # Should have passed both approval checkpoints
         assert result["approval_status"] == "approved"
         assert result["status"] == "completed"
+
+    async def test_golden_remediation_exhausts_with_fix_packet_and_lock(self):
+        """A failing gate should drive remediation state and eventually fail deterministically."""
+        builder = self._make_builder(quality_gates=[_AlwaysFailGate()])
+        compiled = builder.build_langgraph()
+
+        state = self._make_initial_state()
+        state["max_retries"] = 2
+
+        result = await compiled.ainvoke(state)
+
+        assert result["status"] == "failed"
+        assert result["retry_count"] >= 2
+        assert result["active_fix_packet"]["role"] == "coder-1"
+        assert result["downstream_lock_reason"] == "awaiting gate remediation by coder-1"
+        assert any(
+            isinstance(event, dict) and event.get("type") == "fix_packet_created"
+            for event in result.get("events", [])
+        )
 
     async def test_rejected_plan_goes_to_finalize(self):
         """When plan is rejected, graph skips execution and finalizes."""

@@ -8,6 +8,14 @@ from typing import Any
 from rigovo.application.graph.state import TaskState
 
 
+def _is_internal_runtime_path(path: str) -> bool:
+    """Return True for internal Rigovo runtime artifacts."""
+    normalized = str(path or "").replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized == ".rigovo" or normalized.startswith(".rigovo/")
+
+
 async def finalize_node(state: TaskState) -> dict[str, Any]:
     """
     Final node — aggregates results and determines final status.
@@ -24,7 +32,14 @@ async def finalize_node(state: TaskState) -> dict[str, Any]:
     total_tokens = sum(o.get("tokens", 0) for o in agent_outputs.values())
     total_cost = sum(o.get("cost", 0.0) for o in agent_outputs.values())
     total_duration = sum(o.get("duration_ms", 0) for o in agent_outputs.values())
-    files_changed = list({f for o in agent_outputs.values() for f in o.get("files_changed", [])})
+    files_changed = list(
+        {
+            f
+            for o in agent_outputs.values()
+            for f in o.get("files_changed", [])
+            if not _is_internal_runtime_path(f)
+        }
+    )
 
     # Determine final status
     if approval_status == "rejected":
@@ -43,8 +58,8 @@ async def finalize_node(state: TaskState) -> dict[str, Any]:
         "total_cost_usd": round(total_cost, 6),
         "total_duration_ms": total_duration,
         "files_changed": files_changed,
-        "events": state.get("events", [])
-        + [
+        "events": [
+            *state.get("events", []),
             {
                 "type": "task_finalized",
                 "status": final_status,

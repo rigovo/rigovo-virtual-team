@@ -14,11 +14,11 @@ import pytest
 
 from rigovo.application.master.deterministic_brain import (
     DeterministicClassification,
+    check_role_eligible,
     classify_by_keywords,
     classify_semantic,
     enforce_minimum_team,
     get_minimum_team,
-    check_role_eligible,
 )
 from rigovo.application.master.intent_signatures import (
     INTENT_SIGNATURES,
@@ -27,7 +27,6 @@ from rigovo.application.master.intent_signatures import (
     semantic_to_deterministic,
 )
 from rigovo.infrastructure.embeddings.local_embeddings import LocalEmbeddingProvider
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # Pass 1: Keyword / Regex tests
@@ -195,7 +194,9 @@ class TestSemanticClassifier:
         assert result.task_type == "bug"
 
     @pytest.mark.asyncio
-    async def test_classification_has_similarity_scores(self, classifier: SemanticClassifier) -> None:
+    async def test_classification_has_similarity_scores(
+        self, classifier: SemanticClassifier
+    ) -> None:
         result = await classifier.classify("optimize the slow database queries")
         assert result.best_similarity >= 0.0
         assert result.best_similarity <= 1.0
@@ -238,54 +239,61 @@ class TestClassifySemantic:
 class TestMinimumTeam:
     """Tests for enforce_minimum_team."""
 
-    def test_new_project_requires_planner_coder_reviewer(self) -> None:
+    def test_new_project_requires_lead_coder_reviewer_qa(self) -> None:
         spec = get_minimum_team("new_project")
-        assert "planner" in spec.required_roles
+        assert "lead" in spec.required_roles
         assert "coder" in spec.required_roles
         assert "reviewer" in spec.required_roles
+        assert "qa" in spec.required_roles
 
-    def test_bug_requires_coder_reviewer(self) -> None:
+    def test_bug_requires_lead_coder_reviewer_qa(self) -> None:
         spec = get_minimum_team("bug")
+        assert "lead" in spec.required_roles
         assert "coder" in spec.required_roles
         assert "reviewer" in spec.required_roles
+        assert "qa" in spec.required_roles
 
-    def test_security_requires_four_roles(self) -> None:
+    def test_security_requires_core_team_plus_security(self) -> None:
         spec = get_minimum_team("security")
-        assert "planner" in spec.required_roles
+        assert "lead" in spec.required_roles
         assert "security" in spec.required_roles
         assert "coder" in spec.required_roles
         assert "reviewer" in spec.required_roles
+        assert "qa" in spec.required_roles
 
-    def test_enforce_adds_missing_planner(self) -> None:
+    def test_enforce_adds_missing_core_roles(self) -> None:
         llm_agents = [
             {"instance_id": "coder-1", "role": "coder"},
         ]
         result = enforce_minimum_team(llm_agents, "feature", "add dark mode")
         roles = {a["role"] for a in result}
-        assert "planner" in roles
+        assert "lead" in roles
         assert "coder" in roles
         assert "reviewer" in roles
-        assert len(result) == 3  # coder + planner + reviewer added
+        assert "qa" in roles
+        assert len(result) == 4
 
     def test_enforce_preserves_existing_agents(self) -> None:
         llm_agents = [
-            {"instance_id": "planner-1", "role": "planner"},
+            {"instance_id": "lead-1", "role": "lead"},
             {"instance_id": "coder-1", "role": "coder"},
             {"instance_id": "reviewer-1", "role": "reviewer"},
             {"instance_id": "security-1", "role": "security"},
+            {"instance_id": "qa-1", "role": "qa"},
         ]
         result = enforce_minimum_team(llm_agents, "feature", "test")
-        assert len(result) == 4  # No change — all required roles present + extra
+        assert len(result) == 5
 
     def test_enforce_does_not_duplicate(self) -> None:
         llm_agents = [
-            {"instance_id": "planner-1", "role": "planner"},
+            {"instance_id": "lead-1", "role": "lead"},
             {"instance_id": "coder-1", "role": "coder"},
             {"instance_id": "coder-2", "role": "coder"},
             {"instance_id": "reviewer-1", "role": "reviewer"},
+            {"instance_id": "qa-1", "role": "qa"},
         ]
         result = enforce_minimum_team(llm_agents, "feature", "test")
-        assert len(result) == 4  # Two coders fine, no additions needed
+        assert len(result) == 5
 
 
 # ═══════════════════════════════════════════════════════════════════════
