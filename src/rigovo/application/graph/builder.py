@@ -39,8 +39,8 @@ from rigovo.application.graph.nodes.execute_agent import (
     execute_agent_node,
     execute_agents_parallel,
 )
-from rigovo.application.graph.nodes.intent_gate import intent_gate_node
 from rigovo.application.graph.nodes.finalize import finalize_node
+from rigovo.application.graph.nodes.intent_gate import intent_gate_node
 from rigovo.application.graph.nodes.quality_check import quality_check_node
 from rigovo.application.graph.nodes.reclassify import reclassify_node
 from rigovo.application.graph.nodes.replan import replan_node
@@ -164,6 +164,19 @@ class GraphBuilder:
             )
             status = str(result.get("status", "") or "")
             if status not in {"awaiting_budget_approval", "awaiting_runtime_approval"}:
+                if current_state is not state:
+                    merged_events = list(current_state.get("events", []))
+                    for event in list(result.get("events", [])):
+                        if event not in merged_events:
+                            merged_events.append(event)
+                    result = {
+                        **result,
+                        "events": merged_events,
+                        "required_approval_actions": result.get(
+                            "required_approval_actions",
+                            current_state.get("required_approval_actions", []),
+                        ),
+                    }
                 return result
 
             approval_state = {**current_state, **result}
@@ -271,13 +284,14 @@ class GraphBuilder:
 
     @staticmethod
     def create_sqlite_checkpointer(db_path: str | Path | None = None) -> Any:
-        """Create a SQLite checkpointer for crash recovery.
+        """Create a SQLite checkpointer context for crash recovery.
 
         Args:
             db_path: Path to SQLite database. Defaults to .rigovo/checkpoints.db.
 
         Returns:
-            A LangGraph-compatible checkpointer, or None if unavailable.
+            A context manager that yields a LangGraph-compatible checkpointer,
+            or ``None`` if the SQLite checkpoint package is unavailable.
         """
         try:
             from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -348,8 +362,8 @@ class GraphBuilder:
             if not available_teams:
                 return {
                     "status": "routed",
-                    "events": state.get("events", [])
-                    + [
+                    "events": [
+                        *state.get("events", []),
                         {
                             "type": "team_routed",
                             "team_name": "engineering",
@@ -646,7 +660,6 @@ class GraphBuilder:
         No checkpointing, no interrupt(). Useful for unit tests and
         environments where ``langgraph`` is not installed.
         """
-        resolved_agents = agents if agents is not None else self._agents
         state = dict(initial_state)
 
         # 0. Classify first — prioritize immediate intent understanding.

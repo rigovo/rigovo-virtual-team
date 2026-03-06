@@ -13,17 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-from typing import Any
 
-from rigovo.application.graph.builder import GraphBuilder, PARALLELIZABLE_ROLES
+from rigovo.application.graph.builder import PARALLELIZABLE_ROLES, GraphBuilder
 from rigovo.application.graph.nodes.execute_agent import (
-    execute_agent_node,
-    execute_agents_parallel,
     _build_agent_messages,
     _check_budget_guards,
-    BudgetExceededError,
+    execute_agent_node,
+    execute_agents_parallel,
 )
 from rigovo.application.graph.state import TaskState
 from rigovo.config_schema import CustomAgentSchema, TeamSchema
@@ -183,15 +180,13 @@ class TestCheckpointing(unittest.TestCase):
     """Test SQLite checkpointer creation."""
 
     def test_create_sqlite_checkpointer_returns_none_without_lib(self):
-        """If langgraph.checkpoint not installed, returns None."""
+        """If the SQLite checkpointer package is unavailable, returns None."""
         with patch.dict("sys.modules", {
             "langgraph.checkpoint.sqlite.aio": None,
             "langgraph.checkpoint.sqlite": None,
         }):
-            # This should not raise, just return None
             result = GraphBuilder.create_sqlite_checkpointer("/tmp/test.db")
-            # Result depends on actual installation, but shouldn't crash
-            assert result is None or result is not None  # Just test no crash
+            assert result is None
 
     def test_graph_builder_accepts_checkpointer_param(self):
         """GraphBuilder.build_langgraph accepts checkpointer argument."""
@@ -318,7 +313,7 @@ class TestParallelFanOut(unittest.IsolatedAsyncioTestCase):
     async def test_execute_agents_parallel(self):
         """execute_agents_parallel runs multiple agents concurrently."""
         state = _make_multi_agent_state()
-        factory, mock_llm = _mock_llm_factory()
+        factory, _mock_llm = _mock_llm_factory()
         cost_calc = _mock_cost_calc()
 
         result = await execute_agents_parallel(
@@ -619,8 +614,18 @@ class TestFinalizeNodeReturnsMetrics(unittest.TestCase):
 
         state = {
             "agent_outputs": {
-                "coder": {"tokens": 500, "cost": 0.05, "duration_ms": 1000, "files_changed": ["a.py"]},
-                "reviewer": {"tokens": 300, "cost": 0.03, "duration_ms": 800, "files_changed": ["a.py"]},
+                "coder": {
+                    "tokens": 500,
+                    "cost": 0.05,
+                    "duration_ms": 1000,
+                    "files_changed": ["a.py"],
+                },
+                "reviewer": {
+                    "tokens": 300,
+                    "cost": 0.03,
+                    "duration_ms": 800,
+                    "files_changed": ["a.py"],
+                },
             },
             "approval_status": "",
             "gate_results": {"passed": True},
@@ -678,8 +683,8 @@ class TestIdleTimeout(unittest.TestCase):
     def test_idle_timeout_defaults(self):
         """Verify idle timeout constants are set correctly."""
         from rigovo.application.graph.nodes.execute_agent import (
-            DEFAULT_IDLE_TIMEOUT,
             DEFAULT_BATCH_TIMEOUT,
+            DEFAULT_IDLE_TIMEOUT,
         )
         assert DEFAULT_IDLE_TIMEOUT == 120  # 2 minutes
         assert DEFAULT_BATCH_TIMEOUT == 900  # 15 minutes

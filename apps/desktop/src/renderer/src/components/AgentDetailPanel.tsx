@@ -15,26 +15,26 @@ import {
 /*  Role metadata — Professional titles + colours                       */
 /* ═══════════════════════════════════════════════════════════════════ */
 const ROLE_META: Record<string, { label: string; subtitle: string; color: string; icon: string }> = {
-  master:   { label: "Chief Architect",     subtitle: "Orchestrator",        color: "#4ade80", icon: "◎"  },
-  planner:  { label: "Project Manager",     subtitle: "Planning & Design",   color: "#a78bfa", icon: "🧠" },
-  coder:    { label: "Software Engineer",   subtitle: "Implementation",      color: "#4ade80", icon: "💻" },
-  reviewer: { label: "Code Reviewer",       subtitle: "Code Review",         color: "#60a5fa", icon: "🔎" },
-  security: { label: "Security Engineer",   subtitle: "Security Audit",      color: "#f87171", icon: "🔐" },
-  qa:       { label: "QA Engineer",         subtitle: "Quality Assurance",   color: "#fb923c", icon: "🧪" },
-  devops:   { label: "DevOps Engineer",     subtitle: "Infrastructure",      color: "#818cf8", icon: "⚙️"  },
-  sre:      { label: "SRE Engineer",        subtitle: "Reliability",         color: "#2dd4bf", icon: "📈" },
-  lead:     { label: "Tech Lead",           subtitle: "Technical Leadership",color: "#a3a3a3", icon: "🎯" },
-  rigour:   { label: "Rigour Gates",        subtitle: "Rigour Analysis",     color: "#22d3ee", icon: "⚡" },
-  trinity:  { label: "Rigour Gates",        subtitle: "Rigour Analysis",     color: "#22d3ee", icon: "⚡" },
-  memory:   { label: "Knowledge Base",      subtitle: "Semantic Memory",     color: "#c084fc", icon: "🧬" },
-  docs:     { label: "Technical Writer",    subtitle: "Documentation",       color: "#a8a29e", icon: "📝" },
+  master:   { label: "Chief Architect",   subtitle: "Orchestrator",          color: "#4ade80", icon: "CA" },
+  planner:  { label: "Project Manager",   subtitle: "Planning & Design",     color: "#a78bfa", icon: "PM" },
+  coder:    { label: "Software Engineer", subtitle: "Implementation",        color: "#4ade80", icon: "SE" },
+  reviewer: { label: "Code Reviewer",     subtitle: "Code Review",           color: "#60a5fa", icon: "CR" },
+  security: { label: "Security Engineer", subtitle: "Security Audit",        color: "#f87171", icon: "SC" },
+  qa:       { label: "QA Engineer",       subtitle: "Quality Assurance",     color: "#fb923c", icon: "QA" },
+  devops:   { label: "DevOps Engineer",   subtitle: "Infrastructure",        color: "#818cf8", icon: "DO" },
+  sre:      { label: "SRE Engineer",      subtitle: "Reliability",           color: "#2dd4bf", icon: "SR" },
+  lead:     { label: "Tech Lead",         subtitle: "Technical Leadership",  color: "#a3a3a3", icon: "TL" },
+  rigour:   { label: "Rigour Gates",      subtitle: "Rigour Analysis",       color: "#22d3ee", icon: "RG" },
+  trinity:  { label: "Rigour Gates",      subtitle: "Rigour Analysis",       color: "#22d3ee", icon: "RG" },
+  memory:   { label: "Knowledge Base",    subtitle: "Semantic Memory",       color: "#c084fc", icon: "KB" },
+  docs:     { label: "Technical Writer",  subtitle: "Documentation",         color: "#a8a29e", icon: "TW" },
 };
 
 function roleMeta(role: string) {
   const r = resolveCanonicalRole(role);
   if (ROLE_META[r]) return ROLE_META[r];
 
-  return { label: r.charAt(0).toUpperCase() + r.slice(1), subtitle: "Agent", color: "#a3a3a3", icon: "🤖" };
+  return { label: r.charAt(0).toUpperCase() + r.slice(1), subtitle: "Agent", color: "#a3a3a3", icon: "AG" };
 }
 
 function resolveBaseRole(role: string): string {
@@ -61,7 +61,13 @@ export interface AgentDetailPanelProps {
   activeFixPacket?: Record<string, unknown> | null;
   downstreamLockReason?: string | null;
   supervisoryDecisions?: Array<Record<string, unknown>>;
+  spawnHistory?: Array<Record<string, unknown>>;
+  debateHistory?: Array<Record<string, unknown>>;
   riskActionQueue?: Array<Record<string, unknown>>;
+  requiredApprovalActions?: Array<Record<string, unknown>>;
+  agentLearningUpdates?: Record<string, Array<Record<string, unknown>>>;
+  behaviorChangeAudit?: Array<Record<string, unknown>>;
+  roleLearningMetrics?: Record<string, Record<string, unknown>>;
   totalFiles:    number;
   expectedAgents?: number;
   nextExpectedRole?: string | null;
@@ -78,13 +84,25 @@ function RuntimeTruthSection({
   activeFixPacket,
   downstreamLockReason,
   supervisoryDecisions,
+  spawnHistory,
+  debateHistory,
   riskActionQueue,
+  requiredApprovalActions,
+  agentLearningUpdates,
+  behaviorChangeAudit,
+  roleLearningMetrics,
 }: {
   activeRole: string | null;
   activeFixPacket?: Record<string, unknown> | null;
   downstreamLockReason?: string | null;
   supervisoryDecisions?: Array<Record<string, unknown>>;
+  spawnHistory?: Array<Record<string, unknown>>;
+  debateHistory?: Array<Record<string, unknown>>;
   riskActionQueue?: Array<Record<string, unknown>>;
+  requiredApprovalActions?: Array<Record<string, unknown>>;
+  agentLearningUpdates?: Record<string, Array<Record<string, unknown>>>;
+  behaviorChangeAudit?: Array<Record<string, unknown>>;
+  roleLearningMetrics?: Record<string, Record<string, unknown>>;
 }) {
   const fixPacket = activeFixPacket && Object.keys(activeFixPacket).length > 0 ? activeFixPacket : null;
   const fixRole = String(fixPacket?.role || "").trim().toLowerCase();
@@ -95,8 +113,41 @@ function RuntimeTruthSection({
     : [];
   const masterDecisions = (supervisoryDecisions ?? []).slice(-2);
   const riskEvents = (riskActionQueue ?? []).slice(-3);
+  const approvalRequests = (requiredApprovalActions ?? []).filter(
+    (item) => !activeRole || resolveCanonicalRole(String(item.role || "")) === resolveCanonicalRole(activeRole),
+  );
+  const spawnEvents = (spawnHistory ?? []).filter(
+    (item) => !activeRole || resolveCanonicalRole(String(item.parent_role || item.role || "")) === resolveCanonicalRole(activeRole),
+  ).slice(-3);
+  const debateEvents = (debateHistory ?? []).filter(
+    (item) =>
+      !activeRole ||
+      resolveCanonicalRole(String(item.role || item.from_role || item.to_role || "")) ===
+        resolveCanonicalRole(activeRole),
+  ).slice(-2);
+  const roleLearning = Object.entries(agentLearningUpdates ?? {}).find(
+    ([role]) => !activeRole || resolveCanonicalRole(role) === resolveCanonicalRole(activeRole),
+  )?.[1] ?? [];
+  const learningMetrics =
+    Object.entries(roleLearningMetrics ?? {}).find(
+      ([role]) => !activeRole || resolveCanonicalRole(role) === resolveCanonicalRole(activeRole),
+    )?.[1] ?? null;
+  const learningAudit = (behaviorChangeAudit ?? []).filter(
+    (item) => !activeRole || resolveCanonicalRole(String(item.role || "")) === resolveCanonicalRole(activeRole),
+  ).slice(-2);
 
-  if (!fixPacket && !downstreamLockReason && masterDecisions.length === 0 && riskEvents.length === 0) {
+  if (
+    !fixPacket &&
+    !downstreamLockReason &&
+    masterDecisions.length === 0 &&
+    riskEvents.length === 0 &&
+    approvalRequests.length === 0 &&
+    spawnEvents.length === 0 &&
+    debateEvents.length === 0 &&
+    roleLearning.length === 0 &&
+    !learningMetrics &&
+    learningAudit.length === 0
+  ) {
     return null;
   }
 
@@ -146,6 +197,23 @@ function RuntimeTruthSection({
           ))}
         </div>
       )}
+      {approvalRequests.length > 0 && (
+        <div className="adp-comms-list" style={{ marginTop: 8 }}>
+          {approvalRequests.map((approval, idx) => (
+            <div key={`approval-${idx}`} className="adp-comms-item">
+              <div className="adp-comms-header">
+                <span className="adp-comms-badge challenge">Approval required</span>
+                <span className="adp-comms-kind">
+                  {String(approval.kind || approval.checkpoint || "risk_action")}
+                </span>
+              </div>
+              <p className="adp-comms-snippet">
+                {String(approval.summary || approval.reason || "Operator approval required.")}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
       {riskEvents.length > 0 && (
         <div className="adp-comms-list" style={{ marginTop: 8 }}>
           {riskEvents.map((risk, idx) => (
@@ -161,6 +229,134 @@ function RuntimeTruthSection({
           ))}
         </div>
       )}
+      {spawnEvents.length > 0 && (
+        <div className="adp-comms-list" style={{ marginTop: 8 }}>
+          {spawnEvents.map((spawn, idx) => (
+            <div key={`spawn-${idx}`} className="adp-comms-item">
+              <div className="adp-comms-header">
+                <span className="adp-comms-badge consult">Spawn branch</span>
+                <span className="adp-comms-kind">
+                  {String(spawn.specialist_role || spawn.spawn_kind || "specialist")}
+                </span>
+              </div>
+              <p className="adp-comms-snippet">
+                {String(
+                  spawn.bounded_assignment ||
+                  spawn.description ||
+                  "Bounded specialist branch created."
+                )}
+              </p>
+              {spawn.merge_back_contract && (
+                <p className="adp-comms-snippet">
+                  Merge-back: {String((spawn.merge_back_contract as Record<string, unknown>).child_role || "specialist")} {"->"}{" "}
+                  {String((spawn.merge_back_contract as Record<string, unknown>).parent_role || activeRole || "parent")}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {debateEvents.length > 0 && (
+        <div className="adp-comms-list" style={{ marginTop: 8 }}>
+          {debateEvents.map((debate, idx) => (
+            <div key={`debate-runtime-${idx}`} className="adp-comms-item">
+              <div className="adp-comms-header">
+                <span className="adp-comms-badge debate">Debate</span>
+                <span className="adp-comms-kind">
+                  {String(debate.type || "debate")}
+                </span>
+              </div>
+              <p className="adp-comms-snippet">
+                {String(
+                  debate.summary ||
+                    debate.action_delta ||
+                    debate.reviewer_feedback ||
+                    "Debate event recorded.",
+                )}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+      {(roleLearning.length > 0 || learningAudit.length > 0) && (
+        <div className="adp-comms-list" style={{ marginTop: 8 }}>
+          {roleLearning.slice(0, 2).map((item, idx) => (
+            <div key={`learn-${idx}`} className="adp-comms-item">
+              <div className="adp-comms-header">
+                <span className="adp-comms-badge consult">Role learning</span>
+                <span className="adp-comms-kind">
+                  {String(item.score || item.kind || "candidate")}
+                </span>
+              </div>
+              <p className="adp-comms-snippet">
+                {String(item.summary || item.pattern || item.reason || "Promoted role pattern.")}
+              </p>
+            </div>
+          ))}
+          {learningAudit.map((item, idx) => (
+            <div key={`audit-${idx}`} className="adp-comms-item">
+              <div className="adp-comms-header">
+                <span className="adp-comms-badge debate">Behavior change</span>
+                <span className="adp-comms-kind">{String(item.role || activeRole || "role")}</span>
+              </div>
+              <p className="adp-comms-snippet">
+                {String(item.summary || item.reason || item.change || "Behavior updated from promoted learning.")}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+      {learningMetrics && (
+        <div className="adp-comms-item" style={{ marginTop: 8 }}>
+          <div className="adp-comms-header">
+            <span className="adp-comms-badge consult">Policy tuning</span>
+            <span className="adp-comms-kind">
+              {String(learningMetrics.update_count || 0)} updates
+            </span>
+          </div>
+          <p className="adp-comms-snippet">
+            Top score {String(learningMetrics.top_score || 0)} · avg {String(learningMetrics.avg_score || 0)} ·
+            promotions {String(learningMetrics.promotions || 0)} · behavior changes {String(learningMetrics.behavior_changes || 0)}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DebateSection({ role, collab }: { role: string; collab: CollaborationData | null }) {
+  if (!collab) return null;
+  const decisions = collab.events.filter((event) => {
+    if (event.type !== "debate_adjudicated") return false;
+    return (
+      resolveCanonicalRole(event.from_role || "") === resolveCanonicalRole(role) ||
+      resolveCanonicalRole(event.to_role || "") === resolveCanonicalRole(role) ||
+      resolveCanonicalRole(String(event.role || "")) === resolveCanonicalRole(role)
+    );
+  }).slice(-2);
+  if (decisions.length === 0) return null;
+
+  return (
+    <div className="adp-section">
+      <div className="adp-section-hdr">
+        <span className="adp-section-icon">DB</span>
+        <span className="adp-section-title">Debate adjudication</span>
+      </div>
+      <div className="adp-comms-list">
+        {decisions.map((event, index) => (
+          <div key={`debate-${index}`} className="adp-comms-item">
+            <div className="adp-comms-header">
+              <span className="adp-comms-badge debate">Adjudicated</span>
+              <span className="adp-comms-kind">
+                {String(event.selected_next_owner || event.to_role || "owner selected")}
+              </span>
+            </div>
+            <p className="adp-comms-snippet">
+              {String(event.action_delta || event.content || "Debate resolved with a concrete next owner.")}
+            </p>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -257,26 +453,30 @@ function ConsultationList({ role, collab }: { role: string; collab: Collaboratio
           const isRequest  = e.type === "agent_consult_requested";
           const isResponse = e.type === "agent_consult_completed";
           const isDebate   = e.type === "debate_round";
+          const isDebateDecision = e.type === "debate_adjudicated";
           const arrow      = isRequest ? "→" : isResponse ? "←" : "↔";
-          const otherRaw   = isRequest ? e.to_role : e.from_role;
+          const otherRaw   = isRequest ? e.to_role : isDebateDecision ? e.selected_next_owner : e.from_role;
           const otherLabel = roleMeta(otherRaw || "agent").label;
-          const color      = isDebate ? "#fb923c" : "#60a5fa";
+          const color      = isDebate || isDebateDecision ? "#fb923c" : "#60a5fa";
           const msg = e.message_id ? msgMap[e.message_id] : null;
           const response = e.message_id ? responseByRequest[e.message_id] : null;
           const snippet = isRequest
             ? (msg?.content ?? e.question_preview ?? "")
             : isResponse
               ? (response?.content ?? e.response_preview ?? "")
-              : (e.reviewer_feedback ?? "");
+              : isDebateDecision
+                ? `Next owner: ${roleMeta(e.selected_next_owner ?? "agent").label}. `
+                  + `${Array.isArray(e.feedback_sources) ? e.feedback_sources.length : 0} feedback source(s).`
+                : (e.reviewer_feedback ?? "");
           return (
             <div key={i} className="adp-consult-card">
               <div className="adp-consult-row">
                 <span className="adp-consult-arrow" style={{ color }}>{arrow}</span>
                 <span className="adp-consult-peer" style={{ color }}>
-                  {isDebate ? `Debate rd ${e.round ?? ""}` : otherLabel}
+                  {isDebate || isDebateDecision ? `Debate rd ${e.round ?? ""}` : otherLabel}
                 </span>
                 <span className="adp-consult-type">
-                  {isDebate ? "debate" : isRequest ? "asked" : "replied"}
+                  {isDebateDecision ? "adjudicated" : isDebate ? "debate" : isRequest ? "asked" : "replied"}
                 </span>
               </div>
               {snippet && (
@@ -296,7 +496,7 @@ function ConsultationList({ role, collab }: { role: string; collab: Collaboratio
 function TeamCommsPanel({ collab }: { collab: CollaborationData | null }) {
   if (!collab) return null;
   const comms = collab.events.filter(e =>
-    ["agent_consult_requested", "agent_consult_completed", "debate_round"].includes(e.type)
+    ["agent_consult_requested", "agent_consult_completed", "debate_round", "debate_adjudicated"].includes(e.type)
   ).slice(-10);
   if (comms.length === 0) return null;
 
@@ -319,25 +519,38 @@ function TeamCommsPanel({ collab }: { collab: CollaborationData | null }) {
       <div className="adp-comms-list">
         {comms.map((e, i) => {
           const isDebate = e.type === "debate_round";
+          const isDebateDecision = e.type === "debate_adjudicated";
           const fromLabel = roleMeta(e.from_role ?? "system").label;
-          const toLabel   = roleMeta(e.to_role ?? "agent").label;
+          const toLabel   = roleMeta((isDebateDecision ? e.selected_next_owner : e.to_role) ?? "agent").label;
           const msg = e.message_id ? msgMap[e.message_id] : null;
           const response = e.message_id ? responseByRequest[e.message_id] : null;
           const text = isDebate
             ? (e.reviewer_feedback ?? "")
+            : isDebateDecision
+              ? `Next owner: ${toLabel}. Feedback sources: ${
+                  Array.isArray(e.feedback_sources) ? e.feedback_sources.length : 0
+                }.`
             : e.type === "agent_consult_requested"
               ? (msg?.content ?? e.question_preview ?? "")
               : (response?.content ?? e.response_preview ?? "");
           return (
             <div key={i} className="adp-comms-item">
               <div className="adp-comms-header">
-                {isDebate ? (
-                  <span className="adp-comms-badge debate">Debate rd {e.round ?? i + 1}</span>
+                {isDebate || isDebateDecision ? (
+                  <span className="adp-comms-badge debate">
+                    {isDebateDecision ? `Adjudicated rd ${e.round ?? i + 1}` : `Debate rd ${e.round ?? i + 1}`}
+                  </span>
                 ) : (
                   <span className="adp-comms-badge consult">{fromLabel} → {toLabel}</span>
                 )}
                 <span className="adp-comms-kind">
-                  {e.type === "agent_consult_requested" ? "asked" : e.type === "agent_consult_completed" ? "replied" : "feedback"}
+                  {e.type === "agent_consult_requested"
+                    ? "asked"
+                    : e.type === "agent_consult_completed"
+                      ? "replied"
+                      : isDebateDecision
+                        ? "decision"
+                        : "feedback"}
                 </span>
               </div>
               {text && (
@@ -617,7 +830,8 @@ function resolveActiveRole(selectedRole: string | null, steps: TaskStep[]): stri
 
 export default function AgentDetailPanel({
   steps, taskStatus, selectedRole, collab, costs,
-  activeFixPacket, downstreamLockReason, supervisoryDecisions, riskActionQueue,
+  activeFixPacket, downstreamLockReason, supervisoryDecisions, spawnHistory, debateHistory, riskActionQueue,
+  requiredApprovalActions, agentLearningUpdates, behaviorChangeAudit, roleLearningMetrics,
   totalFiles, expectedAgents, nextExpectedRole, nextExpectedReason, replanCount, onOpenFiles, onApprove, onReject, isApproval,
 }: AgentDetailPanelProps) {
 
@@ -673,7 +887,13 @@ export default function AgentDetailPanel({
             activeFixPacket={activeFixPacket}
             downstreamLockReason={downstreamLockReason}
             supervisoryDecisions={supervisoryDecisions}
+            spawnHistory={spawnHistory}
+            debateHistory={debateHistory}
             riskActionQueue={riskActionQueue}
+            requiredApprovalActions={requiredApprovalActions}
+            agentLearningUpdates={agentLearningUpdates}
+            behaviorChangeAudit={behaviorChangeAudit}
+            roleLearningMetrics={roleLearningMetrics}
           />
           {isActive && !hasRunning && step.status === "complete" && totalAgentCount > completedCount && (
             <div className="adp-section" style={{ marginTop: 8 }}>
@@ -702,6 +922,7 @@ export default function AgentDetailPanel({
             agent={activeRole}
             onOpen={() => onOpenFiles(activeRole, step.files_changed)}
           />
+          <DebateSection role={activeBaseRole || activeRole} collab={collab} />
           <ConsultationList role={activeBaseRole || activeRole} collab={collab} />
           <AgentOutput step={step} />
           <TeamCommsPanel collab={collab} />
@@ -747,7 +968,13 @@ export default function AgentDetailPanel({
                 activeFixPacket={activeFixPacket}
                 downstreamLockReason={downstreamLockReason}
                 supervisoryDecisions={supervisoryDecisions}
+                spawnHistory={spawnHistory}
+                debateHistory={debateHistory}
                 riskActionQueue={riskActionQueue}
+                requiredApprovalActions={requiredApprovalActions}
+                agentLearningUpdates={agentLearningUpdates}
+                behaviorChangeAudit={behaviorChangeAudit}
+                roleLearningMetrics={roleLearningMetrics}
               />
             </div>
           )}
@@ -820,6 +1047,17 @@ export default function AgentDetailPanel({
                   {collab!.summary.debate_rounds}
                 </span>
                 <span className="adp-sum-lbl">debates</span>
+              </span>
+            </>
+          )}
+          {(requiredApprovalActions?.length ?? 0) > 0 && (
+            <>
+              <span className="adp-sum-sep" />
+              <span className="adp-sum-item">
+                <span className="adp-sum-num" style={{ color: "#f87171" }}>
+                  {requiredApprovalActions?.length ?? 0}
+                </span>
+                <span className="adp-sum-lbl">approvals</span>
               </span>
             </>
           )}

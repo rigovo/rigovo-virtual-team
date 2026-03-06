@@ -114,7 +114,8 @@ def _remediation_update(
         affected_files=affected_files,
         remediation_phase=remediation_phase,
     )
-    events = list(state.get("events", [])) + [
+    events = [
+        *list(state.get("events", [])),
         {
             "type": "fix_packet_created",
             "role": current_role,
@@ -140,7 +141,7 @@ def _remediation_update(
     return {
         "gate_results": gate_summary,
         "active_fix_packet": active_fix_packet,
-        "fix_packets": state.get("fix_packets", []) + [active_fix_packet["prompt"]],
+        "fix_packets": [*list(state.get("fix_packets", [])), active_fix_packet["prompt"]],
         "retry_count": retry_count,
         "downstream_lock_reason": f"awaiting gate remediation by {current_role}",
         "events": events,
@@ -339,18 +340,23 @@ async def _validate_master_agent_output(
             return False
 
         for agent_id in execution_dag:
-            if agent_id not in visited:
-                if has_cycle(agent_id):
-                    violations.append(
-                        Violation(
-                            gate_id="master-circular-dependency",
-                            message=f"Circular dependency detected in pipeline involving '{agent_id}'",
-                            severity=ViolationSeverity.ERROR,
-                            suggestion="Fix the dependency graph so no agent waits (directly or indirectly) on its own work",
-                            category="structural",
-                        )
+            if agent_id not in visited and has_cycle(agent_id):
+                violations.append(
+                    Violation(
+                        gate_id="master-circular-dependency",
+                        message=(
+                            "Circular dependency detected in pipeline "
+                            f"involving '{agent_id}'"
+                        ),
+                        severity=ViolationSeverity.ERROR,
+                        suggestion=(
+                            "Fix the dependency graph so no agent waits "
+                            "(directly or indirectly) on its own work"
+                        ),
+                        category="structural",
                     )
-                    break
+                )
+                break
 
     # Check 4: Verify domain_analysis and architecture_notes exist
     if not staffing_plan.get("domain_analysis"):
@@ -368,7 +374,10 @@ async def _validate_master_agent_output(
         violations.append(
             Violation(
                 gate_id="master-missing-architecture",
-                message="Staffing plan should include architecture_notes (key architectural decisions)",
+                message=(
+                    "Staffing plan should include architecture_notes "
+                    "(key architectural decisions)"
+                ),
                 severity=ViolationSeverity.WARNING,
                 suggestion="Add architectural guidance for the team",
                 category="structural",
@@ -673,7 +682,10 @@ async def quality_check_node(
         agent_label = str(agent_cfg.get("name", "")).strip() or current_instance
         violation = Violation(
             gate_id="no-files-produced",
-            message=f"Agent '{agent_label}' ({current_instance}) is expected to produce code but wrote 0 files",
+            message=(
+                f"Agent '{agent_label}' ({current_instance}) is expected "
+                "to produce code but wrote 0 files"
+            ),
             severity=ViolationSeverity.ERROR,
             suggestion="Use the write_file tool to create or modify files",
         )
@@ -829,8 +841,8 @@ async def quality_check_node(
         "gate_history": gate_history,
         "active_fix_packet": {},
         "downstream_lock_reason": "",
-        "events": state.get("events", [])
-        + [
+        "events": [
+            *list(state.get("events", [])),
             {
                 "type": "gate_results",
                 "role": current_instance,
@@ -856,7 +868,10 @@ async def quality_check_node(
                     gate_id="execution-verification-failed",
                     message=str(detail)[:500],
                     severity=ViolationSeverity.ERROR,
-                    suggestion="Fix the runtime errors. The code must compile, build, and pass tests.",
+                    suggestion=(
+                        "Fix the runtime errors. The code must compile, "
+                        "build, and pass tests."
+                    ),
                     category="correctness",
                 )
             )

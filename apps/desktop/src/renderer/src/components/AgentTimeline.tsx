@@ -174,6 +174,10 @@ export interface CollabEvent {
   role?: string;
   from_role?: string;
   to_role?: string;
+  summary?: string;
+  content?: string;
+  selected_next_owner?: string;
+  action_delta?: string;
   message_id?: string;
   question_preview?: string;
   response_preview?: string;
@@ -185,6 +189,9 @@ export interface CollabEvent {
   subtask_index?: number;
   description?: string;
   reason?: string;
+  specialist_role?: string;
+  spawn_kind?: string;
+  merge_back_contract?: Record<string, unknown>;
   max_subtasks_per_agent_step?: number;
   files_changed?: number;
   created_at?: number | string;

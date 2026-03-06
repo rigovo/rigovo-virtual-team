@@ -14,6 +14,7 @@ Features:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -77,7 +78,7 @@ def _percentile(sorted_values: list[int], percentile: float) -> int:
         return int(sorted_values[lower])
     weight = rank - lower
     value = sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * weight
-    return int(round(value))
+    return round(value)
 
 
 def _derive_adaptive_budget_profiles(
@@ -147,7 +148,11 @@ def _write_failure_log(
             f"Status: {final_state.get('status', 'unknown')}",
             f"Current agent: {final_state.get('current_agent_role', 'N/A')}",
             f"Completed roles: {', '.join(final_state.get('completed_roles', []))}",
-            f"Retry count: {final_state.get('retry_count', 0)} / {final_state.get('max_retries', 5)}",
+            (
+                "Retry count: "
+                f"{final_state.get('retry_count', 0)} / "
+                f"{final_state.get('max_retries', 5)}"
+            ),
             "",
         ]
 
@@ -160,7 +165,9 @@ def _write_failure_log(
             for v in gate_results.get("violations", []):
                 if isinstance(v, dict):
                     lines.append(
-                        f"  VIOLATION: [{v.get('gate', '?')}] {v.get('message', '?')} (severity: {v.get('severity', '?')})"
+                        "  VIOLATION: "
+                        f"[{v.get('gate', '?')}] {v.get('message', '?')} "
+                        f"(severity: {v.get('severity', '?')})"
                     )
             lines.append("")
 
@@ -295,6 +302,7 @@ class RunTaskCommand:
         self._budget_policy = budget_policy or {}
         self._learning_policy = learning_policy or {}
         self._agent_model_overrides: dict[str, str] = {}  # Set via set_agent_model_overrides()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
         # Master Agent sub-services
         self._classifier = TaskClassifier(master_llm)
@@ -400,10 +408,8 @@ class RunTaskCommand:
             )
             # Store project context and approval tier for resume durability
             if project_id:
-                try:
+                with contextlib.suppress(ValueError, AttributeError):
                     task.project_id = UUID(str(project_id))
-                except (ValueError, AttributeError):
-                    pass
             task.tier = tier if tier in ("auto", "notify", "approve") else "auto"
             task.start()
             if self._task_repo:
@@ -456,7 +462,11 @@ class RunTaskCommand:
         initial_state: TaskState = {
             "task_id": str(task_id),
             "workspace_id": str(self._workspace_id),
-            "tier": task.tier if getattr(task, "tier", "") in {"auto", "notify", "approve"} else "auto",
+            "tier": (
+                task.tier
+                if getattr(task, "tier", "") in {"auto", "notify", "approve"}
+                else "auto"
+            ),
             "project_root": str(effective_project_root),
             "worktree_mode": str(os.environ.get("RIGOVO_WORKTREE_MODE", "project")),
             "worktree_root": str(os.environ.get("RIGOVO_WORKTREE_ROOT", "")),
@@ -542,7 +552,7 @@ class RunTaskCommand:
         # GAP 5 fix: inject resume context when resuming
         if _is_resuming and task.checkpoint_timeline:
             history_mgr = HistoryStateManager()
-            timeline = history_mgr.load_timeline(str(task_id), task.checkpoint_timeline)
+            history_mgr.load_timeline(str(task_id), task.checkpoint_timeline)
             resume_ctx = history_mgr.build_resume_context(str(task_id))
             resume_instance_id = ""
             resume_phase = ""
@@ -621,7 +631,9 @@ class RunTaskCommand:
                 )
 
         # --- 5. Prefetch Rigour CLI (runs in background while graph executes) ---
-        rigour_prefetch = asyncio.create_task(self._prefetch_rigour())
+        rigour_prefetch_task = asyncio.create_task(self._prefetch_rigour())
+        self._background_tasks.add(rigour_prefetch_task)
+        rigour_prefetch_task.add_done_callback(self._background_tasks.discard)
 
         # --- 6. Build and run graph ---
         graph_builder = GraphBuilder(
@@ -858,7 +870,10 @@ class RunTaskCommand:
                             else (
                                 f"{gates_run} gate{'s' if gates_run != 1 else ''} passed"
                                 if passed
-                                else f"{violation_count} violation{'s' if violation_count != 1 else ''}"
+                            else (
+                                f"{violation_count} violation"
+                                f"{'s' if violation_count != 1 else ''}"
+                            )
                             ),
                             "severity": "info" if passed else "error",
                             "violation_count": violation_count,
@@ -1190,6 +1205,7 @@ class RunTaskCommand:
         try:
             # --- Item 3: Checkpointing for crash recovery ---
             checkpointer = None
+            checkpointer_context = None
             # Use effective runtime workspace root so checkpoint locality matches
             # where the task actually executes (workspace_path / fallback project),
             # not necessarily the command bootstrap root.
@@ -1197,27 +1213,35 @@ class RunTaskCommand:
                 str(initial_state.get("project_root", "")) or str(self._project_root)
             )
             checkpoint_db = runtime_root / ".rigovo" / "checkpoints.db"
+            checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
             try:
-                checkpointer = GraphBuilder.create_sqlite_checkpointer(checkpoint_db)
+                checkpointer_context = GraphBuilder.create_sqlite_checkpointer(checkpoint_db)
             except Exception:
                 logger.debug("Checkpointer unavailable, running without recovery")
 
-            compiled = graph_builder.build_langgraph(checkpointer=checkpointer)
-            logger.info("Running task via LangGraph orchestration engine")
+            async with contextlib.AsyncExitStack() as exit_stack:
+                if checkpointer_context is not None:
+                    if hasattr(checkpointer_context, "__aenter__"):
+                        checkpointer = await exit_stack.enter_async_context(checkpointer_context)
+                    else:
+                        checkpointer = exit_stack.enter_context(checkpointer_context)
 
-            # Configure for resume or fresh run.
-            # Default LangGraph recursion_limit is 25 which is too low for
-            # multi-agent pipelines with verification, quality gates, debate
-            # loops, and reclassification.  100 handles even complex tasks.
-            config: dict[str, Any] = {"recursion_limit": 100}
-            if resume_thread_id:
-                config["configurable"] = {"thread_id": resume_thread_id}
-                logger.info("Resuming from checkpoint: %s", resume_thread_id)
-            elif checkpointer:
-                config["configurable"] = {"thread_id": initial_state["task_id"]}
+                compiled = graph_builder.build_langgraph(checkpointer=checkpointer)
+                logger.info("Running task via LangGraph orchestration engine")
 
-            result = await self._stream_graph(compiled, initial_state, config)
-            return result
+                # Configure for resume or fresh run.
+                # Default LangGraph recursion_limit is 25 which is too low for
+                # multi-agent pipelines with verification, quality gates, debate
+                # loops, and reclassification.  100 handles even complex tasks.
+                config: dict[str, Any] = {"recursion_limit": 100}
+                if resume_thread_id:
+                    config["configurable"] = {"thread_id": resume_thread_id}
+                    logger.info("Resuming from checkpoint: %s", resume_thread_id)
+                elif checkpointer:
+                    config["configurable"] = {"thread_id": initial_state["task_id"]}
+
+                result = await self._stream_graph(compiled, initial_state, config)
+                return result
         except ImportError:
             logger.info("LangGraph not installed — falling back to sequential runner")
             return await graph_builder.run_sequential(initial_state=initial_state)

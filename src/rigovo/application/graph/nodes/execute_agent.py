@@ -159,7 +159,10 @@ class RoleExecutionContract:
 
 ROLE_EXECUTION_CONTRACTS: dict[str, RoleExecutionContract] = {
     "planner": RoleExecutionContract(
-        goal_template="Turn the task into an executable delivery plan with clear sequencing and risks.",
+        goal_template=(
+            "Turn the task into an executable delivery plan with clear sequencing "
+            "and risks."
+        ),
         allowed_tools=("list_directory", "read_file", "search_codebase", "consult_agent"),
         required_verifications=("plan covers files, order, acceptance criteria, and constraints",),
         self_checklist=(
@@ -183,7 +186,10 @@ ROLE_EXECUTION_CONTRACTS: dict[str, RoleExecutionContract] = {
             "spawn_subtask",
             "invoke_integration",
         ),
-        required_verifications=("build/test commands for touched code", "Rigour remediation packet"),
+        required_verifications=(
+            "build/test commands for touched code",
+            "Rigour remediation packet",
+        ),
         self_checklist=(
             "edit the smallest correct set of files",
             "execute verification after patching",
@@ -196,7 +202,10 @@ ROLE_EXECUTION_CONTRACTS: dict[str, RoleExecutionContract] = {
         learning_extractors=("implementation patterns", "failure remediation patterns"),
     ),
     "reviewer": RoleExecutionContract(
-        goal_template="Independently verify implementation quality, correctness, and residual risk.",
+        goal_template=(
+            "Independently verify implementation quality, correctness, and "
+            "residual risk."
+        ),
         allowed_tools=("read_file", "search_codebase", "consult_agent"),
         required_verifications=("review verdict", "specific findings or explicit pass rationale"),
         self_checklist=(
@@ -227,7 +236,13 @@ ROLE_EXECUTION_CONTRACTS: dict[str, RoleExecutionContract] = {
     ),
     "devops": RoleExecutionContract(
         goal_template="Keep delivery, packaging, and deployment flow operational and safe.",
-        allowed_tools=("read_file", "write_file", "run_command", "consult_agent", "invoke_integration"),
+        allowed_tools=(
+            "read_file",
+            "write_file",
+            "run_command",
+            "consult_agent",
+            "invoke_integration",
+        ),
         required_verifications=("build/package/pipeline verification",),
         self_checklist=("treat deploy/release as risky actions",),
         consultation_targets=("sre", "security", "lead"),
@@ -267,10 +282,18 @@ ROLE_EXECUTION_CONTRACTS: dict[str, RoleExecutionContract] = {
 RISKY_COMMAND_PATTERNS: tuple[tuple[re.Pattern[str], dict[str, str]], ...] = (
     (
         re.compile(r"\b(?:rm\s+-rf|terraform\s+destroy|kubectl\s+delete|dropdb)\b", re.IGNORECASE),
-        {"kind": "destructive_command", "summary": "destructive infrastructure or filesystem command", "severity": "critical"},
+        {
+            "kind": "destructive_command",
+            "summary": "destructive infrastructure or filesystem command",
+            "severity": "critical",
+        },
     ),
     (
-        re.compile(r"\b(?:terraform\s+apply|kubectl\s+apply|helm\s+(?:install|upgrade)|flyctl\s+deploy|vercel(?:\s+deploy)?\s+--prod)\b", re.IGNORECASE),
+        re.compile(
+            r"\b(?:terraform\s+apply|kubectl\s+apply|helm\s+(?:install|upgrade)|"
+            r"flyctl\s+deploy|vercel(?:\s+deploy)?\s+--prod)\b",
+            re.IGNORECASE,
+        ),
         {"kind": "deploy", "summary": "deployment or infrastructure apply", "severity": "high"},
     ),
     (
@@ -406,7 +429,7 @@ class AgentTimeoutError(Exception):
         super().__init__(f"Agent '{role}' timed out after {timeout}s")
 
 
-class RuntimeApprovalRequired(Exception):
+class RuntimeApprovalRequiredError(Exception):
     """Raised when a risky runtime action requires human approval."""
 
     def __init__(self, approval_event: dict[str, Any]) -> None:
@@ -515,9 +538,10 @@ def _build_expert_context_block(
     if verification_history:
         role_violations: list[str] = []
         for entry in verification_history:
-            if entry.get("role") == current_role or entry.get("instance_id") == current_role:
-                if not entry.get("passed", True) and entry.get("failure_details"):
-                    role_violations.extend(entry.get("failure_details", []))
+            if (
+                entry.get("role") == current_role or entry.get("instance_id") == current_role
+            ) and (not entry.get("passed", True) and entry.get("failure_details")):
+                role_violations.extend(entry.get("failure_details", []))
 
         if role_violations:
             # Take top 2 unique violations
@@ -544,7 +568,9 @@ def _role_execution_contract(role: str) -> RoleExecutionContract:
     """Return the specialist execution contract for a role."""
     return ROLE_EXECUTION_CONTRACTS.get(
         role,
-        RoleExecutionContract(goal_template="Execute your assigned specialist work with verification."),
+        RoleExecutionContract(
+            goal_template="Execute your assigned specialist work with verification."
+        ),
     )
 
 
@@ -563,6 +589,79 @@ def _role_contract_block(role: str) -> str:
     return "\n".join(lines)
 
 
+def _role_learning_block(
+    state: TaskState,
+    role: str,
+    memory_section_text: str,
+) -> str:
+    """Render role-learning guidance from curated memory/promotion signals."""
+    lines: list[str] = []
+    retrieval_log = state.get("memory_retrieval_log", {}) or {}
+    retrieved = retrieval_log.get(role, []) if isinstance(retrieval_log, dict) else []
+    promotion_records = state.get("memory_promotion_records", []) or []
+    behavior_change_audit = state.get("behavior_change_audit", []) or []
+    pending_updates = (state.get("agent_learning_updates", {}) or {}).get(role, [])
+
+    if isinstance(retrieved, list) and retrieved:
+        top_score = 0.0
+        for item in retrieved[:3]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                top_score = max(top_score, float(item.get("score", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                continue
+        lines.append(
+            "ROLE LEARNING: Apply recalled role memory first. "
+            f"Retrieved {len(retrieved)} curated memories for this role"
+            + (f" (top score {top_score:.2f})." if top_score > 0 else ".")
+        )
+
+    relevant_promotions = [
+        record
+        for record in promotion_records
+        if isinstance(record, dict) and str(record.get("role", "")).strip() == role
+    ]
+    if relevant_promotions:
+        lines.append(
+            "PROMOTED HABITS: "
+            f"{len(relevant_promotions)} prior role-learning promotion(s) exist for '{role}'. "
+            "Prefer established workspace patterns over full rewrites."
+        )
+
+    relevant_audits = [
+        audit
+        for audit in behavior_change_audit
+        if isinstance(audit, dict) and str(audit.get("role", "")).strip() == role
+    ]
+    if relevant_audits:
+        latest = relevant_audits[-1]
+        lines.append(
+            "BEHAVIOR CHANGE AUDIT: "
+            + str(
+                latest.get("summary")
+                or latest.get("reason")
+                or latest.get("change")
+                or "Role behavior was updated from promoted learning."
+            )[:220]
+        )
+
+    if pending_updates:
+        lines.append(
+            "CURRENT TASK LEARNING CANDIDATES: "
+            f"{len(pending_updates)} candidate pattern(s) already detected in this run. "
+            "Reuse them if they materially improve the current step."
+        )
+
+    if not lines and memory_section_text:
+        lines.append(
+            "ROLE LEARNING: Use the recalled memory section as behavioral guidance. "
+            "Do not ignore established workspace patterns."
+        )
+
+    return "\n".join(lines)
+
+
 def _format_jsonish(value: Any) -> str:
     """Render structured values compactly for prompts."""
     try:
@@ -578,7 +677,11 @@ def _active_fix_packet(state: TaskState) -> dict[str, Any] | None:
         return packet
     fix_packets = state.get("fix_packets", [])
     if isinstance(fix_packets, list) and fix_packets:
-        return {"summary": str(fix_packets[-1]), "raw": fix_packets[-1], "remediation_phase": "diagnose"}
+        return {
+            "summary": str(fix_packets[-1]),
+            "raw": fix_packets[-1],
+            "remediation_phase": "diagnose",
+        }
     return None
 
 
@@ -651,7 +754,16 @@ def _approval_records_from_events(
     events: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Collect governance approval records from state + new events."""
-    risk_action_queue, required_approval_actions = _approval_records_from_events(state, events)
+    risk_action_queue = _collect_event_records(
+        state.get("risk_action_queue"),
+        events,
+        {"risk_action_evaluated", "approval_required", "approval_denied"},
+    )
+    required_approval_actions = _collect_event_records(
+        state.get("required_approval_actions"),
+        events,
+        {"approval_required"},
+    )
     return risk_action_queue, required_approval_actions
 
 
@@ -749,6 +861,10 @@ def _build_agent_messages(
     if role_contract_block:
         system_prompt += f"\n\n{role_contract_block}"
 
+    role_learning_block = _role_learning_block(state, current_role, memory_section_text)
+    if role_learning_block:
+        system_prompt += f"\n\n{role_learning_block}"
+
     # Role-specific action imperatives — forces execution not description
     # Intent-aware: brainstorm/think mode tells planner to reason, not read codebase
     intent_profile = state.get("intent_profile") or {}
@@ -771,17 +887,27 @@ def _build_agent_messages(
     else:
         _planner_imperative = "Read the codebase now and produce the implementation plan."
 
-    _ACTION_IMPERATIVES: dict[str, str] = {
+    action_imperatives: dict[str, str] = {
         "planner": _planner_imperative,
         "coder": "Read the relevant files and write all changed files now using write_file.",
         "reviewer": "Read the changed files now and produce your review verdict.",
         "security": "Read the changed files now and produce your security audit.",
-        "qa": "Read the changed files and write the test files now using write_file, then run them.",
+        "qa": (
+            "Read the changed files and write the test files now using write_file, "
+            "then run them."
+        ),
         "devops": "Read existing configs now and write all updated files using write_file.",
-        "sre": "Read the changed files now and write any missing reliability code using write_file.",
+        "sre": (
+            "Read the changed files now and write any missing reliability code "
+            "using write_file."
+        ),
         "lead": "Read the plan and relevant architecture files now and give your verdict.",
     }
-    action_imperative = _ACTION_IMPERATIVES.get(current_role, "Execute your task now.")
+    action_imperative = action_imperatives.get(current_role, "Execute your task now.")
+
+    classification = state.get("classification", {})
+    intent = classification.get("task_type", state.get("task_type", "unknown"))
+    workspace_mode = classification.get("workspace_type", "existing_project")
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
@@ -789,8 +915,8 @@ def _build_agent_messages(
             "role": "user",
             "content": (
                 f"Task: {state['description']}\n\n"
-                f"Intent: {state.get('classification', {}).get('task_type', state.get('task_type', 'unknown'))}\n"
-                f"Workspace mode: {state.get('classification', {}).get('workspace_type', 'existing_project')}\n"
+                f"Intent: {intent}\n"
+                f"Workspace mode: {workspace_mode}\n"
                 f"Current objective: {_step_objective(state, agent_config, current_role)}\n"
                 f"START NOW: {action_imperative}\n"
                 "Do not describe what you will do. Do it."
@@ -825,7 +951,8 @@ def _build_agent_messages(
                 "content": (
                     "MANDATORY CONSULTATIONS: "
                     + _format_jsonish(mandatory_consults)
-                    + ". If the current work materially touches these areas, consult before final handoff."
+                    + ". If the current work materially touches these areas, "
+                    "consult before final handoff."
                 ),
             }
         )
@@ -1011,8 +1138,8 @@ def _check_budget_guards(state: TaskState, current_role: str) -> dict[str, Any] 
                 "requested_extension_tokens": int(requested_extension),
                 "current_role": current_role,
             },
-            "events": state.get("events", [])
-            + [
+            "events": [
+                *state.get("events", []),
                 {
                     "type": "budget_exceeded",
                     "role": current_role,
@@ -1107,8 +1234,8 @@ def _apply_auto_compaction_on_pressure(
         "token_limit_after": int(next_limit),
         "dropped_events": int(dropped_events),
         "replay_pointer": {
-            "events_kept": int(len(filtered_events)),
-            "agent_outputs_kept": int(len(compacted_agent_outputs)),
+            "events_kept": len(filtered_events),
+            "agent_outputs_kept": len(compacted_agent_outputs),
         },
         "contradiction_flags": contradiction_flags,
         "created_at": time.time(),
@@ -1298,7 +1425,8 @@ def _handle_consult_agent(
                 "status": "blocked",
                 "reason": "per_target_limit_reached",
                 "note": (
-                    f"'{from_role}' has already consulted '{to_role}' {consults_to_target} time(s). "
+                    f"'{from_role}' has already consulted '{to_role}' "
+                    f"{consults_to_target} time(s). "
                     f"Max per target is {max_per_target}. Use the information you already received."
                 ),
             }
@@ -1494,22 +1622,44 @@ def _fulfill_pending_consults(
             )
 
 
-async def _run_subtask(
+def _specialist_branch_system_prompt(
+    *,
+    specialist_role: str,
+    parent_role: str,
+    system_prompt: str,
+    merge_back_contract: dict[str, Any],
+) -> str:
+    """Build a dedicated system prompt for bounded specialist branches."""
+    branch_contract = _role_contract_block(specialist_role)
+    merge_text = _format_jsonish(merge_back_contract) if merge_back_contract else "{}"
+    return (
+        f"{system_prompt}\n\n"
+        "SPECIALIST BRANCH MODE: You are a bounded child branch operating "
+        "under a parent agent. Stay inside the assigned scope, avoid "
+        "unrelated exploration, and return merge-ready output.\n"
+        f"PARENT ROLE: {parent_role}\n"
+        f"MERGE-BACK CONTRACT: {merge_text}\n\n"
+        f"{branch_contract}"
+    )
+
+
+async def _run_specialist_branch(
+    *,
     llm: LLMProvider,
     tool_executor: ToolExecutor,
     description: str,
+    specialist_role: str,
     files_context: list[str],
     system_prompt: str,
+    parent_role: str,
+    parent_state: TaskState | None,
     stream_callback: Any | None = None,
     batch_timeout: int = DEFAULT_BATCH_TIMEOUT,
     max_rounds: int = SUBAGENT_MAX_ROUNDS,
+    merge_back_contract: dict[str, Any] | None = None,
+    branch_id: str = "",
 ) -> dict[str, Any]:
-    """
-    Run a sub-agent loop for a spawned subtask.
-
-    Like Claude Code's Task tool: creates a child execution context with
-    the same LLM and tools, focused on a specific piece of work.
-    """
+    """Run a bounded specialist branch with its own role contract and event log."""
     # Build context from files
     context_parts = []
     for fp in files_context:
@@ -1521,37 +1671,80 @@ async def _run_subtask(
 
     context_text = "\n\n".join(context_parts) if context_parts else ""
 
+    branch_contract = merge_back_contract or {}
+    branch_system_prompt = _specialist_branch_system_prompt(
+        specialist_role=specialist_role,
+        parent_role=parent_role,
+        system_prompt=system_prompt,
+        merge_back_contract=branch_contract,
+    )
     sub_messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": branch_system_prompt},
         {
             "role": "user",
             "content": (
-                f"SUBTASK: {description}\n\n"
+                f"BOUNDED ASSIGNMENT: {description}\n"
+                f"SPECIALIST ROLE: {specialist_role}\n"
+                f"PARENT ROLE: {parent_role}\n\n"
                 + (f"CONTEXT FILES:\n{context_text}" if context_text else "")
             ),
         },
     ]
 
-    # Get coder tools (without spawn_subtask to prevent recursion)
-    sub_tool_defs = [t for t in get_engineering_tools("coder") if t["name"] != "spawn_subtask"]
+    branch_tool_defs = [
+        t for t in get_engineering_tools(specialist_role) if t["name"] != "spawn_subtask"
+    ]
+    branch_events: list[dict[str, Any]] = []
+    branch_agent_messages: list[dict[str, Any]] = []
+    branch_state: TaskState = {
+        **(parent_state or {}),
+        "description": description,
+        "current_agent_role": specialist_role,
+        "current_instance_id": branch_id or specialist_role,
+        "required_approval_actions": [],
+        "risk_action_queue": [],
+        "spawn_history": [],
+        "supervisory_decisions": [],
+        "active_consultations": [],
+        "events": [],
+        "agent_messages": [],
+        "retry_count": 0,
+        "active_fix_packet": {},
+    }
 
     if stream_callback:
         try:
-            stream_callback("subtask", f"\n  🔀 Sub-agent: {description[:60]}...\n")
+            stream_callback(branch_id or specialist_role, f"\n  🔀 Branch: {description[:60]}...\n")
         except Exception as exc:
             logger.debug("Stream callback failed for subtask start: %s", exc)
 
     text, inp_tok, out_tok, files, loop_metrics = await _run_agentic_loop(
         llm=llm,
         messages=sub_messages,
-        tool_defs=sub_tool_defs,
+        tool_defs=branch_tool_defs,
         tool_executor=tool_executor,
-        agent_config={"temperature": 0.0, "max_tokens": 16384},
-        role="subtask",
+        agent_config={"temperature": 0.0, "max_tokens": ROLE_MAX_TOKENS.get(specialist_role, 8192)},
+        role=specialist_role,
+        stream_identity=branch_id or specialist_role,
+        state=branch_state,
+        agent_messages=branch_agent_messages,
+        events=branch_events,
         stream_callback=stream_callback,
         batch_timeout=batch_timeout,
         max_rounds=max_rounds,
     )
+    _fulfill_pending_consults(
+        current_role=branch_id or specialist_role,
+        final_text=text,
+        state=branch_state,
+        agent_messages=branch_agent_messages,
+        events=branch_events,
+    )
+    execution_log = loop_metrics.get("execution_log", [])
+    execution_verified = (
+        specialist_role in {"coder", "qa", "devops", "sre"} and len(execution_log) > 0
+    )
+    pending_consults = _pending_consultations(branch_agent_messages)
 
     return {
         "summary": text[:2000],
@@ -1560,6 +1753,15 @@ async def _run_subtask(
         "output_tokens": out_tok,
         "cached_input_tokens": int(loop_metrics.get("cached_input_tokens", 0) or 0),
         "cache_write_tokens": int(loop_metrics.get("cache_write_tokens", 0) or 0),
+        "status": "complete",
+        "role": specialist_role,
+        "branch_id": branch_id or specialist_role,
+        "execution_log": execution_log,
+        "execution_verified": execution_verified,
+        "agent_messages": branch_agent_messages[-20:],
+        "events": branch_events[-40:],
+        "pending_consults": pending_consults,
+        "merge_back_contract": branch_contract,
     }
 
 
@@ -1672,9 +1874,9 @@ async def _run_agentic_loop(
                     {
                         "role": "user",
                         "content": (
-                            "BLOCKER: You are a code-producing role and have not written any files yet. "
-                            "Call write_file now and produce at least one concrete file change before "
-                            "continuing."
+                            "BLOCKER: You are a code-producing role and have not "
+                            "written any files yet. Call write_file now and produce "
+                            "at least one concrete file change before continuing."
                         ),
                     }
                 )
@@ -1749,7 +1951,9 @@ async def _run_agentic_loop(
                     {
                         "type": "no_files_nudge",
                         "role": role,
-                        "round": int(round_num + 1),
+                        "round": (
+                            sum(1 for event in events if event.get("type") == "no_files_nudge") + 1
+                        ),
                         "reason": "blocked_non_write_tool_before_first_write",
                         "tool": tool_name,
                     }
@@ -1797,33 +2001,118 @@ async def _run_agentic_loop(
                 else:
                     subtask_count_ref["value"] += 1
                     subtask_description = str(tc["input"].get("description", "")).strip()
+                    spawn_input = tc.get("input", {})
+                    files_context = [
+                        str(path)
+                        for path in (spawn_input.get("files_context", []) or [])
+                        if str(path).strip()
+                    ]
+                    specialist_role = str(
+                        spawn_input.get("specialist_role")
+                        or spawn_input.get("child_role")
+                        or f"{role}-specialist"
+                    ).strip()
+                    requested_contract = spawn_input.get("merge_back_contract", {})
+                    merge_back_contract = {
+                        "parent_role": role,
+                        "child_role": specialist_role,
+                        "expected_artifacts": ["summary", "files_changed", "verification delta"],
+                        "files_context": files_context[:8],
+                        **(
+                            requested_contract
+                            if isinstance(requested_contract, dict)
+                            else {}
+                        ),
+                    }
+                    estimated_cost_delta = round(
+                        max(0.02, 0.02 + (len(files_context) * 0.005)),
+                        4,
+                    )
+                    estimated_time_delta_ms = max(
+                        30_000,
+                        min(180_000, 30_000 + (len(files_context) * 12_000)),
+                    )
+                    branch_record = {
+                        "spawn_id": f"{role}-spawn-{subtask_count_ref['value']}",
+                        "role": role,
+                        "parent_role": role,
+                        "spawn_kind": "specialist_branch",
+                        "specialist_role": specialist_role,
+                        "subtask_index": subtask_count_ref["value"],
+                        "bounded_assignment": subtask_description[:240],
+                        "merge_back_contract": merge_back_contract,
+                        "estimated_cost_delta_usd": estimated_cost_delta,
+                        "estimated_time_delta_ms": estimated_time_delta_ms,
+                        "files_context": files_context[:8],
+                    }
+                    events.append(
+                        {
+                            "type": "master_spawn_decision",
+                            "role": role,
+                            "summary": (
+                                f"Spawned bounded specialist branch '{specialist_role}' "
+                                "to accelerate a separable implementation segment."
+                            ),
+                            **branch_record,
+                        }
+                    )
+                    events.append(
+                        {
+                            "type": "spawn_requested",
+                            "description": subtask_description[:140],
+                            **branch_record,
+                        }
+                    )
                     events.append(
                         {
                             "type": "subtask_spawned",
-                            "role": role,
-                            "subtask_index": subtask_count_ref["value"],
                             "description": subtask_description[:140],
+                            **branch_record,
                         }
                     )
                     events.append(
                         {
                             "type": "spawn_started",
-                            "role": role,
-                            "parent_role": role,
-                            "spawn_kind": "subtask",
-                            "subtask_index": subtask_count_ref["value"],
                             "description": subtask_description[:140],
+                            **branch_record,
                         }
                     )
-                    sub_result = await _run_subtask(
+                    branch_system_prompt = agent_config.get(
+                        "system_prompt",
+                        "You are a coding agent.",
+                    )
+                    if state is not None:
+                        team_agents = (
+                            state.get("team_config", {}).get("agents", {}) or {}
+                        )
+                        sibling_cfg = next(
+                            (
+                                cfg
+                                for cfg in team_agents.values()
+                                if isinstance(cfg, dict)
+                                and str(cfg.get("role", "")).strip() == specialist_role
+                                and str(cfg.get("system_prompt", "")).strip()
+                            ),
+                            None,
+                        )
+                        if isinstance(sibling_cfg, dict):
+                            branch_system_prompt = str(
+                                sibling_cfg.get("system_prompt", branch_system_prompt)
+                            )
+                    sub_result = await _run_specialist_branch(
                         llm=llm,
                         tool_executor=tool_executor,
                         description=subtask_description,
-                        files_context=tc["input"].get("files_context", []),
-                        system_prompt=agent_config.get("system_prompt", "You are a coding agent."),
+                        specialist_role=specialist_role,
+                        files_context=files_context,
+                        system_prompt=branch_system_prompt,
+                        parent_role=role,
+                        parent_state=state,
                         stream_callback=stream_callback,
                         batch_timeout=batch_timeout,
                         max_rounds=max_subtask_rounds,
+                        merge_back_contract=merge_back_contract,
+                        branch_id=branch_record["spawn_id"],
                     )
                     sub_in = int(sub_result.get("input_tokens", 0) or 0)
                     sub_out = int(sub_result.get("output_tokens", 0) or 0)
@@ -1836,6 +2125,19 @@ async def _run_agentic_loop(
                     total_cache_write_tokens += sub_cache_write
                     if sub_cached > 0 or sub_cache_write > 0:
                         provider_cache_hits += 1
+                    for child_msg in list(sub_result.get("agent_messages", []) or []):
+                        if isinstance(child_msg, dict):
+                            agent_messages.append(child_msg)
+                    for child_event in list(sub_result.get("events", []) or []):
+                        if isinstance(child_event, dict):
+                            events.append(
+                                {
+                                    **child_event,
+                                    "branch_id": branch_record["spawn_id"],
+                                    "parent_role": role,
+                                    "specialist_role": specialist_role,
+                                }
+                            )
                     events.append(
                         {
                             "type": "subtask_complete",
@@ -1851,13 +2153,17 @@ async def _run_agentic_loop(
                     events.append(
                         {
                             "type": "spawn_completed",
-                            "role": role,
-                            "parent_role": role,
-                            "spawn_kind": "subtask",
-                            "subtask_index": subtask_count_ref["value"],
+                            **branch_record,
                             "files_changed": len(sub_result.get("files_changed", []) or []),
                             "input_tokens": sub_in,
                             "output_tokens": sub_out,
+                            "execution_verified": bool(
+                                sub_result.get("execution_verified", False)
+                            ),
+                            "pending_consults": len(
+                                sub_result.get("pending_consults", []) or []
+                            ),
+                            "merge_status": "ready_for_parent_merge",
                         }
                     )
                     result_str = json.dumps(sub_result, default=str)
@@ -1907,7 +2213,7 @@ async def _run_agentic_loop(
                             "requires_human_approval": True,
                         }
                         events.append(approval_event)
-                        raise RuntimeApprovalRequired(approval_event)
+                        raise RuntimeApprovalRequiredError(approval_event)
                     elif risk_event["decision"] == "deny":
                         events.append(
                             {
@@ -2157,11 +2463,14 @@ def _extract_written_files(messages: list[dict[str, Any]]) -> list[str]:
         if not isinstance(content, list):
             continue
         for block in content:
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                if block.get("name") == "write_file":
-                    path = block.get("input", {}).get("path", "")
-                    if path and path not in files:
-                        files.append(path)
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and block.get("name") == "write_file"
+            ):
+                path = block.get("input", {}).get("path", "")
+                if path and path not in files:
+                    files.append(path)
     return files
 
 
@@ -2279,8 +2588,8 @@ async def execute_agent_node(
         return {
             "status": f"agent_{current_instance}_error",
             "error": f"Agent instance '{current_instance}' not found in team config",
-            "events": state.get("events", [])
-            + [
+            "events": [
+                *list(state.get("events", [])),
                 {
                     "type": "agent_timeout",
                     "role": current_instance,
@@ -2324,6 +2633,11 @@ async def execute_agent_node(
         embedding_provider=embedding_provider,
         memory_retriever=memory_retriever,
     )
+    state_for_messages: TaskState = {
+        **state,
+        "memory_context_by_role": memory_context_by_role,
+        "memory_retrieval_log": memory_retrieval_log,
+    }
 
     # --- Runtime token pressure controls ---
     # Near cap: reduce per-agent max_tokens and tool rounds to push completion-first behavior.
@@ -2359,7 +2673,7 @@ async def execute_agent_node(
     # --- Build messages ---
     system_prompt = runtime_agent_config["system_prompt"]
     messages = _build_agent_messages(
-        state,
+        state_for_messages,
         system_prompt,
         runtime_agent_config,
         current_role,
@@ -2620,7 +2934,7 @@ async def execute_agent_node(
             cache_saved_cost_usd = round(max(0.0, uncached_baseline_cost - cost), 6)
             subtask_metrics = {"subtask_count": 0, "subtask_tokens": 0}
 
-    except RuntimeApprovalRequired as exc:
+    except RuntimeApprovalRequiredError as exc:
         duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)
         approval_event = dict(exc.approval_event)
         risk_action_queue, required_approval_actions = _approval_records_from_events(state, events)

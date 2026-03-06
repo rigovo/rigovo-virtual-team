@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
+
+# ── Module-level refs set by create_api() ──────────────────────────
+# These are assigned inside create_api() so that module-level event
+# handlers (_on_agent_event) can access them without closure scope.
+import logging as _logging
 import os
 import re
 import secrets
@@ -33,14 +39,10 @@ from rigovo.infrastructure.persistence.sqlite_settings_repo import SqliteSetting
 from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
 from rigovo.infrastructure.plugins.manifest import PluginManifest
 
-# ── Module-level refs set by create_api() ──────────────────────────
-# These are assigned inside create_api() so that module-level event
-# handlers (_on_agent_event) can access them without closure scope.
-import logging as _logging
-
 _api_container: Container | None = None
 _api_logger = _logging.getLogger("rigovo.api")
 logger = _api_logger  # alias used throughout the module
+_background_tasks: set[asyncio.Task[Any]] = set()
 
 _ROLE_LABELS: dict[str, str] = {
     "master": "Chief Architect",
@@ -339,10 +341,8 @@ def _make_notify_handler(
                 pass  # best-effort — never block task execution
 
         fut = asyncio.run_coroutine_threadsafe(_record_notification(), main_loop)
-        try:
+        with contextlib.suppress(Exception):
             fut.result(timeout=5)
-        except Exception:
-            pass
 
         # Immediately approve — notify tier never blocks
         return {"approval_status": "approved", "approval_feedback": "auto-approved (notify tier)"}
@@ -411,7 +411,10 @@ def _on_agent_event(event: dict) -> None:
             "task_type": event.get("task_type", "feature"),
             "complexity": event.get("complexity", "medium"),
             "workspace_type": "pending_llm",  # Will be refined by task_classified
-            "reasoning": f"Deterministic classification (confidence: {event.get('confidence', 0):.0%})",
+            "reasoning": (
+                "Deterministic classification "
+                f"(confidence: {event.get('confidence', 0):.0%})"
+            ),
             "agent_count": 0,
             "agent_instances": [],
             "source": event.get("source", "regex"),
@@ -427,7 +430,10 @@ def _on_agent_event(event: dict) -> None:
             "workspace_type": _live_task_classification.get(task_id, {}).get(
                 "workspace_type", "existing_project"
             ),
-            "reasoning": f"Reclassified from {event.get('previous_task_type', '?')}: {event.get('reason', '')}",
+            "reasoning": (
+                f"Reclassified from {event.get('previous_task_type', '?')}: "
+                f"{event.get('reason', '')}"
+            ),
             "agent_count": _live_task_classification.get(task_id, {}).get("agent_count", 0),
             "agent_instances": _live_task_classification.get(task_id, {}).get(
                 "agent_instances", []
@@ -449,8 +455,7 @@ def _on_agent_event(event: dict) -> None:
         }
         # Also persist to Task entity in DB so it survives across restarts
         try:
-            from rigovo.domain.entities.task import TaskComplexity as _TC
-            from rigovo.domain.entities.task import TaskType as _TT
+            from rigovo.domain.entities.task import TaskComplexity, TaskType
 
             if _api_container is None:
                 return
@@ -462,20 +467,22 @@ def _on_agent_event(event: dict) -> None:
                     raw_type = event.get("task_type", "")
                     if raw_type:
                         try:
-                            _task.task_type = _TT(raw_type)
+                            _task.task_type = TaskType(raw_type)
                         except ValueError:
-                            _task.task_type = _TT.FEATURE
+                            _task.task_type = TaskType.FEATURE
                     raw_cx = event.get("complexity", "")
                     if raw_cx:
                         try:
-                            _task.complexity = _TC(raw_cx)
+                            _task.complexity = TaskComplexity(raw_cx)
                         except ValueError:
-                            _task.complexity = _TC.MEDIUM
+                            _task.complexity = TaskComplexity.MEDIUM
                     await task_repo.save(_task)
 
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(_persist_classification())
+                persist_task = loop.create_task(_persist_classification())
+                _background_tasks.add(persist_task)
+                persist_task.add_done_callback(_background_tasks.discard)
             except RuntimeError:
                 asyncio.run(_persist_classification())
         except Exception:
@@ -573,12 +580,14 @@ def _on_agent_event(event: dict) -> None:
             if reason == "persona_violation":
                 gate_entry["gate"] = "persona"
                 gate_entry["message"] = (
-                    f"Persona boundary violation: {violation_count} issue{'s' if violation_count != 1 else ''}"
+                    "Persona boundary violation: "
+                    f"{violation_count} issue{'s' if violation_count != 1 else ''}"
                 )
             elif reason == "contract_failed":
                 gate_entry["gate"] = "contract"
                 gate_entry["message"] = (
-                    f"Output contract failed: {violation_count} violation{'s' if violation_count != 1 else ''}"
+                    "Output contract failed: "
+                    f"{violation_count} violation{'s' if violation_count != 1 else ''}"
                 )
 
             existing_gates = existing.get("gate_results", [])
@@ -1083,7 +1092,10 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 (
                     TaskStatus.FAILED.value,
                     now_iso,
-                    "Recovered after API restart (previous run was interrupted). Please resume the task.",
+                    (
+                        "Recovered after API restart (previous run was interrupted). "
+                        "Please resume the task."
+                    ),
                     *active_statuses,
                 ),
             )
@@ -1278,18 +1290,20 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         """Return a simple HTML page for the browser callback tab."""
         if success:
             return f"""<!DOCTYPE html>
-<html><head><title>Rigovo – Signed In</title>
+<html><head><title>Rigovo - Signed In</title>
 <style>body{{font-family:system-ui;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f8fafc}}
-.card{{text-align:center;padding:3rem;border-radius:1rem;background:white;box-shadow:0 4px 24px rgba(0,0,0,.08)}}
+.card{{text-align:center;padding:3rem;border-radius:1rem;background:white;
+box-shadow:0 4px 24px rgba(0,0,0,.08)}}
 h1{{color:#0f172a;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style></head>
 <body><div class="card">
 <h1>Welcome, {detail}!</h1>
 <p>You're signed in to Rigovo. You can close this tab and return to the app.</p>
 </div></body></html>"""
         return f"""<!DOCTYPE html>
-<html><head><title>Rigovo – Auth Error</title>
+<html><head><title>Rigovo - Auth Error</title>
 <style>body{{font-family:system-ui;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#fef2f2}}
-.card{{text-align:center;padding:3rem;border-radius:1rem;background:white;box-shadow:0 4px 24px rgba(0,0,0,.08)}}
+.card{{text-align:center;padding:3rem;border-radius:1rem;background:white;
+box-shadow:0 4px 24px rgba(0,0,0,.08)}}
 h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style></head>
 <body><div class="card">
 <h1>Authentication Failed</h1>
@@ -1437,7 +1451,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                                     content = fpath.read_text(encoding="utf-8", errors="replace")
                                     ext = fpath.suffix.lstrip(".") or "text"
                                     file_blocks.append(
-                                        f'<file path="{mention}">\n```{ext}\n{content}\n```\n</file>'
+                                        f'<file path="{mention}">\n'
+                                        f"```{ext}\n{content}\n```\n"
+                                        "</file>"
                                     )
                             except OSError:
                                 pass
@@ -1797,6 +1813,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             ledger_rows = []
         promoted_by_role: dict[str, int] = {}
         rolled_back_by_role: dict[str, int] = {}
+        role_scores: dict[str, list[float]] = {}
         promoted_scores: list[float] = []
         recent_promotions: list[dict[str, Any]] = []
         for row in ledger_rows:
@@ -1808,6 +1825,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             else:
                 promoted_by_role[role_name] = int(promoted_by_role.get(role_name, 0) + 1)
                 promoted_scores.append(score)
+                role_scores.setdefault(role_name, []).append(score)
             if len(recent_promotions) < 20:
                 recent_promotions.append(
                     {
@@ -1836,6 +1854,15 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "avg_promoted_score": round(sum(promoted_scores) / len(promoted_scores), 3)
                 if promoted_scores
                 else 0.0,
+                "role_policy_tuning": {
+                    role_name: {
+                        "promotions": int(promoted_by_role.get(role_name, 0)),
+                        "rollbacks": int(rolled_back_by_role.get(role_name, 0)),
+                        "avg_score": round(sum(scores) / len(scores), 3) if scores else 0.0,
+                        "top_score": round(max(scores), 3) if scores else 0.0,
+                    }
+                    for role_name, scores in role_scores.items()
+                },
                 "recent": recent_promotions,
             },
         }
@@ -3038,7 +3065,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         try:
             task = await task_repo.get(UUID(task_id))
         except Exception:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise HTTPException(status_code=404, detail="Task not found") from None
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
 
@@ -3408,6 +3435,12 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             and str(e.get("type", ""))
             in {"spawn_requested", "spawn_started", "spawn_completed", "subtask_spawned"}
         ][-20:]
+        debate_history = [
+            e
+            for e in merged_events
+            if isinstance(e, dict)
+            and str(e.get("type", "")) in {"debate_round", "debate_adjudicated"}
+        ][-20:]
         active_consultations = [
             e
             for e in merged_events
@@ -3521,6 +3554,48 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             ),
             "next_expected_reason": next_expected_reason,
         }
+        learning_runtime = (task.approval_data or {}).get("learning_runtime", {})
+        if not isinstance(learning_runtime, dict):
+            learning_runtime = {}
+        learning_updates = learning_runtime.get("agent_learning_updates", {}) or {}
+        if not isinstance(learning_updates, dict):
+            learning_updates = {}
+        behavior_change_audit = learning_runtime.get("behavior_change_audit", []) or []
+        if not isinstance(behavior_change_audit, list):
+            behavior_change_audit = []
+        promotion_records = learning_runtime.get("memory_promotion_records", []) or []
+        if not isinstance(promotion_records, list):
+            promotion_records = []
+
+        role_learning_metrics: dict[str, dict[str, Any]] = {}
+        for role_name, updates in learning_updates.items():
+            if not isinstance(updates, list):
+                continue
+            scores: list[float] = []
+            for update in updates:
+                if not isinstance(update, dict):
+                    continue
+                try:
+                    scores.append(float(update.get("score", 0.0) or 0.0))
+                except (TypeError, ValueError):
+                    continue
+            role_learning_metrics[str(role_name)] = {
+                "update_count": len(updates),
+                "top_score": round(max(scores), 3) if scores else 0.0,
+                "avg_score": round(sum(scores) / len(scores), 3) if scores else 0.0,
+                "behavior_changes": sum(
+                    1
+                    for item in behavior_change_audit
+                    if isinstance(item, dict)
+                    and str(item.get("role", "") or "").strip() == str(role_name)
+                ),
+                "promotions": sum(
+                    1
+                    for item in promotion_records
+                    if isinstance(item, dict)
+                    and str(item.get("role", "") or "").strip() == str(role_name)
+                ),
+            }
 
         return {
             "id": str(task.id),
@@ -3548,9 +3623,13 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             ),
             "active_consultations": active_consultations,
             "spawn_history": spawn_history,
+            "debate_history": debate_history,
             "supervisory_decisions": supervisory_decisions,
             "risk_action_queue": risk_action_queue,
             "required_approval_actions": required_approval_actions,
+            "agent_learning_updates": learning_updates,
+            "behavior_change_audit": behavior_change_audit,
+            "role_learning_metrics": role_learning_metrics,
         }
 
     @app.post("/v1/tasks")
@@ -4045,8 +4124,12 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 summary = f"Replan triggered: {trigger_reason} (strategy: {strategy})"
             elif ev_type == "replan_failed":
                 trigger_reason = ev.get("trigger_reason", "unknown")
-                summary = f"Replan failed: {trigger_reason} — budget exhausted"
-            elif ev_type in {"risk_action_evaluated", "master_risk_escalation", "approval_required"}:
+                summary = f"Replan failed: {trigger_reason} - budget exhausted"
+            elif ev_type in {
+                "risk_action_evaluated",
+                "master_risk_escalation",
+                "approval_required",
+            }:
                 summary = str(
                     ev.get("summary")
                     or ev.get("reason")
@@ -4410,7 +4493,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
     # Google, DeepSeek, Groq, Mistral, Ollama) plus any
     # OpenAI-compatible endpoint via custom base_url.
 
-    AGENT_ROLES = [
+    agent_roles = [
         "planner",
         "coder",
         "reviewer",
@@ -4421,7 +4504,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         "docs",
         "lead",
     ]
-    DEFAULT_MODELS = {
+    default_models = {
         "lead": "claude-opus-4-6",
         "coder": "claude-opus-4-6",
         "planner": "claude-sonnet-4-6",
@@ -4434,7 +4517,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
     }
 
     # All providers with their env var name and console link
-    PROVIDERS = {
+    providers = {
         "anthropic": {
             "key_env": "ANTHROPIC_API_KEY",
             "label": "Anthropic",
@@ -4468,7 +4551,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         "ollama": {"key_env": "", "label": "Ollama (Local)", "link": "https://ollama.com"},
     }
 
-    AVAILABLE_MODELS = [
+    available_models = [
         # Anthropic
         {
             "id": "claude-opus-4-6",
@@ -4588,15 +4671,15 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         """Read current LLM settings — keys masked, all providers listed."""
         await asyncio.sleep(0)
         repo = _settings_repo()
-        all_keys = [meta["key_env"] for meta in PROVIDERS.values() if meta["key_env"]]
+        all_keys = [meta["key_env"] for meta in providers.values() if meta["key_env"]]
         all_keys += ["LLM_MODEL", "OLLAMA_BASE_URL", "OPENAI_BASE_URL"]
         stored = repo.get_many(all_keys)
 
-        providers: dict[str, dict] = {}
-        for name, meta in PROVIDERS.items():
+        configured_providers: dict[str, dict] = {}
+        for name, meta in providers.items():
             key_env = meta["key_env"]
             val = stored.get(key_env, "") if key_env else ""
-            providers[name] = {
+            configured_providers[name] = {
                 "configured": bool(val),
                 "masked": _mask_key(val),
                 "key_env": key_env,
@@ -4608,7 +4691,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         yml = config.yml if hasattr(config, "yml") else None
         agent_models: dict[str, str] = {}
         agent_tools: dict[str, list[str]] = {}
-        for role in AGENT_ROLES:
+        for role in agent_roles:
             override = ""
             tools_override: list[str] = []
             if yml and hasattr(yml, "teams"):
@@ -4616,7 +4699,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 if eng and role in eng.agents:
                     override = eng.agents[role].model
                     tools_override = list(getattr(eng.agents[role], "tools", []) or [])
-            agent_models[role] = override or DEFAULT_MODELS.get(role, "claude-sonnet-4-6")
+            agent_models[role] = override or default_models.get(role, "claude-sonnet-4-6")
             agent_tools[role] = tools_override
 
         # Return a fully-normalised YAML string so the Settings editor always
@@ -4642,12 +4725,12 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         yml_raw = rigovo_yml_to_string(merged_cfg)
 
         return {
-            "providers": providers,
+            "providers": configured_providers,
             "default_model": stored.get("LLM_MODEL", "") or config.llm.model,
             "agent_models": agent_models,
             "agent_tools": agent_tools,
-            "available_models": AVAILABLE_MODELS,
-            "default_agent_models": DEFAULT_MODELS,
+            "available_models": available_models,
+            "default_agent_models": default_models,
             "ollama_url": stored.get("OLLAMA_BASE_URL", "") or "http://localhost:11434",
             "custom_base_url": stored.get("OPENAI_BASE_URL", ""),
             "plugins_policy": {
@@ -4696,7 +4779,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         if req.api_keys:
             try:
                 for provider_name, key_value in req.api_keys.items():
-                    meta = PROVIDERS.get(provider_name)
+                    meta = providers.get(provider_name)
                     if meta and meta["key_env"]:
                         repo.set(meta["key_env"], key_value)
                         changes.append(meta["key_env"])
@@ -4790,9 +4873,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
 
                 if req.agent_models:
                     for role, model in req.agent_models.items():
-                        if role not in AGENT_ROLES:
+                        if role not in agent_roles:
                             continue
-                        if model == DEFAULT_MODELS.get(role, ""):
+                        if model == default_models.get(role, ""):
                             if (
                                 role in agents
                                 and isinstance(agents.get(role), dict)
@@ -4811,7 +4894,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
 
                 if req.agent_tools:
                     for role, tools in req.agent_tools.items():
-                        if role not in AGENT_ROLES:
+                        if role not in agent_roles:
                             continue
                         cleaned = [str(t).strip() for t in (tools or []) if str(t).strip()]
                         agent_cfg = agents.setdefault(role, {})
@@ -4886,7 +4969,10 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         # DB backend/path changes still need a process restart (connection pooling)
         note = ""
         if restart_required:
-            note = "Database backend/DSN changes saved. Restart the app to switch database connections."
+            note = (
+                "Database backend/DSN changes saved. Restart the app to switch "
+                "database connections."
+            )
 
         return {
             "status": "updated",
@@ -5035,7 +5121,10 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                 "showing": f"last {len(lines)} of {total}",
             }
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to read log: {exc}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to read log: {exc}",
+            ) from exc
 
     def _human_size(size: int) -> str:
         for unit in ["B", "KB", "MB", "GB"]:

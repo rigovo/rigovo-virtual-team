@@ -52,32 +52,27 @@ dependencies = [
     "langchain-core>=0.3,<1.0",
     "langchain-anthropic>=0.3,<1.0",
     "langchain-openai>=0.3,<1.0",
-
     # CLI & Terminal UI
     "typer>=0.15,<1.0",
     "click>=8.1,<8.3",
     "rich>=13.0,<14.0",
     "textual>=1.0,<2.0",
-
     # Database
     "aiosqlite>=0.20,<1.0",
-
     # Cloud sync
     "httpx>=0.28,<1.0",
-
     # Control-plane API
     "fastapi>=0.115,<1.0",
     "uvicorn>=0.32,<1.0",
-
     # Authentication (Phase 12)
     "workos>=1.0,<2.0",
     "PyJWT>=2.8,<3.0",
-
     # Config
     "pydantic>=2.0,<3.0",
     "pydantic-settings>=2.0,<3.0",
     "pyyaml>=6.0,<7.0",
     "python-dotenv>=1.0,<2.0",
+    "langgraph-checkpoint-sqlite>=3.0,<4.0",
 ]
 
 [project.optional-dependencies]

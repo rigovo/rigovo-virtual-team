@@ -708,6 +708,27 @@ def prepare_debate_round(state: TaskState) -> dict:
             f"Address the following feedback:\n\n{truncated_summary}"
         )
 
+    action_delta = {
+        "fix_packet_count": len(fix_packet_parts),
+        "feedback_source_count": len(active_sources),
+        "requeue_after_coder": [src[0] for src in active_sources],
+    }
+    events.append(
+        {
+            "type": "debate_adjudicated",
+            "round": debate_round,
+            "selected_next_owner": target_coder,
+            "primary_source_instance": primary_instance,
+            "primary_source_role": primary_role,
+            "feedback_sources": [
+                {"instance": src_instance, "role": src_role}
+                for src_instance, src_role, _ in active_sources
+            ],
+            "action_delta": action_delta,
+            "target_coder": target_coder,
+        }
+    )
+
     # The debate_target_role is the primary source (first to re-run after coder)
     # Additional sources will be picked up via the DAG ready-roles mechanism
     return {
@@ -726,6 +747,9 @@ def prepare_debate_round(state: TaskState) -> dict:
             "source_role": primary_role,
             "target_coder": target_coder,
             "round": debate_round,
+            "selected_next_owner": target_coder,
+            "primary_source_instance": primary_instance,
+            "action_delta": action_delta,
             "all_sources": [{"instance": s[0], "role": s[1]} for s in active_sources],
         },
         # Inject ALL feedback as fix packets so coder sees everything

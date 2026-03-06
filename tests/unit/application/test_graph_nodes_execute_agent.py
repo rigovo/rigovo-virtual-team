@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from uuid import uuid4
-from unittest.mock import AsyncMock, MagicMock
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 from rigovo.application.graph.nodes.execute_agent import execute_agent_node
 from rigovo.application.graph.state import TaskState
@@ -82,9 +82,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         mock_cost_calculator = MagicMock()
         mock_cost_calculator.calculate.return_value = 0.10
 
-        result = await execute_agent_node(
-            state, mock_llm_factory, mock_cost_calculator
-        )
+        result = await execute_agent_node(state, mock_llm_factory, mock_cost_calculator)
 
         assert "agent_outputs" in result
         assert "backend" in result["agent_outputs"]
@@ -140,9 +138,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         mock_cost_calculator = MagicMock()
         mock_cost_calculator.calculate.return_value = 0.07
 
-        result = await execute_agent_node(
-            state, mock_llm_factory, mock_cost_calculator
-        )
+        await execute_agent_node(state, mock_llm_factory, mock_cost_calculator)
 
         # Verify the mock was called with messages including previous output
         call_args = mock_llm.invoke.call_args
@@ -268,9 +264,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         mock_cost_calculator = MagicMock()
         mock_cost_calculator.calculate.return_value = 0.08
 
-        result = await execute_agent_node(
-            state, mock_llm_factory, mock_cost_calculator
-        )
+        await execute_agent_node(state, mock_llm_factory, mock_cost_calculator)
 
         call_args = mock_llm.invoke.call_args
         messages = call_args.kwargs["messages"]
@@ -794,7 +788,7 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         assert isinstance(blocked_events[0].get("latency_ms"), int)
 
     async def test_spawn_subtask_counts_tokens_and_emits_events(self):
-        """spawn_subtask should run child loop and include its tokens in accounting."""
+        """spawn_subtask should run a bounded specialist branch and merge its telemetry."""
         state: TaskState = {
             "task_id": "task-6",
             "description": "Implement auth with helper subtask",
@@ -825,7 +819,11 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                 tool_calls=[{
                     "id": "toolu_sub_1",
                     "name": "spawn_subtask",
-                    "input": {"description": "Write auth helper"},
+                    "input": {
+                        "description": "Write auth helper",
+                        "specialist_role": "qa",
+                        "merge_back_contract": {"expected_artifacts": ["tests", "summary"]},
+                    },
                 }],
             ),
             # Subtask loop: single completion response
@@ -858,9 +856,15 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         assert any(e.get("type") == "spawn_started" for e in result["events"])
         assert any(e.get("type") == "spawn_completed" for e in result["events"])
         assert result["spawn_history"]
+        spawn_complete = next(
+            e for e in result["events"] if e.get("type") == "spawn_completed"
+        )
+        assert spawn_complete["specialist_role"] == "qa"
+        assert spawn_complete["merge_status"] == "ready_for_parent_merge"
+        assert spawn_complete["execution_verified"] is False
 
     async def test_execute_agent_blocks_risky_action_in_approve_tier(self):
-        """Risky governance actions should require approval without blocking ordinary orchestration."""
+        """Risky actions should require approval without blocking ordinary orchestration."""
         state: TaskState = {
             "task_id": "task-risk-1",
             "description": "Deploy the service to production",
@@ -1104,14 +1108,38 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                         "llm_model": "claude-sonnet-4-6",
                         "tools": ["consult_agent"],
                     },
-                    "reviewer": {"id": "r", "name": "Reviewer", "role": "reviewer",
-                                 "system_prompt": "Review", "llm_model": "claude-sonnet-4-6", "tools": []},
-                    "security": {"id": "s", "name": "Security", "role": "security",
-                                 "system_prompt": "Secure", "llm_model": "claude-sonnet-4-6", "tools": []},
-                    "qa": {"id": "q", "name": "QA", "role": "qa",
-                           "system_prompt": "Test", "llm_model": "claude-sonnet-4-6", "tools": []},
-                    "devops": {"id": "d", "name": "DevOps", "role": "devops",
-                               "system_prompt": "Deploy", "llm_model": "claude-sonnet-4-6", "tools": []},
+                    "reviewer": {
+                        "id": "r",
+                        "name": "Reviewer",
+                        "role": "reviewer",
+                        "system_prompt": "Review",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": [],
+                    },
+                    "security": {
+                        "id": "s",
+                        "name": "Security",
+                        "role": "security",
+                        "system_prompt": "Secure",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": [],
+                    },
+                    "qa": {
+                        "id": "q",
+                        "name": "QA",
+                        "role": "qa",
+                        "system_prompt": "Test",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": [],
+                    },
+                    "devops": {
+                        "id": "d",
+                        "name": "DevOps",
+                        "role": "devops",
+                        "system_prompt": "Deploy",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": [],
+                    },
                 }
             },
             "current_agent_role": "coder",
@@ -1203,10 +1231,18 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         mock_llm = AsyncMock()
         mock_llm.invoke.side_effect = [
             # Consult 1 to reviewer
-            LLMResponse(content="", usage=LLMUsage(input_tokens=50, output_tokens=10),
-                        model="claude-sonnet-4-6",
-                        tool_calls=[{"id": "t1", "name": "consult_agent",
-                                     "input": {"to_role": "reviewer", "question": "First question"}}]),
+            LLMResponse(
+                content="",
+                usage=LLMUsage(input_tokens=50, output_tokens=10),
+                model="claude-sonnet-4-6",
+                tool_calls=[
+                    {
+                        "id": "t1",
+                        "name": "consult_agent",
+                        "input": {"to_role": "reviewer", "question": "First question"},
+                    }
+                ],
+            ),
             # Consult 2 to reviewer (follow-up)
             LLMResponse(content="", usage=LLMUsage(input_tokens=50, output_tokens=10),
                         model="claude-sonnet-4-6",
@@ -1319,8 +1355,14 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
                         "llm_model": "claude-sonnet-4-6",
                         "tools": ["consult_agent"],
                     },
-                    "reviewer": {"id": "r", "name": "Reviewer", "role": "reviewer",
-                                 "system_prompt": "Review", "llm_model": "claude-sonnet-4-6", "tools": []},
+                    "reviewer": {
+                        "id": "r",
+                        "name": "Reviewer",
+                        "role": "reviewer",
+                        "system_prompt": "Review",
+                        "llm_model": "claude-sonnet-4-6",
+                        "tools": [],
+                    },
                 }
             },
             "current_agent_role": "coder",

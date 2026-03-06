@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -82,9 +83,13 @@ class TestRunTaskReplanAudit(unittest.IsolatedAsyncioTestCase):
         }
         expected_checkpoint_db = Path(initial_state["project_root"]) / ".rigovo" / "checkpoints.db"
 
+        @asynccontextmanager
+        async def _checkpoint_context():
+            yield "checkpoint-sentinel"
+
         with patch(
             "rigovo.application.commands.run_task.GraphBuilder.create_sqlite_checkpointer",
-            return_value="checkpoint-sentinel",
+            return_value=_checkpoint_context(),
         ) as mock_create:
             result = await cmd._run_graph(graph_builder, initial_state, resume_thread_id=None)
 

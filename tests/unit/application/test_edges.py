@@ -1,16 +1,15 @@
 """Tests for graph edge routing functions."""
 
 from rigovo.application.graph.edges import (
-    check_approval,
-    check_gates_and_route,
-    check_pipeline_complete,
-    check_parallel_postprocess,
-    advance_to_next_agent,
-    check_debate_needed,
-    prepare_debate_round,
-    _find_all_feedback_sources,
-    _find_feedback_source,
     _DEFAULT_MAX_ROUNDS_BY_ROLE,
+    _find_all_feedback_sources,
+    advance_to_next_agent,
+    check_approval,
+    check_debate_needed,
+    check_gates_and_route,
+    check_parallel_postprocess,
+    check_pipeline_complete,
+    prepare_debate_round,
 )
 
 
@@ -38,7 +37,7 @@ class TestCheckGatesAndRoute:
         state = {"gate_results": {"passed": False}, "retry_count": 1, "max_retries": 3}
         assert check_gates_and_route(state) == "fail_fix_loop"
 
-    def test_mid_retry_does_NOT_trigger_replan(self):
+    def test_mid_retry_does_not_trigger_replan(self):
         """Replan must never interrupt an agent's retry cycle.
 
         Even when retry_count exceeds the old trigger_retry_count,
@@ -258,6 +257,8 @@ class TestPrepareDebateRound:
         }
         result = prepare_debate_round(state)
         assert result["current_agent_role"] == "coder"
+        assert any(e.get("type") == "debate_adjudicated" for e in result["events"])
+        assert result["active_feedback"]["selected_next_owner"] == "coder"
         assert result["debate_target_role"] == "reviewer"
         assert "reviewer" not in result["completed_roles"]
         assert "reviewer" not in result["agent_outputs"]
@@ -572,6 +573,9 @@ class TestPrepareDebateRoundPhase5:
 
         # feedback_loops should record both
         assert len(result["feedback_loops"]) == 2
+        debate_event = next(e for e in result["events"] if e.get("type") == "debate_adjudicated")
+        assert debate_event["selected_next_owner"] == "coder-1"
+        assert debate_event["action_delta"]["feedback_source_count"] == 2
 
     def test_triple_source_debate_reviewer_qa_security(self):
         """All three sources raise issues — all combined into one fix round."""
@@ -599,6 +603,7 @@ class TestPrepareDebateRoundPhase5:
         assert "SECURITY FEEDBACK" in all_text
         assert len(result["feedback_loops"]) == 3
         assert len(result["active_feedback"]["all_sources"]) == 3
+        assert result["active_feedback"]["action_delta"]["fix_packet_count"] == 3
 
     def test_per_source_round_limit_filters_exhausted_sources(self):
         """If security already had 1 round (its max), only reviewer is active."""
@@ -802,7 +807,10 @@ class TestSMEGapFixes:
         }
         result = advance_to_next_agent(state)
         # Should NOT route to blocked reviewer — falls through to DAG-based routing
-        assert result["current_agent_role"] != "reviewer" or result.get("status") == "pipeline_failed_dependency"
+        assert (
+            result["current_agent_role"] != "reviewer"
+            or result.get("status") == "pipeline_failed_dependency"
+        )
 
     def test_gap9_feedback_truncation_in_fix_packets(self):
         """Gap #9: Long feedback should be truncated in fix_packets."""

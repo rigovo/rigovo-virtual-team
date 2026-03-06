@@ -155,14 +155,20 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     "search_codebase": {
         "name": "search_codebase",
-        "description": "Search for text/regex patterns across the codebase. Returns matching lines.",
+        "description": (
+            "Search for text/regex patterns across the codebase. Returns "
+            "matching lines."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "description": "Search pattern (regex supported)."},
                 "file_glob": {
                     "type": "string",
-                    "description": "File glob to filter (e.g. '*.ts', '**/*.py'). Default: all files.",
+                    "description": (
+                        "File glob to filter (e.g. '*.ts', '**/*.py'). "
+                        "Default: all files."
+                    ),
                 },
                 "max_results": {"type": "integer", "description": "Max results. Default: 50."},
             },
@@ -190,7 +196,10 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     "read_dependencies": {
         "name": "read_dependencies",
-        "description": "Read project dependency files (package.json, pyproject.toml, requirements.txt, etc.).",
+        "description": (
+            "Read project dependency files (package.json, pyproject.toml, "
+            "requirements.txt, etc.)."
+        ),
         "parameters": {
             "type": "object",
             "properties": {},
@@ -199,12 +208,11 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     "spawn_subtask": {
         "name": "spawn_subtask",
         "description": (
-            "Spawn a sub-agent to handle a specific subtask in parallel. "
-            "Use this when a task can be decomposed into independent pieces. "
-            "For example, 'implement auth module' and 'add API endpoint' can "
-            "run as separate sub-agents simultaneously. Each sub-agent has "
-            "full access to read_file, write_file, search_codebase, and "
-            "run_command. Returns the sub-agent's output when complete."
+            "Spawn a bounded specialist branch to handle an isolated piece of work. "
+            "Use this only when the work can merge back cleanly into the parent step. "
+            "Provide the specialist role, a narrow assignment, and files that define "
+            "the merge boundary. The branch returns implementation and verification "
+            "artifacts for the parent agent to merge."
         ),
         "parameters": {
             "type": "object",
@@ -216,12 +224,26 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                         "which files to create/modify and what the expected outcome is."
                     ),
                 },
+                "specialist_role": {
+                    "type": "string",
+                    "description": (
+                        "Canonical specialist role for the branch "
+                        "(e.g. coder, qa, reviewer, security, devops, sre, docs)."
+                    ),
+                },
                 "files_context": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
                         "List of file paths the sub-agent should read for context "
                         "before starting work."
+                    ),
+                },
+                "merge_back_contract": {
+                    "type": "object",
+                    "description": (
+                        "Merge-back contract describing what the child branch must return, "
+                        "such as expected artifacts or files it owns."
                     ),
                 },
             },
@@ -270,7 +292,10 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 },
                 "target_id": {
                     "type": "string",
-                    "description": "Capability id inside plugin (connector id, mcp server id, action id).",
+                    "description": (
+                        "Capability id inside plugin (connector id, mcp server "
+                        "id, action id)."
+                    ),
                 },
                 "operation": {
                     "type": "string",
@@ -325,11 +350,17 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Relative path to the file to analyze (e.g. 'src/auth/provider.py').",
+                    "description": (
+                        "Relative path to the file to analyze (e.g. "
+                        "'src/auth/provider.py')."
+                    ),
                 },
                 "max_depth": {
                     "type": "integer",
-                    "description": "How many levels of transitive dependencies to follow. Default: 3.",
+                    "description": (
+                        "How many levels of transitive dependencies to follow. "
+                        "Default: 3."
+                    ),
                     "default": 3,
                 },
             },

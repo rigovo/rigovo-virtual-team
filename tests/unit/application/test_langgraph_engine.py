@@ -23,7 +23,6 @@ from rigovo.application.graph.state import TaskState
 from rigovo.domain.entities.agent import Agent
 from rigovo.domain.interfaces.llm_provider import LLMResponse, LLMUsage
 
-
 # ---------------------------------------------------------------------------
 # Mock LLM that returns context-aware responses
 # ---------------------------------------------------------------------------
@@ -46,8 +45,6 @@ class _MockLLM:
         self.call_count += 1
 
         system_content = messages[0].get("content", "") if messages else ""
-        user_content = messages[-1].get("content", "") if messages else ""
-
         # Classifier prompt
         if "task classifier" in system_content.lower():
             content = json.dumps({
