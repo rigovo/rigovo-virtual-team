@@ -320,12 +320,15 @@ class RigourQualityGate(QualityGate):
             )
             parsed_issues = self._extract_failure_issues(failure)
             if not parsed_issues:
+                details = str(failure.get("details") or "")
+                title = str(failure.get("title") or "")
+                # Guard against phantom failure stubs like "0 violations".
+                if re.search(r"\b0\s+violations?\b", f"{title} {details}".lower()):
+                    continue
                 violations.append(
                     Violation(
                         gate_id=gate_id,
-                        message=str(
-                            failure.get("details") or failure.get("title") or "Gate failed"
-                        ),
+                        message=str(details or title or "Gate failed"),
                         severity=severity,
                         suggestion=str(failure.get("hint") or ""),
                     )
@@ -365,8 +368,10 @@ class RigourQualityGate(QualityGate):
         has_blockers = any(v.severity == ViolationSeverity.ERROR for v in violations)
         status = GateStatus.FAILED if has_blockers else GateStatus.PASSED
         if not violations and (overall != "PASS" or return_code != 0):
-            # Unknown failure shape: fail closed.
-            status = GateStatus.FAILED
+            # Unknown failure shape: fail closed, except when output explicitly
+            # reports zero violations.
+            zero_violations_reported = bool(re.search(r"\b0\s+violations?\b", stdout.lower()))
+            status = GateStatus.PASSED if zero_violations_reported else GateStatus.FAILED
 
         fix_packet = None
         if violations:

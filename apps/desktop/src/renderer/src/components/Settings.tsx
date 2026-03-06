@@ -48,6 +48,7 @@ interface SettingsData {
   database: {
     backend: "sqlite" | "postgres";
     local_db_path: string;
+    local_db_full_path?: string;
     dsn_configured: boolean;
     dsn_masked: string;
   };
@@ -96,7 +97,12 @@ interface RuntimeCapabilities {
     quality_gate_enabled: boolean;
     memory_learning_enabled: boolean;
   };
-  database?: { backend: string; local_path: string; dsn_configured: boolean };
+  database?: {
+    backend: string;
+    local_path: string;
+    local_full_path?: string;
+    dsn_configured: boolean;
+  };
 }
 
 interface IntegrationsPolicyResponse {
@@ -3631,6 +3637,12 @@ export default function Settings({
                     [
                       "DB backend",
                       runtimeCaps?.database?.backend ?? data.database.backend,
+                    ],
+                    [
+                      "DB file",
+                      runtimeCaps?.database?.local_full_path ??
+                        data.database.local_db_full_path ??
+                        data.database.local_db_path,
                     ],
                   ].map(([label, val]) => (
                     <div

@@ -1246,6 +1246,7 @@ async def _run_agentic_loop(
     )
     enforce_file_write_on_retry = require_file_write and (retry_count > 0 or no_files_fix_active)
     write_file_calls = 0
+    successful_write_file_calls = 0
     no_file_nudges_sent = 0
 
     # Intent-aware file read cap — prevents planner from reading entire codebase
@@ -1296,7 +1297,7 @@ async def _run_agentic_loop(
         if not response.tool_calls:
             if (
                 enforce_file_write_on_retry
-                and write_file_calls == 0
+                and successful_write_file_calls == 0
                 and round_num + 1 < max_rounds
                 and no_file_nudges_sent < 2
             ):
@@ -1367,7 +1368,7 @@ async def _run_agentic_loop(
             tool_name = str(tc.get("name", "")).strip()
             if (
                 enforce_file_write_on_retry
-                and write_file_calls == 0
+                and successful_write_file_calls == 0
                 and tool_name
                 in {
                     "read_file",
@@ -1535,6 +1536,19 @@ async def _run_agentic_loop(
                 started = time.monotonic()
                 result_str = await tool_executor.execute(tc["name"], tc["input"])
 
+                # Track successful file writes (not just attempted write_file calls).
+                if tc["name"] == "write_file":
+                    try:
+                        write_result = json.loads(result_str)
+                    except json.JSONDecodeError:
+                        write_result = {}
+                    if (
+                        isinstance(write_result, dict)
+                        and write_result.get("path")
+                        and not write_result.get("error")
+                    ):
+                        successful_write_file_calls += 1
+
                 # Track execution for run_command calls (Phase 14)
                 if tc["name"] == "run_command":
                     try:
@@ -1633,7 +1647,7 @@ async def _run_agentic_loop(
 
         if (
             enforce_file_write_on_retry
-            and write_file_calls == 0
+            and successful_write_file_calls == 0
             and round_num + 1 < max_rounds
             and no_file_nudges_sent < 2
         ):

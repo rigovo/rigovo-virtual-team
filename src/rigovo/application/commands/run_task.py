@@ -686,6 +686,30 @@ class RunTaskCommand:
         elif status == "rejected":
             task.reject(feedback=final_state.get("approval_feedback", ""))
         else:
+
+            def _display_agent_label(instance_or_role: str) -> str:
+                """Resolve a human-friendly agent label from team_config when possible."""
+                value = str(instance_or_role or "").strip()
+                if not value:
+                    return "unknown"
+                team_agents = (
+                    final_state.get("team_config", {}).get("agents", {})
+                    if isinstance(final_state.get("team_config", {}), dict)
+                    else {}
+                )
+                if isinstance(team_agents, dict):
+                    cfg = team_agents.get(value, {})
+                    if isinstance(cfg, dict):
+                        base_name = str(cfg.get("name", "") or "").strip()
+                        if base_name:
+                            # Preserve numeric instance suffix for multi-instance roles.
+                            if "-" in value:
+                                head, _, tail = value.rpartition("-")
+                                if head and tail.isdigit():
+                                    return f"{base_name} {tail}"
+                            return base_name
+                return value.replace("-", " ").replace("_", " ").title()
+
             # Capture the pipeline error reason so UI can display it.
             # Check multiple failure sources in priority order.
             failure_reason = final_state.get("error", "")
@@ -710,7 +734,7 @@ class RunTaskCommand:
                     role = final_state.get("current_agent_role", "unknown")
                     failure_reason = (
                         f"Rigour remediation exhausted ({retry_count}/{max_retries}) "
-                        f"for agent '{role}'"
+                        f"for agent '{_display_agent_label(str(role))}'"
                     )
 
             if not failure_reason:
@@ -735,8 +759,9 @@ class RunTaskCommand:
                 gate_history = final_state.get("gate_history", [])
                 for entry in reversed(gate_history):
                     if isinstance(entry, dict) and not entry.get("passed", True):
+                        failed_role = str(entry.get("role", "unknown") or "unknown")
                         failure_reason = (
-                            f"Rigour gate failed for {entry.get('role', 'unknown')}: "
+                            f"Rigour gate failed for {_display_agent_label(failed_role)}: "
                             f"{entry.get('message', '')}"
                         )
                         break
@@ -790,10 +815,20 @@ class RunTaskCommand:
 
         if isinstance(agent_outputs_raw, dict):
             pipeline_steps: list[PipelineStep] = []
+            team_agents = (
+                final_state.get("team_config", {}).get("agents", {})
+                if isinstance(final_state.get("team_config", {}), dict)
+                else {}
+            )
             for role, output in agent_outputs_raw.items():
                 # Build structured gate_violations from gate_history
                 gate_violations: list[dict] = []
-                for gh in gate_by_role.get(role, []):
+                # Use only the latest gate evaluation for this role.
+                # Aggregating every historical retry result makes UI show stale
+                # violations (e.g. old no-files) even after later attempts.
+                role_gate_history = gate_by_role.get(role, [])
+                latest_gate_entries = role_gate_history[-1:] if role_gate_history else []
+                for gh in latest_gate_entries:
                     passed = gh.get("passed", True)
                     violation_count = gh.get("violation_count", 0)
                     gates_run = gh.get("gates_run", 0)
@@ -830,8 +865,23 @@ class RunTaskCommand:
                 if gate_passed is None and gate_violations:
                     gate_passed = all(gv.get("passed", True) for gv in gate_violations)
 
-                # Humanize instance agent names: "backend-engineer-1" → "Backend Engineer 1"
-                _agent_name = role.replace("-", " ").replace("_", " ").title()
+                # Prefer canonical configured agent names over instance-id title-casing.
+                _agent_name = ""
+                if isinstance(team_agents, dict):
+                    cfg = team_agents.get(role, {})
+                    if isinstance(cfg, dict):
+                        base_name = str(cfg.get("name", "") or "").strip()
+                        if base_name:
+                            if "-" in role:
+                                head, _, tail = role.rpartition("-")
+                                if head and tail.isdigit():
+                                    _agent_name = f"{base_name} {tail}"
+                                else:
+                                    _agent_name = base_name
+                            else:
+                                _agent_name = base_name
+                if not _agent_name:
+                    _agent_name = role.replace("-", " ").replace("_", " ").title()
                 step = PipelineStep(
                     agent_id=uuid5(NAMESPACE_DNS, f"{task_id}:{role}"),
                     agent_role=role,
@@ -872,6 +922,9 @@ class RunTaskCommand:
                     "agent_consult_completed",
                     "debate_round",
                     "feedback_loop",
+                    "subtask_spawned",
+                    "subtask_complete",
+                    "subtask_blocked",
                     "remediation_lock",
                     "cache_hit",
                     "cache_miss",
@@ -1129,7 +1182,13 @@ class RunTaskCommand:
         try:
             # --- Item 3: Checkpointing for crash recovery ---
             checkpointer = None
-            checkpoint_db = self._project_root / ".rigovo" / "checkpoints.db"
+            # Use effective runtime workspace root so checkpoint locality matches
+            # where the task actually executes (workspace_path / fallback project),
+            # not necessarily the command bootstrap root.
+            runtime_root = Path(
+                str(initial_state.get("project_root", "")) or str(self._project_root)
+            )
+            checkpoint_db = runtime_root / ".rigovo" / "checkpoints.db"
             try:
                 checkpointer = GraphBuilder.create_sqlite_checkpointer(checkpoint_db)
             except Exception:

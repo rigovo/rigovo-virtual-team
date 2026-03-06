@@ -198,8 +198,14 @@ class ToolExecutor:
     # --- Tool handlers ---
 
     def _handle_read_file(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        path = inputs.get("path")
+        if not path:
+            return {
+                "error": "read_file requires a 'path' parameter.",
+                "status": "error",
+            }
         return self._reader.read_file(
-            path=inputs["path"],
+            path=path,
             start_line=inputs.get("start_line"),
             end_line=inputs.get("end_line"),
         )
@@ -228,15 +234,27 @@ class ToolExecutor:
         )
 
     def _handle_search_codebase(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        pattern = inputs.get("pattern")
+        if not pattern:
+            return {
+                "error": "search_codebase requires a 'pattern' parameter.",
+                "status": "error",
+            }
         return self._reader.search_codebase(
-            pattern=inputs["pattern"],
+            pattern=pattern,
             file_glob=inputs.get("file_glob"),
             max_results=inputs.get("max_results", 50),
         )
 
     def _handle_run_command(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        command = inputs.get("command")
+        if not command:
+            return {
+                "error": "run_command requires a 'command' parameter.",
+                "status": "error",
+            }
         return self._runner.run(
-            command=inputs["command"],
+            command=command,
             timeout_seconds=inputs.get("timeout_seconds", 60),
         )
 

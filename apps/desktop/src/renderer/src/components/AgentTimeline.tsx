@@ -182,6 +182,11 @@ export interface CollabEvent {
   kind?: string;
   operation?: string;
   blocked_reason?: string;
+  subtask_index?: number;
+  description?: string;
+  reason?: string;
+  max_subtasks_per_agent_step?: number;
+  files_changed?: number;
   created_at?: number | string;
   memories?: Array<{
     name: string;
@@ -211,6 +216,9 @@ export interface CollaborationData {
     debate_rounds: number;
     integration_invoked: number;
     integration_blocked: number;
+    subtasks_spawned?: number;
+    subtasks_completed?: number;
+    subtasks_blocked?: number;
   };
 }
 
@@ -388,6 +396,25 @@ function CollabRow({
       icon = "🚫";
       routeText = `${roleLabel(event.role || "agent")} blocked by policy`;
       bodyText = event.blocked_reason || "";
+      break;
+    case "subtask_spawned":
+      icon = "🧩";
+      routeText = `${roleLabel(event.role || "agent")} spawned subtask #${event.subtask_index ?? "?"}`;
+      bodyText = event.description ? String(event.description).slice(0, 220) : "";
+      break;
+    case "subtask_complete":
+      icon = "✅";
+      routeText = `${roleLabel(event.role || "agent")} completed subtask #${event.subtask_index ?? "?"}`;
+      bodyText = `files changed: ${event.files_changed ?? 0}`;
+      break;
+    case "subtask_blocked":
+      icon = "⛔";
+      routeText = `${roleLabel(event.role || "agent")} subtask blocked`;
+      bodyText = event.reason
+        ? String(event.reason)
+        : event.max_subtasks_per_agent_step
+          ? `max ${event.max_subtasks_per_agent_step} subtasks reached`
+          : "";
       break;
     default:
       icon = "↔️";
@@ -1015,6 +1042,9 @@ export default function AgentTimeline({
         "debate_round",
         "integration_invoked",
         "integration_blocked",
+        "subtask_spawned",
+        "subtask_complete",
+        "subtask_blocked",
         "memory_injection",
       ].includes(collab!.events[i].type),
   );

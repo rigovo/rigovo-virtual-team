@@ -1145,6 +1145,10 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "agent_consult_completed",
             "debate_round",
             "feedback_loop",
+            "subtask_spawned",
+            "subtask_complete",
+            "subtask_blocked",
+            "remediation_lock",
             "integration_invoked",
             "integration_blocked",
             "replan_triggered",
@@ -1153,9 +1157,14 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "cache_miss",
             "artifact_cache_hit",
             "artifact_cache_miss",
+            "budget_warning_internal",
+            "budget_soft_extension_applied",
+            "auto_compaction_applied",
+            "budget_exceeded",
             "approval_requested",
             "approval_granted",
             "approval_denied",
+            "token_pressure_mode",
             "no_files_nudge",
             "gate_remediation_scheduled",
             "gate_retries_exhausted",
@@ -1587,6 +1596,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "database": {
                 "backend": str(config.db_backend),
                 "local_path": str(config.local_db_path),
+                "local_full_path": str(config.local_db_full_path),
                 "dsn_configured": bool(config.db_url),
             },
         }
@@ -3819,6 +3829,15 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "replan_failed": sum(
                 1 for e in merged_events if str(e.get("type", "")) == "replan_failed"
             ),
+            "subtasks_spawned": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "subtask_spawned"
+            ),
+            "subtasks_completed": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "subtask_complete"
+            ),
+            "subtasks_blocked": sum(
+                1 for e in merged_events if str(e.get("type", "")) == "subtask_blocked"
+            ),
         }
 
         return {
@@ -4558,6 +4577,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "database": {
                 "backend": str(config.db_backend or "sqlite"),
                 "local_db_path": str(config.local_db_path or ".rigovo/local.db"),
+                "local_db_full_path": str(config.local_db_full_path),
                 "dsn_configured": bool(config.db_url),
                 "dsn_masked": _mask_dsn(str(config.db_url or "")),
             },
