@@ -19,20 +19,17 @@ Tests cover:
 
 from __future__ import annotations
 
-import asyncio
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 from typer.testing import CliRunner
 
+from rigovo.domain.entities.audit_entry import AuditAction, AuditEntry
+from rigovo.domain.entities.task import Task, TaskComplexity, TaskStatus, TaskType
 from rigovo.main import app
-from rigovo.domain.entities.task import Task, TaskStatus, TaskType, TaskComplexity
-from rigovo.domain.entities.audit_entry import AuditEntry, AuditAction
-from rigovo.infrastructure.persistence.sqlite_task_repo import SqliteTaskRepository
-from rigovo.infrastructure.persistence.sqlite_audit_repo import SqliteAuditRepository
 
 runner = CliRunner()
 
@@ -49,12 +46,12 @@ def tmp_project_dir():
         tmp_path = Path(tmp_dir)
         rigovo_dir = tmp_path / ".rigovo"
         rigovo_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Create minimal rigovo.yml
         (tmp_path / "rigovo.yml").write_text(
             "version: '1'\nproject:\n  name: test-project\n"
         )
-        
+
         yield tmp_path
 
 
@@ -671,6 +668,7 @@ class TestTaskStateTransitions:
             "security",
             "performance",
             "investigation",
+            "new_project",
         }
         actual_types = {task_type.value for task_type in TaskType}
         assert actual_types == expected_types
@@ -788,7 +786,7 @@ class TestDeterminismAndIsolation:
                 ["replay", fake_task_id, "--project", str(initialized_project)],
             )
             results.append(result.exit_code)
-        
+
         # All runs should produce same exit code
         assert all(code == 1 for code in results)
 
@@ -802,7 +800,7 @@ class TestDeterminismAndIsolation:
                 ["abort", fake_task_id, "--project", str(initialized_project)],
             )
             results.append(result.exit_code)
-        
+
         # All runs should produce same exit code
         assert all(code == 1 for code in results)
 
@@ -813,7 +811,7 @@ class TestDeterminismAndIsolation:
             for _ in range(3):
                 result = runner.invoke(app, ["dashboard"])
                 results.append(result.exit_code)
-            
+
             # All runs should succeed
             assert all(code == 0 for code in results)
 
@@ -823,6 +821,6 @@ class TestDeterminismAndIsolation:
         for _ in range(3):
             result = runner.invoke(app, ["upgrade"])
             results.append(result.exit_code)
-        
+
         # All runs should succeed
         assert all(code == 0 for code in results)

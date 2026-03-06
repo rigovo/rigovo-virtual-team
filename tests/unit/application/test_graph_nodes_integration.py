@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
-from unittest.mock import AsyncMock, MagicMock
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
-from rigovo.application.graph.nodes.classify import classify_node
 from rigovo.application.graph.nodes.assemble import assemble_node
+from rigovo.application.graph.nodes.classify import classify_node
 from rigovo.application.graph.nodes.execute_agent import execute_agent_node
 from rigovo.application.graph.nodes.finalize import finalize_node
 from rigovo.application.graph.state import TaskState
@@ -106,7 +106,8 @@ class TestNodeIntegration(unittest.IsolatedAsyncioTestCase):
         # Verify flow
         assert assemble_result["status"] == "assembled"
         assert assemble_result["current_agent_role"] == "engineer"
-        # Events: deterministic_classified + task_classified (from classify) + pipeline_assembled (from assemble)
+        # Events:
+        # deterministic_classified + task_classified + pipeline_assembled
         assert len(assemble_result["events"]) == 3
         event_types = [e["type"] for e in assemble_result["events"]]
         assert "deterministic_classified" in event_types
@@ -161,8 +162,14 @@ class TestNodeIntegration(unittest.IsolatedAsyncioTestCase):
         finalize_result = await finalize_node(state_after_execute)
 
         assert finalize_result["status"] == "completed"
-        # Events: agent_started + agent_complete + task_finalized
-        assert len(finalize_result["events"]) == 3
+        # Events: agent_started + master_decision + agent_complete + task_finalized
+        event_types = [event["type"] for event in finalize_result["events"]]
+        assert event_types == [
+            "agent_started",
+            "master_decision",
+            "agent_complete",
+            "task_finalized",
+        ]
         assert finalize_result["events"][-1]["type"] == "task_finalized"
 
 
