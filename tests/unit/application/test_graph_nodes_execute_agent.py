@@ -221,7 +221,12 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         assert "top_score" in memory_event
 
     async def test_execute_agent_node_with_fix_packet(self):
-        """Test execute_agent_node includes fix packet in retry context."""
+        """Test execute_agent_node uses SURGICAL FIX MODE on retry.
+
+        Fix packet is injected into the system prompt (not a weak user message)
+        so it has the highest priority in the LLM attention hierarchy.
+        A short RETRY acknowledgement is added as a user turn.
+        """
         state: TaskState = {
             "task_id": "task-1",
             "description": "Fix code",
@@ -239,10 +244,20 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
             },
             "current_agent_role": "backend",
             "agent_outputs": {},
+            "retry_count": 1,  # Must be ≥ 1 for surgical fix mode to engage
             "fix_packets": ["Fix violation in src/app.py line 15"],
             "active_fix_packet": {
                 "role": "backend",
-                "failure_evidence": ["Syntax error on line 15"],
+                "items": [
+                    {
+                        "gate_id": "complexity",
+                        "file_path": "src/app.py",
+                        "message": "Syntax error on line 15",
+                        "suggestion": "Fix the syntax",
+                        "severity": "ERROR",
+                        "line": 15,
+                    }
+                ],
                 "affected_files": ["src/app.py"],
                 "remediation_phase": "diagnose",
             },
@@ -269,9 +284,25 @@ class TestExecuteAgentNode(unittest.IsolatedAsyncioTestCase):
         call_args = mock_llm.invoke.call_args
         messages = call_args.kwargs["messages"]
 
-        # Should include fix packet
-        assert any("[FIX REQUIRED]" in msg.get("content", "") for msg in messages)
-        assert any("Syntax error on line 15" in msg.get("content", "") for msg in messages)
+        # SURGICAL FIX MODE block is injected into the system prompt (role="system")
+        # for maximum LLM priority — NOT as a weak user message.
+        system_content = next(
+            (msg.get("content", "") for msg in messages if msg.get("role") == "system"), ""
+        )
+        assert "SURGICAL FIX MODE" in system_content, (
+            "Fix packet must be injected into system prompt as SURGICAL FIX MODE block"
+        )
+        assert "Syntax error on line 15" in system_content, (
+            "Violation message must appear in system prompt SURGICAL FIX MODE block"
+        )
+        assert "src/app.py" in system_content, (
+            "Affected file path must appear in SURGICAL FIX MODE block"
+        )
+
+        # Short RETRY acknowledgement user turn must also be present
+        assert any(
+            "RETRY" in msg.get("content", "") for msg in messages if msg.get("role") == "user"
+        ), "A RETRY acknowledgement user message must be present"
 
     async def test_execute_agent_node_updates_cost_accumulator(self):
         """Test execute_agent_node updates cost accumulator."""

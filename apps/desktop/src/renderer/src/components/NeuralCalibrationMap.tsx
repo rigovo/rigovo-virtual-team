@@ -426,6 +426,12 @@ export interface NeuralCalibrationMapProps {
   taskType?: string;
   collab: CollaborationData | null;
   plannedRoles?: string[];
+  /**
+   * Real execution DAG from the backend: { instance_id: [depends_on_instance_ids] }.
+   * When provided, execution-type edges are derived from this instead of STATIC_EDGE_DEFS.
+   * Non-execution edges (adversarial, debate, memory, consultation) stay hardcoded.
+   */
+  executionDag?: Record<string, string[]>;
   totalFiles: number;
   totalCost: number;
   expectedAgents?: number;
@@ -447,6 +453,7 @@ export default function NeuralCalibrationMap({
   taskType = "engineering",
   collab,
   plannedRoles = [],
+  executionDag,
   totalFiles,
   totalCost,
   expectedAgents,
@@ -560,22 +567,71 @@ export default function NeuralCalibrationMap({
 
   /* ── Build React Flow edges — only between pipeline agents ───────── */
   const rfEdges: Edge[] = useMemo(() => {
-    // Start with static edges that connect nodes present in the pipeline
-    const staticFiltered = STATIC_EDGE_DEFS.filter(
+    // ── Execution edges: derived from real DAG when available ────────────
+    // executionDag format: { instance_id: [depends_on_instance_ids] }
+    // Each entry "coder-1 depends on planner-1" produces edge: planner-1 → coder-1
+    // We map instance_ids to base roles (strip trailing -N) for MAP node lookup.
+    let executionEdgeDefs: Array<{ id: string; from: string; to: string; kind: EdgeKind; dur: string }> = [];
+
+    const instanceToBaseRole = (instanceId: string): string => {
+      // "coder-1" → "coder", "backend-engineer-1" → tries NODE_META match
+      const clean = instanceId.replace(/-\d+$/, "");
+      if (NODE_META[clean]) return clean;
+      // Try resolving via resolveCanonicalRole (returns string base role)
+      const resolved = resolveCanonicalRole(instanceId);
+      return NODE_META[resolved] ? resolved : clean;
+    };
+
+    if (executionDag && Object.keys(executionDag).length > 0) {
+      // Build edges from the real DAG — each dependent → its dependencies
+      const seen = new Set<string>();
+      for (const [dependent, deps] of Object.entries(executionDag)) {
+        const toRole = instanceToBaseRole(dependent);
+        for (const dep of deps) {
+          const fromRole = instanceToBaseRole(dep);
+          if (fromRole === toRole) continue; // skip self-loops
+          const edgeId = `e-dag-${fromRole}-${toRole}`;
+          if (seen.has(edgeId)) continue;
+          seen.add(edgeId);
+          // Determine duration based on roles (farther apart in pipeline = slower pulse)
+          const dur = `${(2.0 + 0.2 * Math.abs(Object.keys(NODE_META).indexOf(fromRole) - Object.keys(NODE_META).indexOf(toRole))).toFixed(1)}s`;
+          executionEdgeDefs.push({ id: edgeId, from: fromRole, to: toRole, kind: "execution", dur });
+        }
+      }
+    } else {
+      // Fallback: use STATIC_EDGE_DEFS execution edges (pre-DAG behavior)
+      executionEdgeDefs = STATIC_EDGE_DEFS.filter((e) => e.kind === "execution");
+    }
+
+    // Filter execution edges to only those between pipeline nodes
+    const filteredExecutionEdges = executionEdgeDefs.filter(
       (e) => inPipeline.has(e.from) && inPipeline.has(e.to),
     );
 
-    // Add fallback edges for small pipelines where some nodes are absent.
-    // A fallback edge activates only when ALL its requireAbsent nodes are
-    // missing from the pipeline, ensuring the graph stays connected.
-    const fallbackFiltered = FALLBACK_EDGES.filter(
-      (e) =>
-        inPipeline.has(e.from) &&
-        inPipeline.has(e.to) &&
-        e.requireAbsent.every((n) => !inPipeline.has(n)),
+    // Fallback edges for small pipelines — only activate when real DAG produces
+    // no path to lead/terminal nodes (i.e. DAG-derived edges leave lead disconnected)
+    const dagConnectedTargets = new Set(filteredExecutionEdges.map((e) => e.to));
+    const fallbackFiltered = !executionDag || Object.keys(executionDag).length === 0
+      ? FALLBACK_EDGES.filter(
+          (e) =>
+            inPipeline.has(e.from) &&
+            inPipeline.has(e.to) &&
+            e.requireAbsent.every((n) => !inPipeline.has(n)),
+        )
+      : FALLBACK_EDGES.filter(
+          (e) =>
+            inPipeline.has(e.from) &&
+            inPipeline.has(e.to) &&
+            !dagConnectedTargets.has(e.to) &&  // only if DAG doesn't already reach this target
+            e.requireAbsent.every((n) => !inPipeline.has(n)),
+        );
+
+    // Non-execution edges (adversarial, debate, memory, consultation) always use STATIC_EDGE_DEFS
+    const overlayEdges = STATIC_EDGE_DEFS.filter(
+      (e) => e.kind !== "execution" && inPipeline.has(e.from) && inPipeline.has(e.to),
     );
 
-    const allEdges = [...staticFiltered, ...fallbackFiltered];
+    const allEdges = [...filteredExecutionEdges, ...fallbackFiltered, ...overlayEdges];
 
     return allEdges.map((e) => {
       const fromStatus = nodeStatuses[e.from];
@@ -599,7 +655,7 @@ export default function NeuralCalibrationMap({
         } satisfies SignalEdgeData,
       };
     });
-  }, [nodeStatuses, inPipeline, isActive, blockedRolesByGate]);
+  }, [nodeStatuses, inPipeline, isActive, blockedRolesByGate, executionDag]);
 
   /* ── Node click ───────────────────────────────────────────────────── */
   const onNodeClick: NodeMouseHandler = useCallback(

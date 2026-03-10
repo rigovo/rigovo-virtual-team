@@ -150,6 +150,7 @@ async def assemble_node(
                 "instance_ids": pipeline_order,
                 "gates_after": pipeline.gates_after,
                 "parallel_groups": pipeline.parallel_groups if pipeline.parallel_groups else [],
+                "execution_dag": execution_dag,  # {instance_id: [depends_on_instance_ids]}
                 "agent_models": {
                     iid: config.get("llm_model", "unknown") for iid, config in agent_configs.items()
                 },

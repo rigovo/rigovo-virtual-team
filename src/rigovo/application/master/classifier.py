@@ -17,6 +17,7 @@ but the primary output is now ``StaffingPlan``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -249,23 +250,44 @@ class TaskClassifier:
             deterministic_hint: Pre-classification from Deterministic Brain.
                 The LLM can refine but NEVER downgrade this classification.
         """
-        # Build context from project snapshot
+        # ── Parallel setup: kick off async memory retrieval immediately ──────
+        # _build_project_context() is synchronous (string building — fast).
+        # retrieve_for_master() is async I/O (embedding lookup + ranking — slow).
+        # By launching the memory task first and doing the sync work while it runs,
+        # we hide most of the retrieval latency behind the CPU work.
+        mem_task: asyncio.Task[Any] | None = None
+        if memories and self._memory_retriever:
+            scores = memory_scores or [0.5] * len(memories)
+            mem_task = asyncio.create_task(
+                self._memory_retriever.retrieve_for_master(description, memories, scores)
+            )
+
+        # Sync work runs concurrently with the async memory retrieval
         project_context = self._build_project_context(project_snapshot)
 
-        # Build historical intelligence section (if memories available)
+        # Now await the memory retrieval result (already running in background)
         historical_intelligence = ""
-        if memories and self._memory_retriever:
+        if mem_task is not None:
             try:
-                scores = memory_scores or [0.5] * len(memories)
-                retrieved = await self._memory_retriever.retrieve_for_master(
-                    description,
-                    memories,
-                    scores,
-                )
+                retrieved = await mem_task
                 if retrieved.memories:
                     historical_intelligence = retrieved.to_context_section()
             except Exception as e:
                 logger.warning("Failed to retrieve historical intelligence: %s", e)
+
+        # ── Tiered max_tokens: reduce output budget for simple tasks ────────
+        # A "test" or "docs" staffing plan is ~200-400 tokens — allocating 4096
+        # adds 3-4 seconds of unnecessary LLM generation time.
+        _SIMPLE_TASK_TYPES = {"test", "docs", "investigation"}
+        _COMPLEX_TASK_TYPES = {"new_project", "security", "infra", "performance"}
+        _det_task_type = str((deterministic_hint or {}).get("task_type", "") or "")
+        _det_complexity = str((deterministic_hint or {}).get("complexity", "") or "")
+        if _det_task_type in _SIMPLE_TASK_TYPES or _det_complexity == "low":
+            _max_tokens = 1024
+        elif _det_task_type in _COMPLEX_TASK_TYPES or _det_complexity in {"high", "critical"}:
+            _max_tokens = 4096
+        else:
+            _max_tokens = 2048  # medium tasks: feature, bug, refactor
 
         # Build deterministic hint section (inject as floor constraint)
         deterministic_section = ""
@@ -310,7 +332,7 @@ class TaskClassifier:
                 {"role": "user", "content": user_message},
             ],
             temperature=0.1,  # Slight creativity for team composition
-            max_tokens=4096,  # Staffing plans — compact JSON, 4k is sufficient
+            max_tokens=_max_tokens,  # Tiered: 1024 simple / 2048 medium / 4096 complex
         )
 
         return self._parse_staffing_plan(response.content, description)

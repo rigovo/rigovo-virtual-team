@@ -512,6 +512,36 @@ def _on_agent_event(event: dict) -> None:
             )
         return
 
+    # pipeline_assembled — capture execution_dag and upgrade agent_instances list
+    # This fires from assemble_node (after task_classified) and provides the
+    # true DAG edges so the MAP can render accurate topology instead of static defaults.
+    if etype == "pipeline_assembled" and task_id:
+        dag = event.get("execution_dag")
+        if dag and isinstance(dag, dict):
+            existing_cls = _live_task_classification.get(task_id, {})
+            _live_task_classification[task_id] = {
+                **existing_cls,
+                "execution_dag": dag,
+            }
+        # Also refresh agent_instances with the assembled order (instance_ids + roles)
+        summaries = event.get("agent_summaries", [])
+        if summaries and isinstance(summaries, list):
+            existing_cls = _live_task_classification.get(task_id, {})
+            _live_task_classification[task_id] = {
+                **existing_cls,
+                "agent_instances": [
+                    {
+                        "instance_id": s.get("instance_id", ""),
+                        "role": s.get("role", ""),
+                        "specialisation": s.get("specialisation", ""),
+                        "assignment": (s.get("assignment", "") or "")[:200],
+                    }
+                    for s in summaries
+                    if isinstance(s, dict)
+                ],
+            }
+        return
+
     role = str(event.get("role", "") or "").strip()
     instance_id = str(event.get("instance_id", "") or "").strip()
     if not task_id or not role:
@@ -3440,6 +3470,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             if live_cls:
                 resolved_task_type = live_cls.get("task_type", "unclassified")
                 resolved_complexity = live_cls.get("complexity")
+        execution_dag: dict[str, list[str]] = {}
         if live_cls:
             raw_instances = live_cls.get("agent_instances", [])
             if isinstance(raw_instances, list):
@@ -3451,6 +3482,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                         canonical_role, _, _ = _canonical_agent_identity(role, "")
                         if canonical_role and canonical_role not in planned_roles:
                             planned_roles.append(canonical_role)
+            raw_dag = live_cls.get("execution_dag", {})
+            if isinstance(raw_dag, dict):
+                execution_dag = {str(k): [str(d) for d in v] for k, v in raw_dag.items() if isinstance(v, list)}
 
         # Surface pipeline failure reason (Fix #5)
         error_reason = (
@@ -3900,6 +3934,7 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "completed_at": task.completed_at.isoformat() if task.completed_at else None,
             "steps": steps,
             "planned_roles": planned_roles,
+            "execution_dag": execution_dag,
             "cost": cost,
             "approval_data": task.approval_data or {},
             "confidence_score": confidence_score,

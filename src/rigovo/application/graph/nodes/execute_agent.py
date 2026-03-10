@@ -669,6 +669,129 @@ def _format_jsonish(value: Any) -> str:
         return str(value)
 
 
+def _violation_fingerprint(item: dict[str, Any]) -> str:
+    """Stable fingerprint for a violation — gate_id + file_path (ignoring line/message)."""
+    return f"{item.get('gate_id', '?')}:{item.get('file_path', '')}"
+
+
+def _build_persistence_warnings(state: TaskState, active_fix_packet: dict[str, Any]) -> list[str]:
+    """Return warning lines for violations that persisted through the previous retry cycle.
+
+    Compares current fix-packet items against the most recent gate_history entry
+    that preceded them.  A violation is 'persisting' when the same gate_id+file_path
+    pair appeared in the previous gate run, meaning the agent's last attempt did NOT
+    remove it.
+    """
+    current_items = active_fix_packet.get("items", [])
+    if not current_items:
+        return []
+
+    gate_history = list(state.get("gate_history", []) or [])
+    # Need at least two entries: one before the latest retry and one after
+    if len(gate_history) < 2:
+        return []
+
+    current_fps = {_violation_fingerprint(item) for item in current_items}
+
+    # Walk backwards through gate_history looking for the last FAILED entry
+    # that is NOT the very latest one (which represents the current failure).
+    # We compare against that earlier failure to detect persistence.
+    prev_violations: list[dict[str, Any]] = []
+    for entry in reversed(gate_history[:-1]):
+        if isinstance(entry, dict) and not entry.get("passed", True):
+            prev_violations = [
+                v for v in (entry.get("violations") or []) if isinstance(v, dict)
+            ]
+            break
+
+    if not prev_violations:
+        return []
+
+    prev_fps = {_violation_fingerprint(v) for v in prev_violations}
+    persisting_fps = current_fps & prev_fps
+
+    if not persisting_fps:
+        return []
+
+    warnings: list[str] = []
+    for item in current_items:
+        if _violation_fingerprint(item) in persisting_fps:
+            file_path = item.get("file_path", "unknown")
+            gate_id = item.get("gate_id", "?")
+            suggestion = item.get("suggestion", "")
+            warn_line = (
+                f"  • [{gate_id}] {file_path} — your previous attempt did NOT resolve this. "
+                "Apply a DIFFERENT, more targeted approach."
+            )
+            if suggestion:
+                warn_line += f" Suggested fix: {suggestion}"
+            warnings.append(warn_line)
+    return warnings
+
+
+def _build_surgical_fix_block(
+    state: TaskState,
+    active_fix_packet: dict[str, Any],
+    retry_count: int,
+    max_retries: int,
+) -> str:
+    """Build the SURGICAL FIX MODE system-prompt block for retry executions.
+
+    This block is injected into the system prompt (highest priority) instead of
+    as a user message (low priority) so the LLM treats it as a mandatory constraint
+    rather than advisory guidance.
+    """
+    items: list[dict[str, Any]] = active_fix_packet.get("items", [])
+    affected_files = list(
+        dict.fromkeys(  # preserve order, deduplicate
+            item.get("file_path", "")
+            for item in items
+            if item.get("file_path")
+        )
+    )
+
+    lines: list[str] = [
+        "═══════════════════════════════════════════════════════",
+        "SURGICAL FIX MODE  (Retry {}/{})".format(retry_count, max_retries),
+        "═══════════════════════════════════════════════════════",
+        "You MUST apply the exact fixes below. Rules:",
+        "  1. Read ONLY the files listed in this fix packet — do not explore unrelated files.",
+        "  2. Apply each fix precisely as described — do not re-architect the whole solution.",
+        "  3. Call write_file for every file you change.",
+        "  4. Do NOT add new features, refactor unrelated code, or add extra dependencies.",
+        "  5. After applying all fixes, stop. Do not continue with other work.",
+        "",
+    ]
+
+    # Inject persistence warnings when the same violation survived a previous attempt
+    persistence_warnings = _build_persistence_warnings(state, active_fix_packet)
+    if persistence_warnings:
+        lines += [
+            "⚠️  PERSISTENT VIOLATIONS — your last attempt did NOT fix these:",
+        ]
+        lines += persistence_warnings
+        lines += ["", "You MUST use a different approach for each item above.", ""]
+
+    lines.append("VIOLATIONS TO FIX:")
+    for i, item in enumerate(items, 1):
+        fp = item.get("file_path", "unknown")
+        gid = item.get("gate_id", "?")
+        msg = item.get("message", "?")
+        sug = item.get("suggestion", "")
+        line_no = item.get("line")
+        loc = f":{line_no}" if line_no else ""
+        lines.append(f"  {i}. [{gid}] {fp}{loc}")
+        lines.append(f"     Issue: {msg}")
+        if sug:
+            lines.append(f"     Fix: {sug}")
+
+    if affected_files:
+        lines += ["", "Files requiring changes: " + ", ".join(affected_files)]
+
+    lines.append("═══════════════════════════════════════════════════════")
+    return "\n".join(lines)
+
+
 def _active_fix_packet(state: TaskState) -> dict[str, Any] | None:
     """Normalize active fix packet from current state."""
     packet = state.get("active_fix_packet") or state.get("fix_packet")
@@ -864,6 +987,19 @@ def _build_agent_messages(
     if role_learning_block:
         system_prompt += f"\n\n{role_learning_block}"
 
+    # ── Surgical fix mode: inject mandatory constraints into system prompt ──
+    # Injecting into the system prompt gives these instructions the highest
+    # priority in the LLM's attention hierarchy — far more effective than
+    # appending as user messages after the original task description.
+    _retry_fix_packet = _active_fix_packet(state)
+    _retry_count = int(state.get("retry_count", 0) or 0)
+    _max_retries = int(state.get("max_retries", 5) or 5)
+    if _retry_fix_packet and _retry_count > 0:
+        surgical_block = _build_surgical_fix_block(
+            state, _retry_fix_packet, _retry_count, _max_retries
+        )
+        system_prompt += f"\n\n{surgical_block}"
+
     # Role-specific action imperatives — forces execution not description
     # Intent-aware: brainstorm/think mode tells planner to reason, not read codebase
     intent_profile = state.get("intent_profile") or {}
@@ -914,6 +1050,21 @@ def _build_agent_messages(
     }
     action_imperative = action_imperatives.get(current_role, "Execute your task now.")
 
+    # Override imperative for surgical retry: direct the agent straight to the violated files
+    if _retry_fix_packet and _retry_count > 0 and current_role in ROLES_REQUIRING_FILE_WRITES:
+        _fix_files = list(
+            dict.fromkeys(
+                item.get("file_path", "")
+                for item in _retry_fix_packet.get("items", [])
+                if item.get("file_path")
+            )
+        )
+        _files_str = ", ".join(_fix_files[:4]) if _fix_files else "the violated files"
+        action_imperative = (
+            f"SURGICAL FIX: Read {_files_str} and apply the fixes in SURGICAL FIX MODE above. "
+            "call write_file for every changed file. Do not read any other files."
+        )
+
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {
@@ -931,24 +1082,23 @@ def _build_agent_messages(
         },
     ]
 
-    # Add fix packet if retrying
+    # Retry acknowledgement — the full fix details are already in the system prompt
+    # (SURGICAL FIX MODE block injected above).  We add only a short user-turn
+    # reminder so the conversation starts with the right framing; the system-prompt
+    # block carries the authoritative constraint.
     active_fix_packet = _active_fix_packet(state)
-    if active_fix_packet:
-        retry_count = int(state.get("retry_count", 0) or 0)
-        max_retries = int(state.get("max_retries", 5) or 5)
+    if active_fix_packet and _retry_count > 0:
+        violation_count = len(active_fix_packet.get("items", []))
         messages.append(
             {
                 "role": "user",
-                "content": f"[FIX REQUIRED]: {_format_jsonish(active_fix_packet)}",
+                "content": (
+                    f"RETRY {_retry_count}/{_max_retries}: "
+                    f"Fix the {violation_count} violation(s) listed in SURGICAL FIX MODE "
+                    "in your system prompt. Apply fixes now."
+                ),
             }
         )
-        guidance = (
-            f"RETRY MODE ({retry_count}/{max_retries}): Address every violation in the fix packet. "
-            "Do not re-summarize old context. Produce concrete corrections now."
-        )
-        if current_role in ROLES_REQUIRING_FILE_WRITES:
-            guidance += " You must call write_file and produce actual file changes."
-        messages.append({"role": "user", "content": guidance})
 
     mandatory_consults = _required_consultations(state, current_role)
     if mandatory_consults:
@@ -2669,6 +2819,18 @@ async def execute_agent_node(
     }
     role_cap = _ROLE_ROUND_CAPS.get(current_role, MAX_TOOL_ROUNDS)
     intent_max_rounds = min(intent_max_rounds, role_cap)
+
+    # ── Surgical retry round cap ────────────────────────────────────────
+    # In SURGICAL FIX MODE the agent should go directly to violated files.
+    # 25 tool rounds gives too much room to re-explore the entire codebase.
+    # Formula: 2 buffer + 3 rounds per violation (read + write + verify), capped at 12.
+    # This forces focus: the agent cannot afford to read unrelated files.
+    _retry_fix_packet_for_cap = _active_fix_packet(state)
+    _retry_count_for_cap = int((state or {}).get("retry_count", 0) or 0)
+    if _retry_fix_packet_for_cap and _retry_count_for_cap > 0 and current_role in ROLES_REQUIRING_FILE_WRITES:
+        _violation_count = len(_retry_fix_packet_for_cap.get("items", []))
+        _retry_round_cap = max(8, min(12, 2 + 3 * max(1, _violation_count)))
+        intent_max_rounds = min(intent_max_rounds, _retry_round_cap)
 
     token_limit = int(state.get("budget_max_tokens_per_task", 0) or 0)
     accumulated_tokens = sum(v.get("tokens", 0) for v in state.get("cost_accumulator", {}).values())

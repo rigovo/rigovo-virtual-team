@@ -522,16 +522,53 @@ class TestHelperFunctions(unittest.TestCase):
         assert "Add tests" in messages[1]["content"]
 
     def test_build_agent_messages_with_fix_packet(self):
-        """Fix packets are appended to messages."""
+        """Fix packets trigger SURGICAL FIX MODE in system prompt on retry.
+
+        The fix packet is injected into the system prompt (not a user message)
+        for maximum LLM priority.  A RETRY acknowledgement user message is also added.
+        Both require retry_count >= 1 AND active_fix_packet with items[].
+        """
         state = _make_agent_state()
         state["fix_packets"] = ["Fix line 10"]
+        state["retry_count"] = 1  # surgical fix mode requires retry_count >= 1
+        state["active_fix_packet"] = {
+            "role": "coder",
+            "items": [
+                {
+                    "gate_id": "complexity",
+                    "file_path": "src/app.py",
+                    "message": "Fix line 10",
+                    "suggestion": "Refactor the function",
+                    "severity": "ERROR",
+                }
+            ],
+            "affected_files": ["src/app.py"],
+            "remediation_phase": "diagnose",
+        }
         messages = _build_agent_messages(
             state, "Prompt",
             state["team_config"]["agents"]["coder"],
             "coder",
         )
-        fix_msgs = [m for m in messages if "FIX REQUIRED" in m.get("content", "")]
-        assert len(fix_msgs) == 1
+
+        # SURGICAL FIX MODE is in the system prompt — highest LLM priority
+        system_content = next(
+            (m.get("content", "") for m in messages if m.get("role") == "system"), ""
+        )
+        assert "SURGICAL FIX MODE" in system_content, (
+            "Fix packet must be injected into system prompt as SURGICAL FIX MODE block"
+        )
+        assert "Fix line 10" in system_content
+
+        # Short RETRY acknowledgement user turn
+        assert any(
+            "RETRY" in m.get("content", "") for m in messages if m.get("role") == "user"
+        ), "A RETRY acknowledgement user message must be present"
+
+        # Old [FIX REQUIRED] user-message pattern must NOT be used (it was weak)
+        assert not any(
+            "[FIX REQUIRED]" in m.get("content", "") for m in messages
+        ), "[FIX REQUIRED] user-message injection was replaced by system-prompt SURGICAL FIX MODE"
 
     def test_check_budget_guards_passes_under_limit(self):
         """Budget guard returns None when under limit."""

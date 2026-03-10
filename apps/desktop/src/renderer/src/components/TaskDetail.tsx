@@ -1861,6 +1861,7 @@ export default function TaskDetail({
                 taskType={detail.task_type}
                 collab={collab}
                 plannedRoles={detail.planned_roles ?? []}
+                executionDag={detail.execution_dag}
                 totalFiles={totalFiles}
                 totalCost={mapTotalCost}
                 expectedAgents={expectedAgents}

@@ -231,6 +231,13 @@ export interface TaskDetail {
   steps: TaskStep[];
   /** Planned pipeline roles from live classification (running tasks). */
   planned_roles?: string[];
+  /**
+   * Real execution DAG from the assembled pipeline.
+   * Format: { instance_id: [depends_on_instance_ids] }
+   * e.g. { "coder-1": ["planner-1"], "reviewer-1": ["coder-1"] }
+   * Populated after pipeline_assembled fires; null/empty until assembly completes.
+   */
+  execution_dag?: Record<string, string[]>;
   cost: { total_tokens: number; total_cost_usd: number } | null;
   approval_data: Record<string, string>;
   /** Confidence score computed from pipeline quality gates (0-100) */
