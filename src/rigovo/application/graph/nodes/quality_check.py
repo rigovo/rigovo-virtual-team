@@ -466,6 +466,9 @@ async def _validate_master_agent_output(
             "gates_run": 4,
             "violations": len(violations),
             "reason": "gates_passed" if all_passed else "gates_failed",
+            # Include actual violation details so the UI can show WHAT failed
+            # not just that it failed.  Cap at 10 to avoid giant events.
+            "violation_details": structured_violations[:10] if not all_passed else [],
         }
     )
 

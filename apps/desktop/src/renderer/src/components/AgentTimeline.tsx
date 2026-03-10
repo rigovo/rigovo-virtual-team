@@ -115,6 +115,11 @@ function roleMeta(role: string): RoleMeta {
   };
 }
 
+/** Human-readable label for a role string, e.g. "coder" → "Software Engineer" */
+function roleLabel(role: string): string {
+  return roleMeta(role).label;
+}
+
 function canonicalStepLabel(step: TaskStep): string {
   return canonicalStepLabelForStep(step);
 }
@@ -195,6 +200,8 @@ export interface CollabEvent {
   max_subtasks_per_agent_step?: number;
   files_changed?: number;
   created_at?: number | string;
+  /** Debate decision: sources of feedback used to adjudicate */
+  feedback_sources?: unknown[];
   memories?: Array<{
     name: string;
     relevance_score?: number;
@@ -638,6 +645,7 @@ function EventCard({
   debateCount,
   highBurn,
   onOpenFiles,
+  dimmed,
 }: {
   step: TaskStep;
   index: number;
@@ -648,11 +656,13 @@ function EventCard({
   debateCount?: number;
   highBurn?: boolean;
   onOpenFiles?: () => void;
+  /** Whether this is a previous attempt being shown for context (dimmed/archived) */
+  dimmed?: boolean;
 }) {
   const role = roleMeta(step.agent_role || step.agent);
   const roleLabelText = canonicalStepLabel(step);
   const kind = eventKind(step);
-  const running = step.status === "running";
+  const running = step.status === "running" && !dimmed;
   const failed = step.status === "failed";
 
   const gates = step.gate_results ?? [];
@@ -671,7 +681,7 @@ function EventCard({
 
   return (
     <article
-      className={`narrative-event-card animate-fadeup ${role.surface} ${role.border}`}
+      className={`narrative-event-card animate-fadeup ${role.surface} ${role.border}${dimmed ? " opacity-60 saturate-50" : ""}`}
       style={{ animationDelay: `${index * 80 + 20}ms` }}
     >
       <header className="narrative-event-head">
@@ -893,6 +903,58 @@ function ResolutionCard({ step, index }: { step: TaskStep; index: number }) {
           );
         })}
       </div>
+      {/* Show actual violation messages so engineers see WHAT failed */}
+      {!passed && failures.some((g) => (g.violation_details?.length ?? 0) > 0) && (
+        <div className="mt-2 space-y-1">
+          {failures.flatMap((g) =>
+            (g.violation_details ?? []).slice(0, 5).map((v, vi) => (
+              <div
+                key={`${g.gate}-v-${vi}`}
+                className="flex items-start gap-1.5 rounded px-2 py-1 text-[10px] bg-[rgba(239,68,68,0.07)]"
+              >
+                <span className="mt-0.5 shrink-0 text-rose-500">●</span>
+                <span className="text-[var(--ui-text-secondary)]">
+                  {v.file_path && (
+                    <span className="font-mono text-rose-400 mr-1">
+                      {v.file_path.split("/").pop()}:
+                    </span>
+                  )}
+                  {v.message}
+                  {v.suggestion && (
+                    <span className="ml-1 text-[var(--ui-text-muted)] italic">
+                      — {v.suggestion}
+                    </span>
+                  )}
+                </span>
+              </div>
+            )),
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Shown before a retried agent run — makes the narrative sequential */
+function RetryAttemptBanner({
+  attemptNum,
+  totalAttempts,
+  agentName,
+}: {
+  attemptNum: number;
+  totalAttempts: number;
+  agentName: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 my-2 px-3 py-1.5 rounded-md bg-[rgba(245,158,11,0.10)] border border-[rgba(245,158,11,0.22)]">
+      <span className="text-[11px] text-amber-500">↻</span>
+      <span className="text-[11px] text-amber-600 font-semibold">
+        {agentName} — Fixing Rigour Violations
+      </span>
+      <span className="ml-auto text-[10px] text-[var(--ui-text-muted)]">
+        Attempt {attemptNum}
+        {totalAttempts > 1 ? ` of ${totalAttempts}` : ""}
+      </span>
     </div>
   );
 }
@@ -1134,6 +1196,10 @@ export default function AgentTimeline({
           stepTokenTotal > 100_000 ||
           (totalTaskTokens > 0 && stepTokenTotal > totalTaskTokens * 0.35);
 
+        const prevAttempts = step.attempts ?? [];
+        const totalAttempts = prevAttempts.length + 1;
+        const agentDisplayName = canonicalStepLabel(step);
+
         return (
           <div
             key={`${step.agent_instance || step.agent}-${idx}`}
@@ -1147,6 +1213,31 @@ export default function AgentTimeline({
                 index={idx}
               />
             )}
+
+            {/* Previous archived attempts — show "SE worked → Rigour caught" progression */}
+            {prevAttempts.map((attempt, ai) => (
+              <div key={`prev-attempt-${ai}`}>
+                <EventCard
+                  step={attempt as TaskStep}
+                  index={idx}
+                  costUsd={undefined}
+                  tokenStats={undefined}
+                  retryCount={0}
+                  consultCount={0}
+                  debateCount={0}
+                  highBurn={false}
+                  onOpenFiles={undefined}
+                  dimmed
+                />
+                <ResolutionCard step={attempt as TaskStep} index={idx} />
+                {/* Banner between attempts: "SE is now fixing violations" */}
+                <RetryAttemptBanner
+                  attemptNum={ai + 2}
+                  totalAttempts={totalAttempts}
+                  agentName={agentDisplayName}
+                />
+              </div>
+            ))}
 
             <EventCard
               step={step}

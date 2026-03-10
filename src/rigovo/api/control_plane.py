@@ -527,6 +527,19 @@ def _on_agent_event(event: dict) -> None:
     step_key = canonical_instance or role_key or role
 
     if etype == "agent_started":
+        existing = task_steps.get(step_key, {})
+        # Archive previous run when retrying after gate failure
+        # This preserves the first attempt's output/gate results so the
+        # timeline can show: Attempt 1 → Gate failure → Attempt 2 (fixing)
+        if existing and existing.get("status") in ("complete", "gate_failed", "running"):
+            prev_attempts = list(existing.get("attempts", []))
+            prev_attempt = {k: v for k, v in existing.items() if k != "attempts"}
+            prev_attempt["attempt_num"] = len(prev_attempts) + 1
+            prev_attempts.append(prev_attempt)
+            gate_retry_count = len(prev_attempts)
+        else:
+            prev_attempts = []
+            gate_retry_count = 0
         task_steps[step_key] = {
             "agent": canonical_instance,
             "agent_role": role_key,
@@ -538,6 +551,9 @@ def _on_agent_event(event: dict) -> None:
             "output": "",
             "files_changed": [],
             "gate_results": [],
+            # Retry tracking — preserved across overwrites
+            "gate_retry_count": gate_retry_count,  # how many previous attempts
+            "attempts": prev_attempts,  # archived previous runs
         }
     elif etype == "agent_complete":
         existing = task_steps.get(step_key, {})
@@ -581,6 +597,7 @@ def _on_agent_event(event: dict) -> None:
             deep = event.get("deep", False)
             pro = event.get("pro", False)
 
+            violation_details = event.get("violation_details", [])
             gate_entry: dict[str, Any] = {
                 "gate": "rigour",
                 "passed": passed,
@@ -593,6 +610,7 @@ def _on_agent_event(event: dict) -> None:
                 ),
                 "severity": "info" if passed else "error",
                 "violation_count": violation_count,
+                "violation_details": violation_details,  # actual violation messages
                 "gates_run": gates_run,
                 "deep": deep,
                 "pro": pro,

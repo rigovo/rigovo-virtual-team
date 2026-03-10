@@ -172,20 +172,21 @@ def classify_by_keywords(description: str) -> DeterministicClassification:
 # Every task type has a floor team that guarantees basic competence.
 
 MINIMUM_TEAM: dict[str, list[str]] = {
-    "new_project": ["lead", "coder", "reviewer", "qa"],
-    "feature": ["lead", "coder", "reviewer", "qa"],
-    "bug": ["lead", "coder", "reviewer", "qa"],
-    "refactor": ["lead", "coder", "reviewer", "qa"],
-    "test": ["lead", "coder", "reviewer", "qa"],
-    "docs": ["lead", "coder", "reviewer", "qa"],
-    "infra": ["lead", "coder", "reviewer", "qa", "devops", "sre"],
-    "security": ["lead", "coder", "reviewer", "qa", "security"],
-    "performance": ["lead", "coder", "reviewer", "qa"],
-    "investigation": ["lead", "coder", "reviewer", "qa"],
+    # planner is always first — coder must have a plan before touching files
+    "new_project": ["planner", "coder", "reviewer", "qa"],
+    "feature":     ["planner", "coder", "reviewer", "qa"],
+    "bug":         ["planner", "coder", "reviewer", "qa"],
+    "refactor":    ["planner", "coder", "reviewer", "qa"],
+    "test":        ["planner", "coder", "reviewer", "qa"],
+    "docs":        ["planner", "coder", "reviewer"],
+    "infra":       ["planner", "coder", "reviewer", "qa", "devops", "sre"],
+    "security":    ["planner", "coder", "reviewer", "qa", "security"],
+    "performance": ["planner", "coder", "reviewer", "qa"],
+    "investigation": ["planner", "reviewer"],  # investigation is recon, not coding
 }
 
 # Default minimum if task_type not in table
-_DEFAULT_MINIMUM = ["lead", "coder", "reviewer", "qa"]
+_DEFAULT_MINIMUM = ["planner", "coder", "reviewer", "qa"]
 
 
 @dataclass

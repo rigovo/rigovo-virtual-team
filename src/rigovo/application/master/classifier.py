@@ -134,7 +134,7 @@ class ClassificationResult:
 # ── Prompts ────────────────────────────────────────────────────────────
 
 MASTER_AGENT_SYSTEM_PROMPT = """\
-You are the Master Agent — a Distinguished Engineer staffing virtual engineering teams.
+You are the Master Agent — a Distinguished Engineer staffing software engineering teams.
 Given a task + project snapshot, produce a staffing plan as JSON.
 The mounted or cloned workspace is an execution boundary, not automatically
 the product to extend. If the user asks for a new product and the workspace

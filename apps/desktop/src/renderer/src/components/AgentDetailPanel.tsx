@@ -241,17 +241,16 @@ function RuntimeTruthSection({
               </div>
               <p className="adp-comms-snippet">
                 {String(
-                  spawn.bounded_assignment ||
-                  spawn.description ||
+                  (spawn.bounded_assignment as string | undefined) ||
+                  (spawn.description as string | undefined) ||
                   "Bounded specialist branch created."
                 )}
               </p>
-              {spawn.merge_back_contract && (
+              {spawn.merge_back_contract ? (
                 <p className="adp-comms-snippet">
-                  Merge-back: {String((spawn.merge_back_contract as Record<string, unknown>).child_role || "specialist")} {"->"}{" "}
-                  {String((spawn.merge_back_contract as Record<string, unknown>).parent_role || activeRole || "parent")}
+                  {`Merge-back: ${String((spawn.merge_back_contract as Record<string, unknown>).child_role || "specialist")} -> ${String((spawn.merge_back_contract as Record<string, unknown>).parent_role || activeRole || "parent")}`}
                 </p>
-              )}
+              ) : null}
             </div>
           ))}
         </div>

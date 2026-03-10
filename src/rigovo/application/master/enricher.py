@@ -20,7 +20,7 @@ from rigovo.domain.interfaces.llm_provider import LLMProvider
 logger = logging.getLogger(__name__)
 
 ENRICHER_SYSTEM_PROMPT = """\
-You are a learning engine for a virtual engineering team.
+You are a learning engine for a software engineering team.
 
 After each agent execution, you analyze what happened and extract
 reusable knowledge. This knowledge will be injected into future

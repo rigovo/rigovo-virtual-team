@@ -239,35 +239,34 @@ class TestClassifySemantic:
 class TestMinimumTeam:
     """Tests for enforce_minimum_team."""
 
-    def test_new_project_requires_lead_coder_reviewer_qa(self) -> None:
+    def test_new_project_requires_planner_coder_reviewer_qa(self) -> None:
+        # planner is the first-class orchestrator — must always precede the coder
         spec = get_minimum_team("new_project")
-        assert "lead" in spec.required_roles
+        assert "planner" in spec.required_roles
         assert "coder" in spec.required_roles
         assert "reviewer" in spec.required_roles
         assert "qa" in spec.required_roles
 
-    def test_bug_requires_lead_coder_reviewer_qa(self) -> None:
+    def test_bug_requires_planner_coder_reviewer_qa(self) -> None:
         spec = get_minimum_team("bug")
-        assert "lead" in spec.required_roles
+        assert "planner" in spec.required_roles
         assert "coder" in spec.required_roles
         assert "reviewer" in spec.required_roles
         assert "qa" in spec.required_roles
 
     def test_security_requires_core_team_plus_security(self) -> None:
         spec = get_minimum_team("security")
-        assert "lead" in spec.required_roles
+        assert "planner" in spec.required_roles
         assert "security" in spec.required_roles
         assert "coder" in spec.required_roles
         assert "reviewer" in spec.required_roles
         assert "qa" in spec.required_roles
 
     def test_enforce_adds_missing_core_roles(self) -> None:
-        llm_agents = [
-            {"instance_id": "coder-1", "role": "coder"},
-        ]
+        llm_agents = [{"instance_id": "coder-1", "role": "coder"}]
         result = enforce_minimum_team(llm_agents, "feature", "add dark mode")
         roles = {a["role"] for a in result}
-        assert "lead" in roles
+        assert "planner" in roles
         assert "coder" in roles
         assert "reviewer" in roles
         assert "qa" in roles
@@ -275,23 +274,25 @@ class TestMinimumTeam:
 
     def test_enforce_preserves_existing_agents(self) -> None:
         llm_agents = [
-            {"instance_id": "lead-1", "role": "lead"},
+            {"instance_id": "planner-1", "role": "planner"},
             {"instance_id": "coder-1", "role": "coder"},
             {"instance_id": "reviewer-1", "role": "reviewer"},
             {"instance_id": "security-1", "role": "security"},
             {"instance_id": "qa-1", "role": "qa"},
         ]
+        # feature minimum = [planner, coder, reviewer, qa] — all present, no additions
         result = enforce_minimum_team(llm_agents, "feature", "test")
         assert len(result) == 5
 
     def test_enforce_does_not_duplicate(self) -> None:
         llm_agents = [
-            {"instance_id": "lead-1", "role": "lead"},
+            {"instance_id": "planner-1", "role": "planner"},
             {"instance_id": "coder-1", "role": "coder"},
             {"instance_id": "coder-2", "role": "coder"},
             {"instance_id": "reviewer-1", "role": "reviewer"},
             {"instance_id": "qa-1", "role": "qa"},
         ]
+        # planner already present — must not add a second one
         result = enforce_minimum_team(llm_agents, "feature", "test")
         assert len(result) == 5
 

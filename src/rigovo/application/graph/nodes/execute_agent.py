@@ -2654,6 +2654,22 @@ async def execute_agent_node(
     intent_max_rounds = int(
         intent_profile.get("max_tool_rounds", MAX_TOOL_ROUNDS) or MAX_TOOL_ROUNDS
     )
+
+    # Per-role round caps: planner does recon (keep it tight), coder/sre do real work (give room).
+    # Decouples "avoid planner reconnaissance loops" from "give coder enough turns to finish".
+    _ROLE_ROUND_CAPS: dict[str, int] = {
+        "planner":  10,           # survey + plan, then hand off
+        "lead":     10,
+        "coder":    MAX_TOOL_ROUNDS,   # read → write → verify across multiple files
+        "reviewer": 12,
+        "security": 12,
+        "qa":       12,
+        "devops":   15,
+        "sre":      15,
+    }
+    role_cap = _ROLE_ROUND_CAPS.get(current_role, MAX_TOOL_ROUNDS)
+    intent_max_rounds = min(intent_max_rounds, role_cap)
+
     token_limit = int(state.get("budget_max_tokens_per_task", 0) or 0)
     accumulated_tokens = sum(v.get("tokens", 0) for v in state.get("cost_accumulator", {}).values())
     if token_limit > 0:

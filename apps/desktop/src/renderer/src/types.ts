@@ -180,6 +180,20 @@ export interface TaskStep {
   execution_log?: ExecutionLogEntry[];
   /** Phase 14: Whether execution verification passed */
   execution_verified?: boolean;
+  /** Number of previous gate-remediation retries (0 = first attempt) */
+  gate_retry_count?: number;
+  /** Archived runs from previous attempts before this retry */
+  attempts?: Omit<TaskStep, "attempts">[];
+}
+
+export interface GateViolation {
+  rule?: string;
+  gate_id?: string;
+  file_path?: string;
+  message: string;
+  suggestion?: string;
+  severity?: string;
+  line?: number;
 }
 
 export interface GateResult {
@@ -189,6 +203,8 @@ export interface GateResult {
   severity: "error" | "warning" | "info";
   /** Number of violations found (Phase 7/8) */
   violation_count?: number;
+  /** Actual violation details for display */
+  violation_details?: GateViolation[];
   /** Number of gates that ran */
   gates_run?: number;
   /** Whether Rigour deep analysis was used */
