@@ -1199,7 +1199,9 @@ export default function TaskDetail({
   const isActive = !isApproval && !isCompleted && !isFailed;
   const canResume = isFailed;
   const hasSteps = detail && detail.steps.length > 0;
-  const isProcessing = !detail || !hasSteps;
+  const hasPlan = detail && (detail.planned_roles?.length ?? 0) > 0;
+  // During approval, show the plan (MAP/DAG) even without executed steps
+  const isProcessing = !detail || (!hasSteps && !isApproval && !hasPlan);
 
   /* Fetch mission data */
   useEffect(() => {
@@ -1865,12 +1867,12 @@ export default function TaskDetail({
               </div>
             ) : (
               <NeuralCalibrationMap
-                steps={detail.steps}
+                steps={detail?.steps ?? []}
                 taskStatus={task.status}
-                taskType={detail.task_type}
+                taskType={detail?.task_type}
                 collab={collab}
-                plannedRoles={detail.planned_roles ?? []}
-                executionDag={detail.execution_dag}
+                plannedRoles={detail?.planned_roles ?? []}
+                executionDag={detail?.execution_dag}
                 totalFiles={totalFiles}
                 totalCost={mapTotalCost}
                 expectedAgents={expectedAgents}

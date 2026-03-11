@@ -416,6 +416,7 @@ class RigourSupervisor:
         role: str,
         files_changed: list[str],
         output_summary: str = "",
+        task_description: str = "",
     ) -> list[PersonaViolation]:
         """Check whether the agent stayed within its persona boundaries.
 
@@ -428,6 +429,8 @@ class RigourSupervisor:
             role: Agent role.
             files_changed: Files the agent created/modified.
             output_summary: Agent's text output summary.
+            task_description: Original task description — if a file is
+                explicitly named in the task, persona violations are demoted.
 
         Returns:
             List of persona violations (empty = clean).
@@ -437,32 +440,59 @@ class RigourSupervisor:
             return []
 
         violations: list[PersonaViolation] = []
+        desc_lower = (task_description or "").lower()
 
         # Check forbidden file patterns
         if boundary.forbidden_file_patterns and files_changed:
             for file_path in files_changed:
                 for pattern in boundary.forbidden_file_patterns:
                     if _glob_match(file_path, pattern):
-                        violations.append(
-                            PersonaViolation(
-                                role=role,
-                                violation_type="forbidden_file",
-                                message=(
-                                    f"Agent '{role}' wrote to '{file_path}' which matches "
-                                    f"forbidden pattern '{pattern}'. This is outside the "
-                                    f"'{role}' role's scope. Do not create or modify "
-                                    f"files — only produce text output."
+                        # If the file is explicitly named in the task,
+                        # demote to info — user asked for it
+                        fname = file_path.rsplit("/", 1)[-1] if "/" in file_path else file_path
+                        if fname.lower() in desc_lower:
+                            violations.append(
+                                PersonaViolation(
+                                    role=role,
+                                    violation_type="task_override_file",
+                                    message=(
+                                        f"Agent '{role}' wrote to '{file_path}' (normally "
+                                        f"outside scope per '{pattern}'), but the task "
+                                        f"explicitly requested this file."
+                                    ),
+                                    severity="info",
+                                    file_path=file_path,
                                 )
-                                if not boundary.must_produce_files
-                                else (
-                                    f"Agent '{role}' wrote to '{file_path}' which matches "
-                                    f"forbidden pattern '{pattern}'. This file type belongs "
-                                    f"to a different role's scope."
-                                ),
-                                severity="high",
-                                file_path=file_path,
                             )
-                        )
+                        elif not boundary.must_produce_files:
+                            violations.append(
+                                PersonaViolation(
+                                    role=role,
+                                    violation_type="forbidden_file",
+                                    message=(
+                                        f"Agent '{role}' wrote to '{file_path}' which matches "
+                                        f"forbidden pattern '{pattern}'. This is outside the "
+                                        f"'{role}' role's scope. Do not create or modify "
+                                        f"files — only produce text output."
+                                    ),
+                                    severity="high",
+                                    file_path=file_path,
+                                )
+                            )
+                        else:
+                            violations.append(
+                                PersonaViolation(
+                                    role=role,
+                                    violation_type="forbidden_file",
+                                    message=(
+                                        f"Agent '{role}' wrote to '{file_path}' which matches "
+                                        f"forbidden pattern '{pattern}'. This file type belongs "
+                                        f"to a different role's scope."
+                                    ),
+                                    severity="high",
+                                    file_path=file_path,
+                                )
+                            )
                         break  # One match per file is enough
 
         # Check output contract markers (for non-code-producing roles)
@@ -633,10 +663,10 @@ def _glob_match(file_path: str, pattern: str) -> bool:
         prefix = pattern[:-3]
         if "*" in prefix:
             # Glob in the prefix: convert to regex (e.g. "test*" → "test[^/]*")
+            # ONLY match files INSIDE a matching directory, not root files
+            # e.g. "test*/**" matches "tests/foo.py" but NOT "test_calc.py"
             prefix_regex = prefix.replace(".", r"\.").replace("*", "[^/]*")
-            return bool(re.match(f"^{prefix_regex}/", file_path)) or bool(
-                re.match(f"^{prefix_regex}$", file_path)
-            )
+            return bool(re.match(f"^{prefix_regex}/", file_path))
         return file_path.startswith(prefix + "/") or file_path == prefix
 
     # Handle suffix patterns like "*_test.*" or "*.test.*"

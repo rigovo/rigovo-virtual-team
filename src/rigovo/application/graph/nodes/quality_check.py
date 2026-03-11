@@ -347,6 +347,7 @@ def _check_persona_boundaries(
     base_role: str,
     files_changed: list[str],
     output_summary: str,
+    task_description: str = "",
 ) -> list[PersonaViolation]:
     """Run persona boundary checks (Phase 7).
 
@@ -358,6 +359,7 @@ def _check_persona_boundaries(
         role=base_role,
         files_changed=files_changed,
         output_summary=output_summary,
+        task_description=task_description,
     )
 
 
@@ -679,9 +681,10 @@ async def quality_check_node(
             base_role,
             files_changed,
             output_summary,
+            task_description=state.get("description", ""),
         )
 
-        # Separate hard violations (forbidden_file) from soft (missing_output_marker)
+        # Separate hard violations from soft (info/warning severity)
         hard_violations = [pv for pv in persona_violations if pv.violation_type == "forbidden_file"]
         soft_violations = [pv for pv in persona_violations if pv.violation_type != "forbidden_file"]
 
@@ -937,6 +940,7 @@ async def quality_check_node(
         output_summary = agent_output.get("summary", "")
         persona_violations = _check_persona_boundaries(
             current_instance, base_role, files_changed, output_summary,
+            task_description=state.get("description", ""),
         )
         persona_gate_violations = _persona_violations_to_gate_violations(persona_violations)
         if persona_gate_violations:
@@ -1076,6 +1080,7 @@ async def quality_check_node(
         base_role,
         files_changed,
         output_summary,
+        task_description=state.get("description", ""),
     )
     persona_gate_violations = _persona_violations_to_gate_violations(persona_violations)
     if persona_gate_violations:
