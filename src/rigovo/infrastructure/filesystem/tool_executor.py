@@ -167,6 +167,16 @@ class ToolExecutor:
         self._knowledge_graph = knowledge_graph
         self._file_cache = FileReadCache(self._execution_root)
 
+        # Cache Rigour binary for real-time hooks check on file writes
+        self._rigour_binary: str | None = None
+        try:
+            from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
+            self._rigour_binary = RigourQualityGate._find_binary(
+                str(self._project_root),
+            )
+        except Exception:
+            pass
+
         self._handlers: dict[str, Any] = {
             "read_file": self._handle_read_file,
             "write_file": self._handle_write_file,
@@ -322,7 +332,90 @@ class ToolExecutor:
         )
         # Invalidate cache for the written path
         self._file_cache.invalidate(inputs["path"])
+
+        # Real-time Rigour hooks check — catch secrets, hallucinated imports, etc.
+        if self._rigour_binary and result.get("status") != "error":
+            hook_warnings = self._run_hooks_check(inputs["path"])
+            if hook_warnings:
+                result["rigour_warnings"] = hook_warnings
+                result["status_note"] = (
+                    f"File written but Rigour detected {len(hook_warnings)} issue(s): "
+                    + "; ".join(hook_warnings[:3])
+                )
+
+        # Pattern reinvention check — warn if creating duplicate code
+        if result.get("status") != "error":
+            reinvention = self._check_pattern_reinvention(content)
+            if reinvention:
+                existing_warnings = result.get("rigour_warnings", [])
+                result["rigour_warnings"] = existing_warnings + reinvention
+
         return result
+
+    def _run_hooks_check(self, file_path: str) -> list[str] | None:
+        """Run rigour hooks check on a single file (<200ms).
+
+        Returns a list of warning strings or None if clean / unavailable.
+        """
+        import subprocess
+
+        try:
+            from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
+
+            cmd = RigourQualityGate._build_cmd(
+                self._rigour_binary, "hooks", "check", "--files", file_path,
+            )
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=str(self._project_root),
+            )
+            if proc.returncode != 0 and proc.stdout.strip():
+                data = json.loads(proc.stdout)
+                failures = data.get("failures", [])
+                if failures:
+                    return [
+                        f"[{f.get('severity', '?')}] {f.get('message', '')}"
+                        for f in failures[:5]
+                    ]
+        except Exception:
+            pass  # Graceful degradation — never block file writes
+        return None
+
+    def _check_pattern_reinvention(self, content: str) -> list[str] | None:
+        """Check new function/class names against Rigour pattern index.
+
+        Reads ``.rigour/pattern-index.json`` (created by ``rigour index``)
+        to detect if a newly created pattern already exists in the codebase.
+        """
+        index_path = self._project_root / ".rigour" / "pattern-index.json"
+        if not index_path.exists():
+            return None
+        try:
+            # Quick heuristic: extract function/class names from content
+            new_patterns = re.findall(
+                r"(?:def|function|class|const)\s+(\w+)", content,
+            )
+            if not new_patterns:
+                return None
+            index_data = json.loads(index_path.read_text())
+            existing_names = {
+                p.get("name", "").lower()
+                for p in index_data.get("patterns", [])
+                if p.get("name")
+            }
+            warnings: list[str] = []
+            for name in new_patterns[:5]:
+                if name.lower() in existing_names:
+                    warnings.append(
+                        f"Pattern '{name}' already exists in codebase — "
+                        "consider reusing instead of reinventing"
+                    )
+            return warnings or None
+        except (json.JSONDecodeError, OSError):
+            return None
 
     def _handle_list_directory(self, inputs: dict[str, Any]) -> dict[str, Any]:
         return self._reader.list_directory(

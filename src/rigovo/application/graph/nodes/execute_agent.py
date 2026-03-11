@@ -36,6 +36,7 @@ from rigovo.domain.interfaces.repositories import MemoryRepository
 from rigovo.domain.services.cost_calculator import CostCalculator
 from rigovo.domains.engineering.tools import TOOL_DEFINITIONS, get_engineering_tools
 from rigovo.infrastructure.filesystem.tool_executor import ToolExecutor
+from rigovo.infrastructure.quality.rigour_session import RigourSession
 
 logger = logging.getLogger(__name__)
 
@@ -774,6 +775,15 @@ def _build_surgical_fix_block(
         lines += persistence_warnings
         lines += ["", "You MUST use a different approach for each item above.", ""]
 
+    # Rigour explain — human-readable analysis from `rigour explain`
+    explain_text = active_fix_packet.get("explain_text", "")
+    if explain_text:
+        lines += [
+            "── RIGOUR ANALYSIS ──",
+            explain_text,
+            "",
+        ]
+
     lines.append("VIOLATIONS TO FIX:")
     for i, item in enumerate(items, 1):
         fp = item.get("file_path", "unknown")
@@ -786,6 +796,9 @@ def _build_surgical_fix_block(
         lines.append(f"     Issue: {msg}")
         if sug:
             lines.append(f"     Fix: {sug}")
+        # Step-by-step instructions from Rigour Fix Packet v3
+        for step in item.get("instructions", []):
+            lines.append(f"     • {step}")
 
     if affected_files:
         lines += ["", "Files requiring changes: " + ", ".join(affected_files)]
@@ -817,107 +830,56 @@ def _build_surgical_fix_block(
 async def _run_mid_execution_check(
     project_root: str,
     files: list[str],
-) -> dict[str, Any] | None:
-    """Run a lightweight Rigour deep check mid-execution to catch drift early.
+) -> list[dict[str, Any]] | None:
+    """Run a lightweight Rigour check mid-execution to catch drift early.
 
-    Uses --deep (lite model) for speed (<5s). Returns parsed JSON result
-    or None if Rigour CLI is unavailable or check fails.
+    Non-blocking (uses run_in_executor). Parses Rigour's ``failures[]``
+    output and surfaces only critical/high issues — don't distract the
+    agent with low-severity warnings mid-run.
+
+    Returns a list of violation dicts or None.
     """
     from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
 
-    binary = RigourQualityGate._find_binary()
-    if not binary or binary == "npx":
+    binary = RigourQualityGate._find_binary(project_root)
+    if not binary:
         return None
     try:
-        cmd = [binary, "check", "--json", "--deep", *files[:10]]
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            cwd=project_root,
+        cmd = RigourQualityGate._build_cmd(
+            binary, "check", "--json", "--deep", *files[:10],
         )
-        if result.stdout.strip():
-            return json.loads(result.stdout)
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                cwd=project_root,
+            ),
+        )
+        if not result.stdout.strip():
+            return None
+        data = json.loads(result.stdout)
+        # Parse Rigour's actual output shape: {"failures": [...]}
+        failures = data.get("failures", [])
+        violations = [
+            {
+                "gate_id": f.get("id", ""),
+                "message": f.get("title", f.get("details", "")),
+                "severity": f.get("severity", "medium"),
+                "files": f.get("files", []),
+                "hint": f.get("hint", ""),
+            }
+            for f in failures
+            if f.get("severity") in ("critical", "high")
+        ]
+        return violations or None
     except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
-        pass
-    return None
+        return None
 
 
-def _rigour_agent_register(
-    project_root: str,
-    instance_id: str,
-    files_in_scope: list[str],
-) -> None:
-    """Register agent with Rigour CLI for scope conflict detection (optional)."""
-    try:
-        from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
-
-        binary = RigourQualityGate._find_binary()
-        if not binary or binary == "npx":
-            return
-        scope_str = ",".join(files_in_scope[:50])
-        subprocess.run(
-            [binary, "agent-register", "--id", instance_id, "--scope", scope_str],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=project_root,
-        )
-    except Exception:
-        pass  # Graceful degradation
-
-
-def _rigour_agent_deregister(project_root: str, instance_id: str) -> None:
-    """Deregister agent from Rigour CLI after execution completes."""
-    try:
-        from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
-
-        binary = RigourQualityGate._find_binary()
-        if not binary or binary == "npx":
-            return
-        subprocess.run(
-            [binary, "agent-deregister", "--id", instance_id],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=project_root,
-        )
-    except Exception:
-        pass
-
-
-def _rigour_checkpoint(
-    project_root: str,
-    progress_pct: int,
-    quality_score: int,
-    files_changed: list[str],
-) -> None:
-    """Emit a Rigour quality checkpoint (progress + quality snapshot)."""
-    try:
-        from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
-
-        binary = RigourQualityGate._find_binary()
-        if not binary or binary == "npx":
-            return
-        subprocess.run(
-            [
-                binary,
-                "checkpoint",
-                "--progress",
-                str(progress_pct),
-                "--quality",
-                str(quality_score),
-                "--files",
-                ",".join(files_changed[:20]),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=project_root,
-        )
-    except Exception:
-        pass
 
 
 def _active_fix_packet(state: TaskState) -> dict[str, Any] | None:
@@ -2064,6 +2026,7 @@ async def _run_agentic_loop(
     stream_callback: Any | None = None,
     batch_timeout: int = DEFAULT_BATCH_TIMEOUT,
     max_rounds: int = MAX_TOOL_ROUNDS,
+    rigour_session: RigourSession | None = None,
 ) -> tuple[str, int, int, list[str], dict[str, Any]]:
     """
     Run the agentic tool loop: LLM calls tools → execute → feed back → repeat.
@@ -2682,25 +2645,21 @@ async def _run_agentic_loop(
 
         messages.append({"role": "user", "content": tool_results_content})
 
-        # Rigour checkpoint — emit progress/quality snapshot for agent coordination
+        # Rigour checkpoint — emit progress/quality snapshot for governance
         if (
             round_num > 0
             and round_num % RIGOUR_CHECKPOINT_INTERVAL == 0
             and successful_write_file_calls > 0
+            and rigour_session is not None
         ):
             try:
                 _checkpoint_files = _extract_written_files(messages)
                 _progress_pct = min(100, int((round_num / max_rounds) * 100))
-                _cp_root = str(
-                    (state or {}).get("target_root")
-                    or (state or {}).get("project_root")
-                    or "."
-                )
-                _rigour_checkpoint(
-                    _cp_root,
-                    _progress_pct,
-                    100,  # Quality score — will be adjusted by actual gate results
-                    _checkpoint_files,
+                rigour_session.checkpoint(
+                    progress_pct=_progress_pct,
+                    files_changed=_checkpoint_files,
+                    summary=f"Round {round_num}/{max_rounds}",
+                    quality_score=100,
                 )
             except Exception:
                 pass
@@ -2721,15 +2680,14 @@ async def _run_agentic_loop(
                     or "."
                 )
                 try:
-                    drift_result = await _run_mid_execution_check(
+                    drift_violations = await _run_mid_execution_check(
                         project_root_str, files_written_so_far
                     )
-                    if drift_result and drift_result.get("violations"):
-                        violation_list = drift_result["violations"]
-                        violation_count = len(violation_list)
+                    if drift_violations:
+                        violation_count = len(drift_violations)
                         violation_msgs = "; ".join(
                             str(v.get("message", ""))
-                            for v in violation_list[:3]
+                            for v in drift_violations[:3]
                         )
                         messages.append(
                             {
@@ -3088,7 +3046,7 @@ async def execute_agent_node(
     # Increment global execution counter (never resets across debate/replan cycles)
     total_execution_count = int(state.get("total_execution_count", 0) or 0) + 1
 
-    # Register agent with Rigour CLI for scope conflict detection
+    # Register agent with Rigour session for scope conflict detection
     _rigour_project_root = str(state.get("target_root") or state.get("project_root") or ".")
     _rigour_scope_files = list(
         dict.fromkeys(
@@ -3097,7 +3055,21 @@ async def execute_agent_node(
             if item.get("file_path")
         )
     )
-    _rigour_agent_register(_rigour_project_root, current_instance, _rigour_scope_files)
+    _rigour_session: RigourSession | None = None
+    try:
+        _rigour_session = RigourSession(_rigour_project_root)
+        _scope_conflicts = _rigour_session.agent_register(
+            current_instance, _rigour_scope_files,
+        )
+        if _scope_conflicts:
+            logger.warning("Rigour scope conflicts: %s", _scope_conflicts)
+        _rigour_session.log_event({
+            "type": "agent_started",
+            "agentId": current_instance,
+            "role": current_role,
+        })
+    except Exception:
+        _rigour_session = None  # Graceful degradation
 
     # Emit agent_started event
     events = list(state.get("events", []))
@@ -3210,6 +3182,7 @@ async def execute_agent_node(
                 batch_timeout=batch_timeout,
                 max_rounds=intent_max_rounds,
                 stream_identity=current_instance or current_role,
+                rigour_session=_rigour_session,
             )
             cached_input_tokens = int(subtask_metrics.get("cached_input_tokens", 0) or 0)
             cache_write_tokens = int(subtask_metrics.get("cache_write_tokens", 0) or 0)
@@ -3493,8 +3466,17 @@ async def execute_agent_node(
         {"approval_required"},
     )
 
-    # Deregister agent from Rigour CLI
-    _rigour_agent_deregister(_rigour_project_root, current_instance)
+    # Deregister agent from Rigour session
+    if _rigour_session is not None:
+        try:
+            _rigour_session.agent_deregister(current_instance)
+            _rigour_session.log_event({
+                "type": "agent_completed",
+                "agentId": current_instance,
+                "role": current_role,
+            })
+        except Exception:
+            pass
 
     # ── Detect RECLASSIFY signal in agent output ──────────────────
     reclassify_detected, reclassify_type, reclassify_reason = _detect_reclassify_signal(

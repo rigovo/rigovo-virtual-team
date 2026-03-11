@@ -12,12 +12,18 @@ instance_ids are involved.
 
 from __future__ import annotations
 
+import logging
+
 from rigovo.application.graph.state import TaskState
+from rigovo.infrastructure.quality.rigour_session import RigourSession
+
+_logger = logging.getLogger(__name__)
 
 # Global execution cap — prevents unbounded retry cycles across debate/replan rounds.
 # Even if retry_count resets per-agent-transition, this cap ensures a single agent
 # instance never executes more than this many times total in one task.
-GLOBAL_MAX_EXECUTIONS_PER_INSTANCE = 8
+# Value 15 accommodates: 3 agents x (1 initial + 2 debate rounds) + retries.
+GLOBAL_MAX_EXECUTIONS_PER_INSTANCE = 15
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -444,6 +450,10 @@ def advance_to_next_agent(state: TaskState) -> dict:
         else len(pipeline_order)
     )
 
+    # Log handoff to Rigour session for Studio visibility
+    if next_instance and current_instance:
+        _log_rigour_handoff(state, current_instance, next_instance)
+
     return {
         "current_agent_index": next_index,
         "current_agent_role": next_instance,  # Config lookup key = instance_id
@@ -458,6 +468,40 @@ def advance_to_next_agent(state: TaskState) -> dict:
         "error": error,
         "events": events,
     }
+
+
+def _log_rigour_handoff(
+    state: TaskState, from_agent: str, to_agent: str,
+) -> None:
+    """Write handoff entry to .rigour/handoffs.jsonl (best-effort)."""
+    try:
+        project_root = str(
+            state.get("target_root") or state.get("project_root") or "."
+        )
+        session = RigourSession(project_root)
+        # Collect files the outgoing agent touched
+        agent_output = state.get("agent_output")
+        files = []
+        if isinstance(agent_output, dict):
+            files = agent_output.get("files_changed", [])[:20]
+        session.handoff(
+            from_agent=from_agent,
+            to_agent=to_agent,
+            task=str(state.get("current_task_summary", "")),
+            files=files,
+            context=str(
+                (agent_output or {}).get("summary", "")
+                if isinstance(agent_output, dict)
+                else ""
+            ),
+        )
+        session.log_event({
+            "type": "handoff_initiated",
+            "fromAgentId": from_agent,
+            "toAgentId": to_agent,
+        })
+    except Exception:
+        pass  # Best-effort — never break routing
 
 
 # ── Generic debate / feedback protocol ──────────────────────────────────

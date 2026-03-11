@@ -185,10 +185,13 @@ async def scan_project_node(
         try:
             from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
 
-            rigour_binary = RigourQualityGate._find_binary()
-            if rigour_binary and rigour_binary != "npx":
+            rigour_binary = RigourQualityGate._find_binary(project_root)
+            if rigour_binary:
+                cmd = RigourQualityGate._build_cmd(
+                    rigour_binary, "index", "--semantic", "--json",
+                )
                 result = subprocess.run(
-                    [rigour_binary, "index", "--semantic", "--json"],
+                    cmd,
                     capture_output=True,
                     text=True,
                     timeout=60,

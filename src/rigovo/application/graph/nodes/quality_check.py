@@ -19,6 +19,9 @@ The quality check pipeline is:
 
 from __future__ import annotations
 
+import json
+import logging
+from pathlib import Path
 from typing import Any
 
 from rigovo.application.context.rigour_supervisor import (
@@ -53,6 +56,58 @@ def _is_internal_runtime_path(path: str) -> bool:
 def _filter_user_files(files_changed: list[str]) -> list[str]:
     """Exclude internal runtime artifacts from quality and persona checks."""
     return [path for path in files_changed if not _is_internal_runtime_path(path)]
+
+
+_logger = logging.getLogger(__name__)
+
+
+def _enrich_from_rigour_fix_packet(
+    project_root: str | Path,
+    fix_items: list[FixItem],
+) -> list[FixItem]:
+    """Merge data from Rigour's Fix Packet v3 (rigour-fix-packet.json).
+
+    Rigour writes this file after ``rigour check`` fails. It contains richer
+    data than our gate output: precise file+line locations, step-by-step
+    instructions per violation, constraints (protected paths, max files),
+    and verification commands.
+    """
+    fix_packet_path = Path(project_root) / "rigour-fix-packet.json"
+    if not fix_packet_path.exists():
+        return fix_items
+    try:
+        rigour_fix = json.loads(fix_packet_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return fix_items
+
+    # Build lookup: gate_id → rigour violation data
+    rigour_violations = rigour_fix.get("violations", [])
+    rigour_by_id: dict[str, dict] = {}
+    for v in rigour_violations:
+        vid = str(v.get("id", ""))
+        if vid:
+            rigour_by_id[vid] = v
+
+    # Enrich our FixItems with Rigour's richer data
+    enriched: list[FixItem] = []
+    for item in fix_items:
+        rv = rigour_by_id.get(item.gate_id)
+        if rv:
+            # Merge precise location if our item lacks line info
+            locations = rv.get("locations", [])
+            if not item.line and locations:
+                loc = locations[0]
+                item.line = loc.get("line")
+                if not item.file_path and loc.get("file"):
+                    item.file_path = loc["file"]
+            # Merge step-by-step instructions
+            item.instructions = rv.get("instructions", [])
+            # Merge hint if our suggestion is empty
+            if not item.suggestion and rv.get("hint"):
+                item.suggestion = rv["hint"]
+        enriched.append(item)
+
+    return enriched
 
 
 def _serialize_violation(violation: Violation) -> dict[str, Any]:
@@ -106,10 +161,12 @@ def _serialize_fix_packet(
                     item.severity.value if hasattr(item.severity, "value") else item.severity
                 ),
                 "line": item.line,
+                "instructions": item.instructions,
             }
             for item in packet.items
         ],
         "prompt": packet.to_prompt(),
+        "explain_text": packet.explain_text or "",
     }
 
 
@@ -195,7 +252,7 @@ def _remediation_update(
     return {
         "gate_results": gate_summary,
         "active_fix_packet": active_fix_packet,
-        "fix_packets": [*list(state.get("fix_packets", [])), active_fix_packet["prompt"]],
+        "fix_packets": [*list(state.get("fix_packets", []))[-1:], active_fix_packet["prompt"]],
         "retry_count": retry_count,
         "downstream_lock_reason": f"awaiting gate remediation by {remediation_owner}",
         "current_agent_index": remediation_index,
@@ -917,6 +974,24 @@ async def quality_check_node(
     gate_history = list(state.get("gate_history", []))
     gate_history.append({"role": current_instance, **gate_summary})
 
+    # Log gate result to Rigour Studio event stream
+    try:
+        from rigovo.infrastructure.quality.rigour_session import RigourSession
+
+        _project_root = str(
+            state.get("target_root") or state.get("project_root") or ".",
+        )
+        _session = RigourSession(_project_root)
+        _session.log_event({
+            "type": "gate_passed" if all_passed else "gate_failed",
+            "agentId": current_instance,
+            "gatesRun": total_gates_run,
+            "gatesPassed": total_gates_passed,
+            "violationCount": len(filtered_violations),
+        })
+    except Exception:
+        pass
+
     update: dict[str, Any] = {
         "gate_results": gate_summary,
         "gate_history": gate_history,
@@ -1011,11 +1086,30 @@ async def quality_check_node(
             for v in filtered_violations
         ]
 
+        # Enrich with Rigour Fix Packet v3 (locations, instructions, constraints)
+        fix_items = _enrich_from_rigour_fix_packet(
+            gate_input.project_root, fix_items,
+        )
+
         fix_packet = FixPacket(
             items=fix_items,
             attempt=retry_count,
             max_attempts=max_retries,
         )
+
+        # Fetch Rigour's human-readable explanation for the surgical fix block
+        try:
+            gate_with_explain = next(
+                (g for g in quality_gates if hasattr(g, "run_explain")), None,
+            )
+            if gate_with_explain is not None:
+                explain_text = await gate_with_explain.run_explain(
+                    gate_input.project_root,
+                )
+                if explain_text:
+                    fix_packet.explain_text = explain_text
+        except Exception:
+            pass  # Graceful degradation
 
         update.update(
             _remediation_update(

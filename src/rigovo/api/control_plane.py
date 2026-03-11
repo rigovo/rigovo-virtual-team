@@ -3265,6 +3265,15 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
 
     # ---- Project management ----
 
+    async def _ensure_rigour_in_workspace(project_path: str) -> None:
+        """Background task: install Rigour CLI locally in workspace if needed."""
+        try:
+            from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
+
+            await RigourQualityGate.ensure_binary(project_root=project_path)
+        except Exception:
+            pass  # Best-effort — don't break project registration
+
     @app.get("/v1/projects")
     def list_projects() -> list[dict]:
         """List registered projects."""
@@ -3322,6 +3331,11 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
         if project_path not in existing_paths:
             state.__dict__.setdefault("projects", []).append(project)
             _write_state(state)
+
+        # Background: ensure Rigour CLI is installed in the workspace
+        asyncio.ensure_future(  # noqa: RUF006
+            _ensure_rigour_in_workspace(project_path),
+        )
 
         return project
 

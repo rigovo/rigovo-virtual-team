@@ -77,6 +77,7 @@ class FixItem:
     suggestion: str
     severity: ViolationSeverity
     line: int | None = None
+    instructions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -91,6 +92,7 @@ class FixPacket:
     items: list[FixItem] = field(default_factory=list)
     attempt: int = 1
     max_attempts: int = 3
+    explain_text: str = ""
 
     def to_prompt(self) -> str:
         """Render as a prompt section for the retry agent."""

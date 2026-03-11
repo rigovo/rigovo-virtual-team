@@ -67,32 +67,51 @@ class RigourQualityGate(QualityGate):
     _cached_binary: str | None = None
     _install_attempted: bool = False
 
+    @staticmethod
+    def _build_cmd(binary: str, *args: str) -> list[str]:
+        """Build a Rigour CLI command, handling npx format correctly.
+
+        When binary is "npx", produces: ["npx", "-y", "@rigour-labs/cli", ...args]
+        Otherwise: [binary, ...args]
+        """
+        if binary == "npx":
+            return ["npx", "-y", "@rigour-labs/cli", *args]
+        return [binary, *args]
+
     @classmethod
-    def _find_binary(cls) -> str | None:
+    def _find_binary(cls, project_root: str | Path | None = None) -> str | None:
         """Locate the rigour CLI binary with multi-strategy resolution.
 
         Priority:
         1. Cached result from previous call (avoid repeated lookups)
-        2. ``rigour`` on PATH (user already installed globally)
-        3. ``~/.rigovo/bin/rigour`` (our own cached install)
-        4. npx (slow but always works with Node.js)
+        2. Workspace-local: ``{project_root}/node_modules/.bin/rigour``
+        3. ``rigour`` on PATH (user already installed globally)
+        4. ``~/.rigovo/bin/rigour`` (our own cached install)
+        5. npx @rigour-labs/cli (slow but always works with Node.js)
         """
         if cls._cached_binary:
             return cls._cached_binary
 
-        # 1. Direct binary on PATH
+        # 1. Workspace-local install (fastest, no npx overhead)
+        if project_root:
+            local_bin = Path(project_root) / "node_modules" / ".bin" / "rigour"
+            if local_bin.exists() and local_bin.is_file():
+                cls._cached_binary = str(local_bin)
+                return str(local_bin)
+
+        # 2. Direct binary on PATH
         path = shutil.which("rigour")
         if path:
             cls._cached_binary = path
             return path
 
-        # 2. Our cached install location
+        # 3. Our cached install location
         cached = Path.home() / ".rigovo" / "bin" / "rigour"
         if cached.exists() and cached.is_file():
             cls._cached_binary = str(cached)
             return str(cached)
 
-        # 3. npx fallback (slow first time, cached after)
+        # 4. npx fallback (slow first time, cached after)
         if shutil.which("npx"):
             cls._cached_binary = "npx"
             return "npx"
@@ -100,55 +119,92 @@ class RigourQualityGate(QualityGate):
         return None
 
     @classmethod
-    async def ensure_binary(cls) -> str | None:
-        """Auto-install Rigour CLI if not already available.
+    async def ensure_binary(
+        cls, project_root: str | Path | None = None,
+    ) -> str | None:
+        """Auto-install Rigour CLI, preferring workspace-local install.
 
-        Multi-strategy install:
+        Strategy:
         1. Check if already available (fast path)
-        2. Try ``npm install -g @rigour-labs/cli``
-        3. Try ``npx -y @rigour-labs/cli --help`` to prime the npx cache
-        4. Fall back gracefully to builtin checks
+        2. If workspace has package.json → ``npm install --save-dev @rigour-labs/cli``
+        3. Else → ``npm install -g @rigour-labs/cli``
+        4. After install → run ``rigour init`` if .rigour/ doesn't exist
+        5. Fall back to npx cache priming
+        6. Graceful degradation to builtin checks
 
         Called during prefetch so install happens while planner runs.
         """
         # Fast path: already found or already tried
-        if cls._cached_binary or cls._install_attempted:
+        if cls._cached_binary and cls._cached_binary != "npx":
+            return cls._cached_binary
+        if cls._install_attempted:
             return cls._cached_binary
 
         cls._install_attempted = True
 
-        existing = cls._find_binary()
+        existing = cls._find_binary(project_root)
         if existing and existing != "npx":
-            return existing  # Already installed natively
+            await cls._ensure_rigour_init(existing, project_root)
+            return existing
 
-        # Try npm global install (fast on subsequent runs)
-        if shutil.which("npm"):
-            try:
-                logger.info("Auto-installing Rigour CLI via npm...")
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: subprocess.run(
-                        ["npm", "install", "-g", "@rigour-labs/cli"],
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                    ),
-                )
-                if result.returncode == 0:
-                    path = shutil.which("rigour")
-                    if path:
-                        cls._cached_binary = path
-                        logger.info("Rigour CLI installed successfully: %s", path)
-                        return path
-            except Exception as e:
-                logger.debug("npm global install failed: %s", e)
+        if not shutil.which("npm"):
+            logger.info("Rigour CLI not available (no npm), using builtin checks")
+            return None
+
+        loop = asyncio.get_running_loop()
+
+        # Try workspace-local install if package.json exists
+        if project_root:
+            pkg_json = Path(project_root) / "package.json"
+            if pkg_json.exists():
+                try:
+                    logger.info("Installing Rigour CLI locally in workspace...")
+                    result = await loop.run_in_executor(
+                        None,
+                        lambda: subprocess.run(
+                            ["npm", "install", "--save-dev", "@rigour-labs/cli"],
+                            capture_output=True,
+                            text=True,
+                            timeout=120,
+                            cwd=str(project_root),
+                        ),
+                    )
+                    if result.returncode == 0:
+                        local_bin = Path(project_root) / "node_modules" / ".bin" / "rigour"
+                        if local_bin.exists():
+                            cls._cached_binary = str(local_bin)
+                            logger.info("Rigour CLI installed locally: %s", local_bin)
+                            await cls._ensure_rigour_init(str(local_bin), project_root)
+                            return str(local_bin)
+                except Exception as e:
+                    logger.debug("Workspace-local install failed: %s", e)
+
+        # Try npm global install
+        try:
+            logger.info("Installing Rigour CLI globally...")
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ["npm", "install", "-g", "@rigour-labs/cli"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                ),
+            )
+            if result.returncode == 0:
+                path = shutil.which("rigour")
+                if path:
+                    cls._cached_binary = path
+                    logger.info("Rigour CLI installed globally: %s", path)
+                    await cls._ensure_rigour_init(path, project_root)
+                    return path
+        except Exception as e:
+            logger.debug("npm global install failed: %s", e)
 
         # Try npx cache priming (so first real run is faster)
         if shutil.which("npx"):
             try:
                 logger.info("Priming Rigour CLI via npx cache...")
-                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
                     None,
                     lambda: subprocess.run(
@@ -163,9 +219,61 @@ class RigourQualityGate(QualityGate):
             except Exception as e:
                 logger.debug("npx cache priming failed: %s", e)
 
-        # Graceful fallback — builtin checks will handle it
         logger.info("Rigour CLI not available, will use builtin quality checks")
         return None
+
+    @classmethod
+    async def _ensure_rigour_init(
+        cls, binary: str, project_root: str | Path | None,
+    ) -> None:
+        """Run ``rigour init`` if .rigour/ doesn't exist in the workspace."""
+        if not project_root:
+            return
+        rigour_dir = Path(project_root) / ".rigour"
+        if rigour_dir.exists():
+            return
+        try:
+            cmd = cls._build_cmd(binary, "init")
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    cwd=str(project_root),
+                ),
+            )
+            logger.info("Rigour initialized in workspace: %s", project_root)
+        except Exception as e:
+            logger.debug("rigour init failed (non-fatal): %s", e)
+
+    async def run_explain(self, project_root: str | Path) -> str | None:
+        """Run ``rigour explain`` and return the human-readable output.
+
+        Called after gate failure to provide a plain-English explanation
+        of what's wrong and how to fix it. Returns None on failure.
+        """
+        if not self._binary:
+            return None
+        cmd = self._build_cmd(self._binary, "explain")
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    cwd=str(project_root),
+                ),
+            )
+            output = result.stdout.strip()
+            return output if output else None
+        except Exception:
+            return None
 
     async def run(self, gate_input: GateInput) -> GateResult:
         """Run quality gates and return structured results."""
@@ -183,10 +291,7 @@ class RigourQualityGate(QualityGate):
         Returns None if CLI is not available or fails to produce valid output,
         signaling the caller to fall back to builtin checks.
         """
-        if self._binary == "npx":
-            cmd = ["npx", "-y", "@rigour-labs/cli", "check", "--json"]
-        else:
-            cmd = [self._binary, "check", "--json"]
+        cmd = self._build_cmd(self._binary, "check", "--json")
 
         if gate_input.deep:
             cmd.append("--deep")
