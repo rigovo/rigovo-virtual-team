@@ -120,7 +120,8 @@ class RigourQualityGate(QualityGate):
 
     @classmethod
     async def ensure_binary(
-        cls, project_root: str | Path | None = None,
+        cls,
+        project_root: str | Path | None = None,
     ) -> str | None:
         """Auto-install Rigour CLI, preferring workspace-local install.
 
@@ -224,7 +225,9 @@ class RigourQualityGate(QualityGate):
 
     @classmethod
     async def _ensure_rigour_init(
-        cls, binary: str, project_root: str | Path | None,
+        cls,
+        binary: str,
+        project_root: str | Path | None,
     ) -> None:
         """Run ``rigour init`` if .rigour/ doesn't exist in the workspace."""
         if not project_root:

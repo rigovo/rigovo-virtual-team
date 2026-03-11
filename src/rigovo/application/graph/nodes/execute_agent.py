@@ -733,9 +733,7 @@ def _build_persistence_warnings(state: TaskState, active_fix_packet: dict[str, A
     prev_violations: list[dict[str, Any]] = []
     for entry in reversed(gate_history[:-1]):
         if isinstance(entry, dict) and not entry.get("passed", True):
-            prev_violations = [
-                v for v in (entry.get("violations") or []) if isinstance(v, dict)
-            ]
+            prev_violations = [v for v in (entry.get("violations") or []) if isinstance(v, dict)]
             break
 
     if not prev_violations:
@@ -778,9 +776,7 @@ def _build_surgical_fix_block(
     items: list[dict[str, Any]] = active_fix_packet.get("items", [])
     affected_files = list(
         dict.fromkeys(  # preserve order, deduplicate
-            item.get("file_path", "")
-            for item in items
-            if item.get("file_path")
+            item.get("file_path", "") for item in items if item.get("file_path")
         )
     )
 
@@ -877,7 +873,11 @@ async def _run_mid_execution_check(
         return None
     try:
         cmd = RigourQualityGate._build_cmd(
-            binary, "check", "--json", "--deep", *files[:10],
+            binary,
+            "check",
+            "--json",
+            "--deep",
+            *files[:10],
         )
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
@@ -909,8 +909,6 @@ async def _run_mid_execution_check(
         return violations or None
     except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
         return None
-
-
 
 
 def _active_fix_packet(state: TaskState) -> dict[str, Any] | None:
@@ -1075,6 +1073,7 @@ def _build_agent_messages(
     # Resolve base role for contract lookups — instance IDs like "software-engineer-1"
     # need to map to "coder" for workflow contract injection.
     from rigovo.application.graph.agent_identity import resolve_base_role as _resolve_br
+
     _base_role_for_contract = _resolve_br(state, current_role)
 
     # Context engineering: assemble rich per-agent context
@@ -2098,12 +2097,12 @@ async def _run_agentic_loop(
     _base_role = role
     if state:
         from rigovo.application.graph.agent_identity import resolve_base_role as _resolve_br
+
         _base_role = _resolve_br(state, role)
 
     # Use per-role max_tokens for smarter token allocation
-    max_tokens = (
-        agent_config.get("max_tokens")
-        or ROLE_MAX_TOKENS.get(_base_role, DEFAULT_MAX_TOKENS)
+    max_tokens = agent_config.get("max_tokens") or ROLE_MAX_TOKENS.get(
+        _base_role, DEFAULT_MAX_TOKENS
     )
     subagent_enabled, max_subtasks_per_step, max_subtask_rounds = _resolve_subagent_policy(state)
     require_file_write = _base_role in ROLES_REQUIRING_FILE_WRITES
@@ -2164,8 +2163,10 @@ async def _run_agentic_loop(
                     raise
                 logger.warning(
                     "Agent %s LLM call failed (%s), retrying (%d/%d)...",
-                    role, type(_llm_err).__name__,
-                    _llm_attempts, _llm_max_attempts,
+                    role,
+                    type(_llm_err).__name__,
+                    _llm_attempts,
+                    _llm_max_attempts,
                 )
                 await asyncio.sleep(2)
 
@@ -2572,7 +2573,10 @@ async def _run_agentic_loop(
                 budget_warning_sent = False  # Reset so a new warning fires at new target
                 logger.info(
                     "Agent %s: budget extension granted (%d -> %d rounds). Reason: %s",
-                    role, old_target, soft_target_rounds, ext_reason[:80],
+                    role,
+                    old_target,
+                    soft_target_rounds,
+                    ext_reason[:80],
                 )
                 events.append(
                     {
@@ -2851,9 +2855,7 @@ async def _run_agentic_loop(
             files_written_so_far = _extract_written_files(messages)
             if files_written_so_far:
                 project_root_str = str(
-                    (state or {}).get("target_root")
-                    or (state or {}).get("project_root")
-                    or "."
+                    (state or {}).get("target_root") or (state or {}).get("project_root") or "."
                 )
                 try:
                     drift_violations = await _run_mid_execution_check(
@@ -2862,8 +2864,7 @@ async def _run_agentic_loop(
                     if drift_violations:
                         violation_count = len(drift_violations)
                         violation_msgs = "; ".join(
-                            str(v.get("message", ""))
-                            for v in drift_violations[:3]
+                            str(v.get("message", "")) for v in drift_violations[:3]
                         )
                         messages.append(
                             {
@@ -2970,7 +2971,9 @@ async def _run_agentic_loop(
     else:
         logger.warning(
             "Agent %s: hit hard safety cap (%d rounds). Soft target was %d.",
-            role, max_rounds, soft_target_rounds,
+            role,
+            max_rounds,
+            soft_target_rounds,
         )
 
     # Extract files changed from write_file tool calls in message history
@@ -3078,9 +3081,7 @@ def _scan_tree_signature(root: Path) -> dict[str, tuple[int, int]]:
     try:
         for dirpath, dirnames, filenames in os.walk(root, topdown=True):
             # Early prune — os.walk skips pruned dirs entirely
-            dirnames[:] = [
-                d for d in dirnames if d not in _FS_IGNORE_DIRS
-            ]
+            dirnames[:] = [d for d in dirnames if d not in _FS_IGNORE_DIRS]
             if count >= MAX_FS_SCAN_FILES:
                 break
             for fname in filenames:
@@ -3222,14 +3223,14 @@ async def execute_agent_node(
     # Per-role round caps: planner does recon (keep it tight), coder/sre do real work (give room).
     # Decouples "avoid planner reconnaissance loops" from "give coder enough turns to finish".
     _role_round_caps: dict[str, int] = {
-        "planner":  10,           # survey + plan, then hand off
-        "lead":     10,
-        "coder":    MAX_TOOL_ROUNDS,   # read -> write -> verify across multiple files
+        "planner": 10,  # survey + plan, then hand off
+        "lead": 10,
+        "coder": MAX_TOOL_ROUNDS,  # read -> write -> verify across multiple files
         "reviewer": 12,
         "security": 12,
-        "qa":       12,
-        "devops":   15,
-        "sre":      15,
+        "qa": 12,
+        "devops": 15,
+        "sre": 15,
     }
     role_cap = _role_round_caps.get(current_role, MAX_TOOL_ROUNDS)
     intent_max_rounds = min(intent_max_rounds, role_cap)
@@ -3326,15 +3327,18 @@ async def execute_agent_node(
     try:
         _rigour_session = RigourSession(_rigour_project_root)
         _scope_conflicts = _rigour_session.agent_register(
-            current_instance, _rigour_scope_files,
+            current_instance,
+            _rigour_scope_files,
         )
         if _scope_conflicts:
             logger.warning("Rigour scope conflicts: %s", _scope_conflicts)
-        _rigour_session.log_event({
-            "type": "agent_started",
-            "agentId": current_instance,
-            "role": current_role,
-        })
+        _rigour_session.log_event(
+            {
+                "type": "agent_started",
+                "agentId": current_instance,
+                "role": current_role,
+            }
+        )
     except Exception:
         _rigour_session = None  # Graceful degradation
 
@@ -3635,7 +3639,10 @@ async def execute_agent_node(
         err_type = type(exc).__name__
         err_msg = str(exc) or "(no message)"
         logger.error(
-            "Agent %s failed with %s: %s", current_role, err_type, err_msg,
+            "Agent %s failed with %s: %s",
+            current_role,
+            err_type,
+            err_msg,
         )
         events.append(
             {
@@ -3764,11 +3771,13 @@ async def execute_agent_node(
     if _rigour_session is not None:
         try:
             _rigour_session.agent_deregister(current_instance)
-            _rigour_session.log_event({
-                "type": "agent_completed",
-                "agentId": current_instance,
-                "role": current_role,
-            })
+            _rigour_session.log_event(
+                {
+                    "type": "agent_completed",
+                    "agentId": current_instance,
+                    "role": current_role,
+                }
+            )
         except Exception:
             pass
 

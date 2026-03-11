@@ -189,7 +189,10 @@ async def scan_project_node(
             rigour_binary = RigourQualityGate._find_binary(project_root)
             if rigour_binary:
                 cmd = RigourQualityGate._build_cmd(
-                    rigour_binary, "index", "--semantic", "--json",
+                    rigour_binary,
+                    "index",
+                    "--semantic",
+                    "--json",
                 )
                 result = subprocess.run(
                     cmd,
@@ -212,7 +215,8 @@ async def scan_project_node(
         try:
             if rigour_binary:
                 recall_cmd = RigourQualityGate._build_cmd(
-                    rigour_binary, "recall",
+                    rigour_binary,
+                    "recall",
                 )
                 recall_result = subprocess.run(
                     recall_cmd,

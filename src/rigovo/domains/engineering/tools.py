@@ -140,8 +140,7 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     "delete_file": {
         "name": "delete_file",
         "description": (
-            "Delete a file at the given path. Use when cleaning up "
-            "generated or renamed files."
+            "Delete a file at the given path. Use when cleaning up generated or renamed files."
         ),
         "parameters": {
             "type": "object",

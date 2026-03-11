@@ -67,7 +67,10 @@ async def run_inline_quality_gates(
         # Limit to 15 files to keep check fast
         check_files = files_changed[:15]
         cmd = RigourQualityGate._build_cmd(
-            binary, "check", "--json", *check_files,
+            binary,
+            "check",
+            "--json",
+            *check_files,
         )
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(

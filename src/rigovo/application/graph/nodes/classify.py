@@ -184,7 +184,9 @@ async def classify_node(
             )
             logger.info(
                 "Master Agent LLM: SUCCESS — task_type=%s complexity=%s agents=%d",
-                plan.task_type, plan.complexity, len(plan.agents),
+                plan.task_type,
+                plan.complexity,
+                len(plan.agents),
             )
         except TimeoutError:
             logger.warning(

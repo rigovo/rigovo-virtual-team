@@ -225,8 +225,7 @@ class ContextBuilder:
         # 1c. Rigour project conventions — persistent project-level patterns
         if rigour_conventions:
             ctx.rigour_conventions_section = self._budget_text(
-                "--- PROJECT CONVENTIONS (from Rigour memory) ---\n"
-                + rigour_conventions,
+                "--- PROJECT CONVENTIONS (from Rigour memory) ---\n" + rigour_conventions,
                 2000,
             )
 
@@ -328,9 +327,7 @@ class ContextBuilder:
         if dependencies_context:
             for dep_id, dep_desc in dependencies_context.items():
                 if dep_desc:
-                    parts.append(
-                        f"\n[MASTER GUIDANCE for {dep_id}]: {dep_desc}"
-                    )
+                    parts.append(f"\n[MASTER GUIDANCE for {dep_id}]: {dep_desc}")
 
         for role, output in outputs.items():
             summary = output.get("summary", "")

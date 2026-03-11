@@ -177,6 +177,7 @@ class ToolExecutor:
         self._rigour_binary: str | None = None
         try:
             from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
+
             self._rigour_binary = RigourQualityGate._find_binary(
                 str(self._project_root),
             )
@@ -255,15 +256,20 @@ class ToolExecutor:
         focus_paths = self._scope_boundaries.get("focus_paths", [])
         if focus_paths:
             in_scope = any(
-                normalised.startswith(fp.lstrip("/").lstrip("./").rstrip("/"))
-                for fp in focus_paths
+                normalised.startswith(fp.lstrip("/").lstrip("./").rstrip("/")) for fp in focus_paths
             )
             if not in_scope:
                 # Allow common config files at project root
                 root_exceptions = {
-                    "package.json", "tsconfig.json", "pyproject.toml",
-                    "setup.py", "setup.cfg", "Makefile", "Dockerfile",
-                    ".env.example", "requirements.txt",
+                    "package.json",
+                    "tsconfig.json",
+                    "pyproject.toml",
+                    "setup.py",
+                    "setup.cfg",
+                    "Makefile",
+                    "Dockerfile",
+                    ".env.example",
+                    "requirements.txt",
                 }
                 if normalised not in root_exceptions:
                     logger.warning(
@@ -296,11 +302,13 @@ class ToolExecutor:
         await asyncio.sleep(0)
         # Server-side enforcement: block tools not in the allow-list
         if self._allowed_tools is not None and tool_name not in self._allowed_tools:
-            return json.dumps({
-                "error": f"Tool '{tool_name}' is not available for your role. "
-                f"Available tools: {sorted(self._allowed_tools)}",
-                "status": "tool_blocked",
-            })
+            return json.dumps(
+                {
+                    "error": f"Tool '{tool_name}' is not available for your role. "
+                    f"Available tools: {sorted(self._allowed_tools)}",
+                    "status": "tool_blocked",
+                }
+            )
         handler = self._handlers.get(tool_name)
         if not handler:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
@@ -324,11 +332,13 @@ class ToolExecutor:
 
             # Server-side enforcement: block tools not in the allow-list
             if self._allowed_tools is not None and name not in self._allowed_tools:
-                results.append({
-                    "tool": name,
-                    "error": f"Tool '{name}' is not available for your role.",
-                    "status": "tool_blocked",
-                })
+                results.append(
+                    {
+                        "tool": name,
+                        "error": f"Tool '{name}' is not available for your role.",
+                        "status": "tool_blocked",
+                    }
+                )
                 continue
 
             handler = self._handlers.get(name)
@@ -456,7 +466,11 @@ class ToolExecutor:
             from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
 
             cmd = RigourQualityGate._build_cmd(
-                self._rigour_binary, "hooks", "check", "--files", file_path,
+                self._rigour_binary,
+                "hooks",
+                "check",
+                "--files",
+                file_path,
             )
             proc = subprocess.run(
                 cmd,
@@ -470,8 +484,7 @@ class ToolExecutor:
                 failures = data.get("failures", [])
                 if failures:
                     return [
-                        f"[{f.get('severity', '?')}] {f.get('message', '')}"
-                        for f in failures[:5]
+                        f"[{f.get('severity', '?')}] {f.get('message', '')}" for f in failures[:5]
                     ]
         except Exception:
             pass  # Graceful degradation — never block file writes
@@ -489,15 +502,14 @@ class ToolExecutor:
         try:
             # Quick heuristic: extract function/class names from content
             new_patterns = re.findall(
-                r"(?:def|function|class|const)\s+(\w+)", content,
+                r"(?:def|function|class|const)\s+(\w+)",
+                content,
             )
             if not new_patterns:
                 return None
             index_data = json.loads(index_path.read_text())
             existing_names = {
-                p.get("name", "").lower()
-                for p in index_data.get("patterns", [])
-                if p.get("name")
+                p.get("name", "").lower() for p in index_data.get("patterns", []) if p.get("name")
             }
             warnings: list[str] = []
             for name in new_patterns[:5]:
