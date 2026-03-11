@@ -410,6 +410,86 @@ class CodeKnowledgeGraph:
         # Backward-compatible: if edges were not serialized, indexes can still be used.
         return graph
 
+    def merge_semantic_patterns(self, semantic_data: dict[str, Any]) -> None:
+        """Merge semantic pattern data from Rigour's `index --semantic` output.
+
+        Enriches the knowledge graph with:
+        - File-level semantic clusters (grouped by functional purpose)
+        - Pattern tags (e.g., "api-handler", "data-model", "utility")
+        - Cross-file semantic similarity links
+
+        Gracefully handles partial/unexpected data formats.
+        """
+        patterns = semantic_data.get("patterns", [])
+        if not isinstance(patterns, list):
+            return
+
+        for pattern in patterns:
+            if not isinstance(pattern, dict):
+                continue
+            files = pattern.get("files", [])
+            name = str(pattern.get("name", "semantic_cluster"))
+            symbols = pattern.get("key_symbols", [])
+
+            if not isinstance(files, list) or not files:
+                continue
+
+            # Check if a cluster with this name already exists
+            existing = next((c for c in self.clusters if c.name == name), None)
+            if existing:
+                # Merge files into existing cluster
+                existing_set = set(existing.files)
+                for f in files:
+                    f_str = str(f)
+                    if f_str not in existing_set:
+                        existing.files.append(f_str)
+                        existing_set.add(f_str)
+                if isinstance(symbols, list):
+                    sym_set = set(existing.key_symbols)
+                    for s in symbols:
+                        s_str = str(s)
+                        if s_str not in sym_set:
+                            existing.key_symbols.append(s_str)
+                            sym_set.add(s_str)
+            else:
+                self.clusters.append(
+                    DomainCluster(
+                        name=name,
+                        files=[str(f) for f in files],
+                        key_symbols=[str(s) for s in (symbols or [])],
+                    )
+                )
+
+    def find_related_files(self, file_path: str, max_results: int = 10) -> list[str]:
+        """Find files semantically related to the given file.
+
+        Combines structural relationships (imports/exports) with cluster
+        co-membership to find the most relevant files.
+
+        Returns a ranked list of related file paths.
+        """
+        if file_path not in self.nodes:
+            return []
+
+        scored: dict[str, float] = {}
+
+        # Direct dependencies (highest relevance)
+        for dep in self.forward_deps.get(file_path, []):
+            scored[dep] = scored.get(dep, 0) + 3.0
+        for dep in self.reverse_deps.get(file_path, []):
+            scored[dep] = scored.get(dep, 0) + 2.0
+
+        # Cluster co-membership (moderate relevance)
+        for cluster in self.clusters:
+            if file_path in cluster.files:
+                for f in cluster.files:
+                    if f != file_path:
+                        scored[f] = scored.get(f, 0) + 1.0
+
+        # Sort by score descending
+        ranked = sorted(scored.items(), key=lambda x: -x[1])
+        return [path for path, _ in ranked[:max_results]]
+
 
 class KnowledgeGraphBuilder:
     """Builds a CodeKnowledgeGraph from a project directory.

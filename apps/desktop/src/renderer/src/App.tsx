@@ -533,24 +533,24 @@ export default function App(): JSX.Element {
 
     if (!isUuid(selected)) { setTaskDetail(null); return; }
     let active = true;
-    let fast = true; // fast polling initially (task might not be in DB yet)
+    let switchedToSlow = false;
+    let currentIntervalId: number | null = null;
     const f = async () => {
       const d = await readJson<TaskDetailType>(`${API_BASE}/v1/tasks/${selected}/detail`);
-      if (active && d) { setTaskDetail(d); fast = false; } // got data, slow down
+      if (active && d) {
+        setTaskDetail(d);
+        // Switch from fast (1.5s) to slow (5s) polling after first successful response
+        if (!switchedToSlow) {
+          switchedToSlow = true;
+          if (currentIntervalId !== null) window.clearInterval(currentIntervalId);
+          currentIntervalId = window.setInterval(() => { void f(); }, 5000);
+        }
+      }
     };
     void f();
-    // Start with 1.5s polling (for newly created tasks), switch to 5s once data arrives
-    const id = window.setInterval(() => { void f(); }, fast ? 1500 : 5000);
-    // Also set up the slower interval after 10s regardless
-    const slowId = window.setTimeout(() => {
-      if (!active) return;
-      window.clearInterval(id);
-      const id2 = window.setInterval(() => { void f(); }, 5000);
-      // store for cleanup
-      cleanupIds.push(id2);
-    }, 10000);
-    const cleanupIds: number[] = [];
-    return () => { active = false; window.clearInterval(id); window.clearTimeout(slowId); cleanupIds.forEach((i) => window.clearInterval(i)); };
+    // Start with 1.5s polling (for newly created tasks)
+    currentIntervalId = window.setInterval(() => { void f(); }, 1500);
+    return () => { active = false; if (currentIntervalId !== null) window.clearInterval(currentIntervalId); };
   }, [selected]);
 
   /* ---- Auth flow ---- */

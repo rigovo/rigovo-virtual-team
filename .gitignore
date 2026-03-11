@@ -63,3 +63,4 @@ apps/desktop/package-lock.json
 # Test projects (local E2E testing)
 test-project/
 .vite/
+.claude/settings.local.json

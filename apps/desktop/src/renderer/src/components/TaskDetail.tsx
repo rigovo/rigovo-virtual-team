@@ -2,7 +2,7 @@
 /*  TaskDetail — split control plane                                    */
 /*  Left: Map (graph) or Timeline toggle | Right: agent detail panel   */
 /* ------------------------------------------------------------------ */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   InboxTask,
   TaskDetail as TaskDetailType,
@@ -1292,7 +1292,16 @@ export default function TaskDetail({
       : liveStepsCost;
   const summary = detail?.ui_summary ?? null;
   const summaryMissing = hasSteps && !summary;
-  const nextRole = summary?.next_expected_role ?? null;
+  // Derive nextRole from live step data when possible, falling back to ui_summary.
+  // This prevents stale "next X" display between polling intervals.
+  const nextRole = useMemo(() => {
+    const steps = detail?.steps ?? [];
+    const runningStep = steps.find((s: any) => s.status === "running");
+    if (runningStep) return null; // Already running, no "next"
+    const pendingSteps = steps.filter((s: any) => s.status === "pending");
+    if (pendingSteps.length > 0) return pendingSteps[0].agent_role || pendingSteps[0].agent;
+    return summary?.next_expected_role ?? null;
+  }, [detail?.steps, summary]);
   const effectiveTier = summary?.tier_effective ?? "auto";
   const requestedTier = summary?.tier_requested ?? "auto";
   const tierMismatch = effectiveTier !== requestedTier;

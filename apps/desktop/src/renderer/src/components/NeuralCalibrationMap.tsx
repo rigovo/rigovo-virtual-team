@@ -635,13 +635,17 @@ export default function NeuralCalibrationMap({
 
     return allEdges.map((e) => {
       const fromStatus = nodeStatuses[e.from];
+      const toStatus = nodeStatuses[e.to];
       const blocked = blockedRolesByGate.has(e.from);
-      // Only animate edges while pipeline is actively running.
-      // Once complete or failed, all edges go static (no more pulses).
+      // Only animate edges on the ACTIVE PATH:
+      //   source running + target running/pending = active handoff
+      //   source complete + target running = data handed off
+      // This prevents all outgoing edges from pulsing when only one agent is active.
       const active =
         isActive &&
         !blocked &&
-        (fromStatus === "running" || fromStatus === "complete");
+        ((fromStatus === "running" && (toStatus === "running" || toStatus === "pending")) ||
+         (fromStatus === "complete" && toStatus === "running"));
       return {
         id: e.id,
         source: e.from,

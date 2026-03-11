@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -52,6 +53,75 @@ def _collect_sensitive_payload_keys(payload: Any, prefix: str = "") -> list[str]
     return hits
 
 
+class FileReadCache:
+    """In-memory cache for file reads with mtime-based invalidation.
+
+    Eliminates redundant disk I/O when agents re-read the same files
+    (especially during retry cycles). Cache entries are keyed by path
+    and validated against file mtime — stale entries are automatically
+    evicted on read. Write operations invalidate the relevant entry.
+    """
+
+    MAX_ENTRIES = 200
+
+    def __init__(self, root: Path) -> None:
+        self._root = root.resolve()
+        # Maps relative_path → (mtime_ns, sha256_digest, result_dict)
+        self._cache: dict[str, tuple[int, str, dict[str, Any]]] = {}
+
+    def get(self, relative_path: str) -> dict[str, Any] | None:
+        """Return cached result if path exists and mtime matches, else None."""
+        entry = self._cache.get(relative_path)
+        if entry is None:
+            return None
+        cached_mtime_ns, _, cached_result = entry
+        try:
+            current_mtime_ns = (self._root / relative_path).stat().st_mtime_ns
+        except OSError:
+            # File disappeared — evict
+            self._cache.pop(relative_path, None)
+            return None
+        if current_mtime_ns != cached_mtime_ns:
+            # Stale — evict
+            self._cache.pop(relative_path, None)
+            return None
+        return cached_result
+
+    def put(self, relative_path: str, result: dict[str, Any]) -> None:
+        """Cache a full-file read result."""
+        try:
+            mtime_ns = (self._root / relative_path).stat().st_mtime_ns
+        except OSError:
+            return
+        content = result.get("content", "")
+        digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+        # Evict oldest entries if over capacity
+        if len(self._cache) >= self.MAX_ENTRIES and relative_path not in self._cache:
+            oldest_key = next(iter(self._cache))
+            del self._cache[oldest_key]
+        self._cache[relative_path] = (mtime_ns, digest, result)
+
+    def invalidate(self, relative_path: str) -> None:
+        """Remove cache entry for a path (called after write_file)."""
+        self._cache.pop(relative_path, None)
+
+    def get_file_digests(self) -> dict[str, str]:
+        """Return {relative_path: sha256_digest} for all cached files."""
+        return {path: entry[1] for path, entry in self._cache.items()}
+
+    def get_cached_contents(self, max_total_bytes: int = 30_000) -> dict[str, str]:
+        """Return {relative_path: content} for cached files within size budget."""
+        result: dict[str, str] = {}
+        total = 0
+        for path, (_, _, cached_result) in self._cache.items():
+            content = cached_result.get("content", "")
+            if total + len(content) > max_total_bytes:
+                continue
+            result[path] = content
+            total += len(content)
+        return result
+
+
 class ToolExecutor:
     """
     Executes agent tool calls against the local filesystem.
@@ -95,6 +165,7 @@ class ToolExecutor:
             self._execution_root, allowed_commands=allowed_commands or None
         )
         self._knowledge_graph = knowledge_graph
+        self._file_cache = FileReadCache(self._execution_root)
 
         self._handlers: dict[str, Any] = {
             "read_file": self._handle_read_file,
@@ -197,6 +268,14 @@ class ToolExecutor:
 
     # --- Tool handlers ---
 
+    def get_file_digests(self) -> dict[str, str]:
+        """Return SHA-256 digests for all cached files (for retry context injection)."""
+        return self._file_cache.get_file_digests()
+
+    def get_cached_contents(self, max_total_bytes: int = 30_000) -> dict[str, str]:
+        """Return cached file contents within size budget (for retry prompt injection)."""
+        return self._file_cache.get_cached_contents(max_total_bytes)
+
     def _handle_read_file(self, inputs: dict[str, Any]) -> dict[str, Any]:
         path = inputs.get("path")
         if not path:
@@ -204,11 +283,27 @@ class ToolExecutor:
                 "error": "read_file requires a 'path' parameter.",
                 "status": "error",
             }
-        return self._reader.read_file(
+        start_line = inputs.get("start_line")
+        end_line = inputs.get("end_line")
+
+        # Cache full-file reads only (not line-ranged)
+        is_full_read = start_line is None and end_line is None
+        if is_full_read:
+            cached = self._file_cache.get(path)
+            if cached is not None:
+                return cached
+
+        result = self._reader.read_file(
             path=path,
-            start_line=inputs.get("start_line"),
-            end_line=inputs.get("end_line"),
+            start_line=start_line,
+            end_line=end_line,
         )
+
+        # Cache successful full-file reads
+        if is_full_read and "error" not in result:
+            self._file_cache.put(path, result)
+
+        return result
 
     def _handle_write_file(self, inputs: dict[str, Any]) -> dict[str, Any]:
         content = inputs.get("content")
@@ -221,10 +316,13 @@ class ToolExecutor:
                 ),
                 "status": "error",
             }
-        return self._writer.write_file(
+        result = self._writer.write_file(
             path=inputs["path"],
             content=content,
         )
+        # Invalidate cache for the written path
+        self._file_cache.invalidate(inputs["path"])
+        return result
 
     def _handle_list_directory(self, inputs: dict[str, Any]) -> dict[str, Any]:
         return self._reader.list_directory(

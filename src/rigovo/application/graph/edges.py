@@ -14,6 +14,11 @@ from __future__ import annotations
 
 from rigovo.application.graph.state import TaskState
 
+# Global execution cap — prevents unbounded retry cycles across debate/replan rounds.
+# Even if retry_count resets per-agent-transition, this cap ensures a single agent
+# instance never executes more than this many times total in one task.
+GLOBAL_MAX_EXECUTIONS_PER_INSTANCE = 8
+
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
@@ -148,10 +153,16 @@ def check_gates_and_route(state: TaskState) -> str:
     gate_results = state.get("gate_results", {})
     retry_count = state.get("retry_count", 0)
     max_retries = state.get("max_retries", 5)
+    total_executions = int(state.get("total_execution_count", 0) or 0)
 
     # 1. Gates passed → move on
     if gate_results.get("passed", True) or gate_results.get("status") == "skipped":
         return "pass_next_agent"
+
+    # 1b. Global execution cap — prevents unbounded cycles across debate/replan rounds.
+    # Even if retry_count was reset by agent transitions, this absolute cap stops runaway loops.
+    if total_executions >= GLOBAL_MAX_EXECUTIONS_PER_INSTANCE:
+        return "fail_max_retries"
 
     # 2. Agent still has retries → let it self-correct
     if retry_count < max_retries:
@@ -379,6 +390,10 @@ def advance_to_next_agent(state: TaskState) -> dict:
             if lock_target in pipeline_order
             else len(pipeline_order)
         )
+        # CRITICAL: When routing back to the SAME instance via remediation lock,
+        # preserve retry_count to prevent unbounded retry cycles. Only reset
+        # when routing to a genuinely different agent.
+        is_same_instance = lock_target == current_instance
         return {
             "current_agent_index": next_index,
             "current_agent_role": lock_target,
@@ -388,7 +403,7 @@ def advance_to_next_agent(state: TaskState) -> dict:
             "blocked_roles": sorted(blocked_roles),
             "debate_target_role": ("" if current_instance == debate_target else debate_target),
             "fix_packets": [],
-            "retry_count": 0,
+            "retry_count": state.get("retry_count", 0) if is_same_instance else 0,
             "status": "routing_next_agent",
             "error": "",
             "events": events,
@@ -510,6 +525,10 @@ def _find_feedback_source(state: TaskState) -> tuple[str, str, str]:
 def _find_all_feedback_sources(state: TaskState) -> list[tuple[str, str, str]]:
     """Find ALL feedback sources that requested changes (for multi-source feedback).
 
+    Checks both the agent summary (primary) and execution_log (secondary) for
+    rejection signals. This ensures debate triggers even when feedback markers
+    only appear in test failures rather than the summary text.
+
     Returns list of (source_instance_id, source_role, feedback_summary) tuples.
     """
     agent_outputs = state.get("agent_outputs", {})
@@ -523,8 +542,24 @@ def _find_all_feedback_sources(state: TaskState) -> list[tuple[str, str, str]]:
         if role not in _FEEDBACK_SOURCE_ROLES:
             continue
         summary = output.get("summary", "")
+
+        # Primary: check summary for CHANGES_REQUESTED markers
         if any(marker in summary for marker in _CHANGES_REQUESTED_MARKERS):
             sources.append((instance_id, role, summary))
+            continue
+
+        # Secondary: check execution_log for test failures (QA/reviewer may have
+        # run tests that failed, indicating the code needs fixes even if the
+        # summary doesn't contain explicit CHANGES_REQUESTED markers)
+        if role in {"qa", "reviewer"}:
+            exec_log = output.get("execution_log", [])
+            has_test_failure = any(
+                isinstance(entry, dict) and entry.get("exit_code", 0) != 0
+                for entry in exec_log
+            )
+            if has_test_failure:
+                failure_summary = summary or "Tests failed during verification"
+                sources.append((instance_id, role, failure_summary))
 
     return sources
 

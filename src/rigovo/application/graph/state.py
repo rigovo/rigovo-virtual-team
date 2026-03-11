@@ -136,6 +136,7 @@ class TaskState(TypedDict, total=False):
     downstream_lock_reason: str  # Why downstream roles are blocked
     retry_count: int
     max_retries: int
+    total_execution_count: int  # Global execution counter, never resets
 
     # --- Approval ---
     approval_status: str  # 'pending', 'approved', 'rejected'

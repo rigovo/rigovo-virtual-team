@@ -27,8 +27,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from rigovo.application.context.project_scanner import ProjectScanner, ProjectSnapshot
 from rigovo.application.cache_utils import CACHE_VERSION, stable_hash
+from rigovo.application.context.project_scanner import ProjectScanner, ProjectSnapshot
 from rigovo.application.graph.state import TaskState
 from rigovo.domain.services.code_knowledge_graph import CodeKnowledgeGraph, KnowledgeGraphBuilder
 
@@ -180,6 +180,30 @@ async def scan_project_node(
             knowledge_graph.edge_count,
             len(knowledge_graph.clusters),
         )
+
+        # Enrich with Rigour semantic indexing (optional — graceful degradation)
+        try:
+            from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
+
+            rigour_binary = RigourQualityGate._find_binary()
+            if rigour_binary and rigour_binary != "npx":
+                result = subprocess.run(
+                    [rigour_binary, "index", "--semantic", "--json"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=project_root,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    semantic_data = json.loads(result.stdout)
+                    knowledge_graph.merge_semantic_patterns(semantic_data)
+                    logger.info(
+                        "Rigour semantic index merged: %d clusters total",
+                        len(knowledge_graph.clusters),
+                    )
+        except Exception:
+            pass  # Rigour CLI not available or index failed — continue without it
+
         if cache_repo is not None and workspace_id:
             await cache_repo.put_artifact(
                 workspace_id=workspace_id,

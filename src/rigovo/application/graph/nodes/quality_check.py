@@ -239,34 +239,39 @@ def _resolve_deep_mode(state: TaskState, current_role: str) -> tuple[bool, bool]
         return classification.get("complexity") == "critical", use_pro
 
     if mode == "smart":
-        # Smart mode: enable deep analysis when it matters most
+        # Smart mode: progressive deep analysis escalation
+        # First pass: fast deterministic gates only
+        # Retry 1: --deep (AST facts + lite model)
+        # Retry 2+: --deep --pro (full Qwen2.5-Coder-1.5B model)
+        # Critical/Security: always --deep --pro
         retry_count = state.get("retry_count", 0)
-        if retry_count > 0:
-            # On retry, use deep to catch subtle issues
-            return True, use_pro
-
-        # Check task complexity
         classification = state.get("classification", {})
-        if classification.get("complexity") == "critical":
-            return True, use_pro
+        is_critical = classification.get("complexity") == "critical"
 
-        # Check base role — security is non-negotiable
         team_config = state.get("team_config", {})
         agents = team_config.get("agents", {})
         agent_config = agents.get(current_role, {})
         base_role = agent_config.get("role", current_role)
-        if base_role == "security":
-            return True, use_pro
 
-        # Check if this is the last code-gated role in pipeline
+        # Critical tasks or security: always deep + pro (full analysis)
+        if is_critical or base_role == "security":
+            return True, True
+
+        # Progressive: escalate analysis depth with retries
+        if retry_count >= 2:
+            return True, True   # deep + pro (full deep model)
+        if retry_count >= 1:
+            return True, False  # deep only (lite model)
+
+        # Last gated role: deep (catches issues before pipeline completes)
         pipeline_order = team_config.get("pipeline_order", [])
         gates_after = set(team_config.get("gates_after", []))
         gated_in_order = [r for r in pipeline_order if r in gates_after]
         if gated_in_order and current_role == gated_in_order[-1]:
             return True, use_pro
 
-        # Otherwise: standard gates only (fast first pass)
-        return False, use_pro
+        # First pass: standard deterministic gates only (fast)
+        return False, False
 
     # final: run deep only on the last code-gated role.
     team_config = state.get("team_config", {})
@@ -960,19 +965,51 @@ async def quality_check_node(
 
     # If failed, build a fix packet for the retry
     if not all_passed:
+        retry_count = state.get("retry_count", 0) + 1
+        max_retries = state.get("max_retries", 5)
+
+        # Detect persistent violations — same issues surviving across attempts.
+        # After 3+ failures with >80% identical violations, switch to deletion-first strategy.
+        prev_violations = []
+        for entry in reversed(gate_history[:-1]):
+            if isinstance(entry, dict) and not entry.get("passed", True):
+                prev_violations = [
+                    v for v in (entry.get("violations") or []) if isinstance(v, dict)
+                ]
+                break
+
+        persistent_ratio = 0.0
+        if prev_violations and structured_violations:
+            prev_fps = {
+                (v.get("gate_id", ""), v.get("file_path", ""))
+                for v in prev_violations
+            }
+            curr_fps = {
+                (v.get("gate_id", ""), v.get("file_path", ""))
+                for v in structured_violations
+            }
+            overlap = len(prev_fps & curr_fps)
+            persistent_ratio = overlap / max(len(curr_fps), 1)
+
+        # If violations are highly persistent (>80%), escalate fix strategy
+        use_deletion_strategy = persistent_ratio > 0.8 and retry_count >= 3
+
         fix_items = [
             FixItem(
                 gate_id=v.gate_id,
                 file_path=v.file_path or "",
                 message=v.message,
-                suggestion=v.suggestion,
+                suggestion=(
+                    f"REMOVAL STRATEGY: Delete or simplify the code causing [{v.gate_id}] "
+                    f"instead of trying to fix it. Previous approaches have failed."
+                    if use_deletion_strategy
+                    else v.suggestion
+                ),
                 severity=v.severity,
                 line=v.line,
             )
             for v in filtered_violations
         ]
-        retry_count = state.get("retry_count", 0) + 1
-        max_retries = state.get("max_retries", 5)
 
         fix_packet = FixPacket(
             items=fix_items,
@@ -1008,7 +1045,19 @@ async def quality_check_node(
                         "reason": "gates_failed",
                         "retry_count": retry_count,
                         "max_retries": max_retries,
-                    }
+                    },
+                    *(
+                        [
+                            {
+                                "type": "remediation_approach_exhausted",
+                                "role": current_instance,
+                                "persistent_ratio": round(persistent_ratio, 2),
+                                "strategy": "deletion_first",
+                            }
+                        ]
+                        if use_deletion_strategy
+                        else []
+                    ),
                 ],
             )
         )

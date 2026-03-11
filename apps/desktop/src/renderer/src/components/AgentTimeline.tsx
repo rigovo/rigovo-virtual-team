@@ -873,7 +873,7 @@ function ResolutionCard({ step, index }: { step: TaskStep; index: number }) {
       </div>
       <p className="mt-1 text-[12px] text-[var(--ui-text-secondary)]">
         {passed
-          ? "Rigour gates passed. Master Brain can continue safely."
+          ? "Rigour gates passed. Pipeline can continue safely."
           : hasPersona
             ? `Persona boundary violation — agent acted outside its defined scope.`
             : hasContract

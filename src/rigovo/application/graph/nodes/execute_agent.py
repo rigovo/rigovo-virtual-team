@@ -51,6 +51,8 @@ MAX_TOOL_ROUNDS = 25  # Safety limit to prevent infinite tool loops
 TOKEN_EXTENSION_STEP = 50_000
 MAX_FS_SCAN_FILES = 20_000
 ROLES_REQUIRING_FILE_WRITES = {"coder", "qa", "devops", "sre"}
+MID_EXECUTION_CHECK_INTERVAL = 5  # Run quality check every N tool rounds
+RIGOUR_CHECKPOINT_INTERVAL = 5  # Emit Rigour checkpoint every N tool rounds
 _FS_IGNORE_DIRS = {
     ".git",
     "node_modules",
@@ -752,7 +754,7 @@ def _build_surgical_fix_block(
 
     lines: list[str] = [
         "═══════════════════════════════════════════════════════",
-        "SURGICAL FIX MODE  (Retry {}/{})".format(retry_count, max_retries),
+        f"SURGICAL FIX MODE  (Retry {retry_count}/{max_retries})",
         "═══════════════════════════════════════════════════════",
         "You MUST apply the exact fixes below. Rules:",
         "  1. Read ONLY the files listed in this fix packet — do not explore unrelated files.",
@@ -788,8 +790,134 @@ def _build_surgical_fix_block(
     if affected_files:
         lines += ["", "Files requiring changes: " + ", ".join(affected_files)]
 
+    # Escalating urgency: after multiple failed attempts, push for deletion-first strategy
+    if retry_count >= 3:
+        lines += [
+            "",
+            f"FINAL WARNING: This is retry {retry_count}/{max_retries}.",
+            "If you cannot fix these violations, REMOVE the offending code rather than",
+            "trying alternative approaches. Focus on the SIMPLEST possible fix:",
+            "  - Delete unused imports",
+            "  - Simplify overly complex functions by splitting or removing code",
+            "  - Remove code that triggers the gate instead of trying to make it work",
+            "  - Prefer deletion over addition",
+        ]
+    elif retry_count >= 2:
+        lines += [
+            "",
+            "WARNING: Previous attempts have not resolved these violations.",
+            "Use a SIMPLER approach. If the code is triggering complexity or size gates,",
+            "consider reducing the code rather than restructuring it.",
+        ]
+
     lines.append("═══════════════════════════════════════════════════════")
     return "\n".join(lines)
+
+
+async def _run_mid_execution_check(
+    project_root: str,
+    files: list[str],
+) -> dict[str, Any] | None:
+    """Run a lightweight Rigour deep check mid-execution to catch drift early.
+
+    Uses --deep (lite model) for speed (<5s). Returns parsed JSON result
+    or None if Rigour CLI is unavailable or check fails.
+    """
+    from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
+
+    binary = RigourQualityGate._find_binary()
+    if not binary or binary == "npx":
+        return None
+    try:
+        cmd = [binary, "check", "--json", "--deep", *files[:10]]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=project_root,
+        )
+        if result.stdout.strip():
+            return json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def _rigour_agent_register(
+    project_root: str,
+    instance_id: str,
+    files_in_scope: list[str],
+) -> None:
+    """Register agent with Rigour CLI for scope conflict detection (optional)."""
+    try:
+        from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
+
+        binary = RigourQualityGate._find_binary()
+        if not binary or binary == "npx":
+            return
+        scope_str = ",".join(files_in_scope[:50])
+        subprocess.run(
+            [binary, "agent-register", "--id", instance_id, "--scope", scope_str],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=project_root,
+        )
+    except Exception:
+        pass  # Graceful degradation
+
+
+def _rigour_agent_deregister(project_root: str, instance_id: str) -> None:
+    """Deregister agent from Rigour CLI after execution completes."""
+    try:
+        from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
+
+        binary = RigourQualityGate._find_binary()
+        if not binary or binary == "npx":
+            return
+        subprocess.run(
+            [binary, "agent-deregister", "--id", instance_id],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=project_root,
+        )
+    except Exception:
+        pass
+
+
+def _rigour_checkpoint(
+    project_root: str,
+    progress_pct: int,
+    quality_score: int,
+    files_changed: list[str],
+) -> None:
+    """Emit a Rigour quality checkpoint (progress + quality snapshot)."""
+    try:
+        from rigovo.infrastructure.quality.rigour_gate import RigourQualityGate
+
+        binary = RigourQualityGate._find_binary()
+        if not binary or binary == "npx":
+            return
+        subprocess.run(
+            [
+                binary,
+                "checkpoint",
+                "--progress",
+                str(progress_pct),
+                "--quality",
+                str(quality_score),
+                "--files",
+                ",".join(files_changed[:20]),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=project_root,
+        )
+    except Exception:
+        pass
 
 
 def _active_fix_packet(state: TaskState) -> dict[str, Any] | None:
@@ -2554,6 +2682,76 @@ async def _run_agentic_loop(
 
         messages.append({"role": "user", "content": tool_results_content})
 
+        # Rigour checkpoint — emit progress/quality snapshot for agent coordination
+        if (
+            round_num > 0
+            and round_num % RIGOUR_CHECKPOINT_INTERVAL == 0
+            and successful_write_file_calls > 0
+        ):
+            try:
+                _checkpoint_files = _extract_written_files(messages)
+                _progress_pct = min(100, int((round_num / max_rounds) * 100))
+                _cp_root = str(
+                    (state or {}).get("target_root")
+                    or (state or {}).get("project_root")
+                    or "."
+                )
+                _rigour_checkpoint(
+                    _cp_root,
+                    _progress_pct,
+                    100,  # Quality score — will be adjusted by actual gate results
+                    _checkpoint_files,
+                )
+            except Exception:
+                pass
+
+        # Mid-execution Rigour deep checkpoint — catch quality drift early
+        # Runs every MID_EXECUTION_CHECK_INTERVAL rounds for code-producing roles
+        if (
+            round_num > 0
+            and round_num % MID_EXECUTION_CHECK_INTERVAL == 0
+            and role in ROLES_REQUIRING_FILE_WRITES
+            and successful_write_file_calls > 0
+        ):
+            files_written_so_far = _extract_written_files(messages)
+            if files_written_so_far:
+                project_root_str = str(
+                    (state or {}).get("target_root")
+                    or (state or {}).get("project_root")
+                    or "."
+                )
+                try:
+                    drift_result = await _run_mid_execution_check(
+                        project_root_str, files_written_so_far
+                    )
+                    if drift_result and drift_result.get("violations"):
+                        violation_list = drift_result["violations"]
+                        violation_count = len(violation_list)
+                        violation_msgs = "; ".join(
+                            str(v.get("message", ""))
+                            for v in violation_list[:3]
+                        )
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"MID-EXECUTION QUALITY CHECK ({violation_count} issues): "
+                                    f"{violation_msgs}\n"
+                                    "Fix these NOW before writing more files."
+                                ),
+                            }
+                        )
+                        events.append(
+                            {
+                                "type": "mid_execution_quality_check",
+                                "role": role,
+                                "round": round_num + 1,
+                                "violations": violation_count,
+                            }
+                        )
+                except Exception:
+                    pass  # Graceful degradation — never break the agentic loop
+
         if (
             enforce_file_write_on_retry
             and successful_write_file_calls == 0
@@ -2886,6 +3084,20 @@ async def execute_agent_node(
     llm_model = runtime_agent_config.get("llm_model", DEFAULT_LLM_MODEL)
     llm: LLMProvider = llm_factory(llm_model)
     batch_timeout = runtime_agent_config.get("timeout_seconds", DEFAULT_BATCH_TIMEOUT)
+
+    # Increment global execution counter (never resets across debate/replan cycles)
+    total_execution_count = int(state.get("total_execution_count", 0) or 0) + 1
+
+    # Register agent with Rigour CLI for scope conflict detection
+    _rigour_project_root = str(state.get("target_root") or state.get("project_root") or ".")
+    _rigour_scope_files = list(
+        dict.fromkeys(
+            item.get("file_path", "")
+            for item in (state.get("active_fix_packet", {}) or {}).get("items", [])
+            if item.get("file_path")
+        )
+    )
+    _rigour_agent_register(_rigour_project_root, current_instance, _rigour_scope_files)
 
     # Emit agent_started event
     events = list(state.get("events", []))
@@ -3281,6 +3493,9 @@ async def execute_agent_node(
         {"approval_required"},
     )
 
+    # Deregister agent from Rigour CLI
+    _rigour_agent_deregister(_rigour_project_root, current_instance)
+
     # ── Detect RECLASSIFY signal in agent output ──────────────────
     reclassify_detected, reclassify_type, reclassify_reason = _detect_reclassify_signal(
         final_text,
@@ -3334,6 +3549,7 @@ async def execute_agent_node(
                 "cache_saved_cost_usd": float(cache_saved_cost_usd),
             },
         },
+        "total_execution_count": total_execution_count,
         "status": f"agent_{current_instance}_complete",
         "agent_messages": agent_messages_log,
         "memory_context_by_role": memory_context_by_role,
