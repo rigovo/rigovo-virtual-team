@@ -13,6 +13,7 @@ instance_ids are involved.
 from __future__ import annotations
 
 import logging
+import re as _re
 
 from rigovo.application.graph.state import TaskState
 from rigovo.infrastructure.quality.rigour_session import RigourSession
@@ -537,15 +538,60 @@ def _log_rigour_handoff(
 # The Team Lead (state) knows who worked on what, so feedback is routed
 # to the right coder instance based on the dependency DAG.
 
+# ── Verdict parsing ─────────────────────────────────────────────────
+# Agents (reviewer, QA, security) are prompted to emit a structured
+# "## Verdict" section with an explicit verdict keyword.  We parse
+# THAT first — it is the authoritative signal.  The marker fallback
+# only fires when there is no structured verdict at all (backward
+# compat with unstructured outputs).
+#
+# An APPROVED verdict with LOW observations must NEVER trigger debate.
+# Only CHANGES_REQUESTED (or equivalent) should send work back.
+
+_APPROVED_VERDICTS = {"APPROVED", "LGTM", "PASSED", "NO ISSUES"}
+_REJECTED_VERDICTS = {
+    "CHANGES REQUESTED", "CHANGES_REQUESTED",
+    "BLOCKED", "FAILED", "REJECTED",
+}
+
+_VERDICT_PATTERN = _re.compile(
+    r"##\s*Verdict[^\n]*\n+\s*\**\s*([\w ]+?)\s*\**\s*$",
+    _re.IGNORECASE | _re.MULTILINE,
+)
+
+
+def _parse_verdict(summary: str) -> str | None:
+    """Extract the structured verdict from a reviewer/QA summary.
+
+    Returns:
+        "approved"  — explicitly approved (no debate)
+        "rejected"  — explicitly requesting changes (debate)
+        None        — no structured verdict found (fall back to markers)
+    """
+    m = _VERDICT_PATTERN.search(summary)
+    if not m:
+        return None
+    verdict_text = m.group(1).strip().upper().replace("_", " ")
+    if verdict_text in _APPROVED_VERDICTS:
+        return "approved"
+    if verdict_text in _REJECTED_VERDICTS:
+        return "rejected"
+    # Partial matches: "APPROVED WITH RESERVATIONS" still approved
+    if any(v in verdict_text for v in _APPROVED_VERDICTS):
+        return "approved"
+    if any(v in verdict_text for v in _REJECTED_VERDICTS):
+        return "rejected"
+    return None
+
+
+# Fallback markers — ONLY used when there is NO structured ## Verdict.
+# These are intentionally conservative to avoid false positives like
+# "No issues found" matching "issues found".
 _CHANGES_REQUESTED_MARKERS = [
     "CHANGES_REQUESTED",
     "changes requested",
     "needs revision",
     "BLOCKED",
-    "ISSUES_FOUND",
-    "issues found",
-    "FAILED",
-    "tests failed",
 ]
 
 # Phase 5: Security can also raise issues that need coder fixes.
@@ -560,6 +606,24 @@ _DEFAULT_MAX_ROUNDS_BY_ROLE: dict[str, int] = {
     "qa": 2,
     "security": 1,  # Security findings: fix once, then re-verify
 }
+
+
+def _summary_requests_changes(summary: str) -> bool:
+    """Determine if a reviewer/QA/security summary requests changes.
+
+    Priority:
+    1. Structured ``## Verdict`` section (authoritative)
+    2. Fallback: keyword markers (only when no verdict found)
+
+    An APPROVED verdict with LOW observations returns False (no debate).
+    """
+    verdict = _parse_verdict(summary)
+    if verdict == "approved":
+        return False
+    if verdict == "rejected":
+        return True
+    # No structured verdict — conservative fallback to markers
+    return any(marker in summary for marker in _CHANGES_REQUESTED_MARKERS)
 
 
 def _find_feedback_source(state: TaskState) -> tuple[str, str, str]:
@@ -580,7 +644,7 @@ def _find_feedback_source(state: TaskState) -> tuple[str, str, str]:
         if role not in _FEEDBACK_SOURCE_ROLES:
             continue
         summary = output.get("summary", "")
-        if any(marker in summary for marker in _CHANGES_REQUESTED_MARKERS):
+        if _summary_requests_changes(summary):
             return instance_id, role, summary
 
     return "", "", ""
@@ -607,8 +671,8 @@ def _find_all_feedback_sources(state: TaskState) -> list[tuple[str, str, str]]:
             continue
         summary = output.get("summary", "")
 
-        # Primary: check summary for CHANGES_REQUESTED markers
-        if any(marker in summary for marker in _CHANGES_REQUESTED_MARKERS):
+        # Primary: structured verdict parsing + fallback markers
+        if _summary_requests_changes(summary):
             sources.append((instance_id, role, summary))
             continue
 
