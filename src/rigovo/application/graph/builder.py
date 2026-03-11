@@ -473,7 +473,7 @@ class GraphBuilder:
                 memory_retriever=memory_retriever,
             )
 
-            # Phase 4: Run execution verification for each parallel agent
+            # Phase 4: Run verification + quality gates for each parallel agent
             merged_state = {**state, **result}
             all_verification_history = list(merged_state.get("verification_history", []))
             for instance_id in remaining_instances:
@@ -493,8 +493,24 @@ class GraphBuilder:
                 all_verification_history = list(
                     verify_result.get("verification_history", all_verification_history)
                 )
-                # Keep the last instance's verification result (for quality_check)
                 result["execution_verification"] = verify_result.get("execution_verification", {})
+
+                # Run quality gates per parallel instance (prevents bypass)
+                gate_state = {**merged_state, **result, **verify_result}
+                gate_state["current_instance_id"] = instance_id
+                gate_state["current_agent_role"] = instance_id
+                try:
+                    gate_result = await quality_check_node(gate_state, gates)
+                    gate_events = gate_result.get("events", [])
+                    result_events_so_far.extend(
+                        e for e in gate_events if e not in result_events_so_far
+                    )
+                    result["events"] = result_events_so_far
+                except Exception as qe:
+                    logger.warning(
+                        "Quality gate for parallel instance %s failed: %s",
+                        instance_id, qe,
+                    )
             result["verification_history"] = all_verification_history
 
             # Add parallel_complete event and advance index to end of pipeline

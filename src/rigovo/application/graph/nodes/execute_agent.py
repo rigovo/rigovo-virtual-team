@@ -3024,25 +3024,39 @@ def _git_tracked_changes(root: Path) -> set[str] | None:
 
 
 def _scan_tree_signature(root: Path) -> dict[str, tuple[int, int]]:
-    """Return lightweight signature map of project files for fallback diff."""
+    """Return lightweight signature map of project files for fallback diff.
+
+    Uses os.walk with early directory pruning instead of rglob to avoid
+    traversing into node_modules/vendor/.git (which can have 100K+ files
+    and paths with special characters that cause InterruptedError).
+    """
+    import os
+
     signature: dict[str, tuple[int, int]] = {}
     count = 0
-    for path in root.rglob("*"):
-        if count >= MAX_FS_SCAN_FILES:
-            break
-        if not path.is_file():
-            continue
-        if any(part in _FS_IGNORE_DIRS for part in path.parts):
-            continue
-        try:
-            rel = str(path.relative_to(root))
-            if _is_internal_runtime_path(rel):
-                continue
-            stat = path.stat()
-        except OSError:
-            continue
-        signature[rel] = (int(stat.st_mtime_ns), int(stat.st_size))
-        count += 1
+    try:
+        for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+            # Early prune — os.walk skips pruned dirs entirely
+            dirnames[:] = [
+                d for d in dirnames if d not in _FS_IGNORE_DIRS
+            ]
+            if count >= MAX_FS_SCAN_FILES:
+                break
+            for fname in filenames:
+                if count >= MAX_FS_SCAN_FILES:
+                    break
+                try:
+                    full = os.path.join(dirpath, fname)
+                    rel = os.path.relpath(full, root)
+                    if _is_internal_runtime_path(rel):
+                        continue
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                signature[rel] = (int(st.st_mtime_ns), int(st.st_size))
+                count += 1
+    except (OSError, InterruptedError):
+        pass  # Graceful degradation — partial signature is fine
     return signature
 
 
@@ -3147,9 +3161,18 @@ async def execute_agent_node(
         "memory_retrieval_log": memory_retrieval_log,
     }
 
-    # --- Runtime token pressure controls ---
-    # Near cap: reduce per-agent max_tokens and tool rounds to push completion-first behavior.
+    # --- Validate required agent config fields (prevent KeyError crashes) ---
     runtime_agent_config = dict(agent_config)
+    if "system_prompt" not in runtime_agent_config:
+        runtime_agent_config["system_prompt"] = (
+            f"You are a {current_role} agent. Complete your assigned task."
+        )
+        logger.warning("Agent %s missing system_prompt — using default", current_instance)
+    if "name" not in runtime_agent_config:
+        runtime_agent_config["name"] = current_role.title()
+        logger.warning("Agent %s missing name — using '%s'", current_instance, current_role.title())
+
+    # --- Runtime token pressure controls ---
     intent_profile = state.get("intent_profile") or {}
     intent_max_rounds = int(
         intent_profile.get("max_tool_rounds", MAX_TOOL_ROUNDS) or MAX_TOOL_ROUNDS
@@ -3557,6 +3580,32 @@ async def execute_agent_node(
             "status": f"agent_{current_role}_timeout",
             "error": f"Agent '{current_role}' timed out after {batch_timeout}s",
             "events": events,
+        }
+    except Exception as exc:
+        # Catch-all for LLM API errors, network failures, parsing errors, etc.
+        # Without this, any unhandled exception crashes the entire graph node.
+        duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)
+        err_type = type(exc).__name__
+        err_msg = str(exc) or "(no message)"
+        logger.error(
+            "Agent %s failed with %s: %s", current_role, err_type, err_msg,
+        )
+        events.append(
+            {
+                "type": "agent_error",
+                "role": current_role,
+                "instance_id": current_instance,
+                "error_type": err_type,
+                "error": err_msg[:500],
+                "duration_ms": duration_ms,
+            }
+        )
+        return {
+            "status": f"agent_{current_role}_error",
+            "error": f"Agent '{current_role}' failed: {err_type}: {err_msg[:200]}",
+            "events": events,
+            "agent_outputs": state.get("agent_outputs", {}),
+            "duration_ms": duration_ms,
         }
 
     duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)

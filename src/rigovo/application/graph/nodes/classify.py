@@ -247,7 +247,11 @@ async def classify_node(
                 "events": events,
             }
         except Exception as e:
-            logger.warning("Master classification failed: %s; using deterministic fallback", e)
+            logger.warning(
+                "Master classification failed: %s: %s; using deterministic fallback",
+                type(e).__name__,
+                e or "(no message — check API key configuration)",
+            )
             fast_agents = enforce_minimum_team(
                 [],
                 task_type=det_result.task_type,

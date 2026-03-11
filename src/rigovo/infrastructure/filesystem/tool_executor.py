@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from rigovo.domain.services.code_knowledge_graph import CodeKnowledgeGraph
 from rigovo.infrastructure.filesystem.code_writer import CodeWriter
@@ -132,7 +132,7 @@ class ToolExecutor:
     This is the bridge between LLM function calling and actual I/O.
     """
 
-    TRUST_LEVEL_ORDER = {
+    TRUST_LEVEL_ORDER: ClassVar[dict[str, int]] = {
         "community": 0,
         "verified": 1,
         "internal": 2,

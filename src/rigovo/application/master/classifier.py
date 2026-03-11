@@ -327,13 +327,13 @@ class TaskClassifier:
         # ── Tiered max_tokens: reduce output budget for simple tasks ────────
         # A "test" or "docs" staffing plan is ~200-400 tokens — allocating 4096
         # adds 3-4 seconds of unnecessary LLM generation time.
-        _SIMPLE_TASK_TYPES = {"test", "docs", "investigation"}
-        _COMPLEX_TASK_TYPES = {"new_project", "security", "infra", "performance"}
+        simple_task_types = {"test", "docs", "investigation"}
+        complex_task_types = {"new_project", "security", "infra", "performance"}
         _det_task_type = str((deterministic_hint or {}).get("task_type", "") or "")
         _det_complexity = str((deterministic_hint or {}).get("complexity", "") or "")
-        if _det_task_type in _SIMPLE_TASK_TYPES or _det_complexity == "low":
+        if _det_task_type in simple_task_types or _det_complexity == "low":
             _max_tokens = 1024
-        elif _det_task_type in _COMPLEX_TASK_TYPES or _det_complexity in {"high", "critical"}:
+        elif _det_task_type in complex_task_types or _det_complexity in {"high", "critical"}:
             _max_tokens = 4096
         else:
             _max_tokens = 2048  # medium tasks: feature, bug, refactor
@@ -375,14 +375,29 @@ class TaskClassifier:
 
         user_message = "\n".join(message_parts)
 
-        response = await self._llm.invoke(
-            messages=[
-                {"role": "system", "content": MASTER_AGENT_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.1,  # Slight creativity for team composition
-            max_tokens=_max_tokens,  # Tiered: 1024 simple / 2048 medium / 4096 complex
-        )
+        try:
+            response = await self._llm.invoke(
+                messages=[
+                    {"role": "system", "content": MASTER_AGENT_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
+                temperature=0.1,
+                max_tokens=_max_tokens,
+            )
+        except Exception as llm_err:
+            # Surface the real error instead of empty message
+            logger.error(
+                "Master Agent LLM call failed (%s): %s — check API key config",
+                type(llm_err).__name__,
+                llm_err,
+            )
+            raise RuntimeError(
+                f"Master Agent LLM failed ({type(llm_err).__name__}): {llm_err}"
+            ) from llm_err
+
+        if not response or not response.content:
+            logger.error("Master Agent returned empty response")
+            raise RuntimeError("Master Agent LLM returned empty response")
 
         return self._parse_staffing_plan(response.content, description)
 
@@ -462,17 +477,29 @@ class TaskClassifier:
             complexity = TaskComplexity.MEDIUM
 
         # Parse agent assignments
+        _canonical_roles = {
+            "planner", "coder", "reviewer", "security", "qa",
+            "devops", "sre", "lead",
+        }
         agents: list[AgentAssignment] = []
         for agent_data in data.get("agents", []):
             if not isinstance(agent_data, dict):
                 continue
+            # Validate role — reject LLM-invented roles
+            raw_role = str(agent_data.get("role", "coder"))
+            if raw_role not in _canonical_roles:
+                logger.warning(
+                    "Master Agent produced invalid role '%s' — mapping to 'coder'",
+                    raw_role,
+                )
+                raw_role = "coder"
             # Parse context_package — rich structured context from Master
             raw_ctx = agent_data.get("context_package", {})
             ctx_pkg = raw_ctx if isinstance(raw_ctx, dict) else {}
             agents.append(
                 AgentAssignment(
                     instance_id=str(agent_data.get("instance_id", f"agent-{len(agents)}")),
-                    role=str(agent_data.get("role", "coder")),
+                    role=raw_role,
                     specialisation=str(agent_data.get("specialisation", "general")),
                     assignment=str(agent_data.get("assignment", "")),
                     depends_on=list(agent_data.get("depends_on", [])),

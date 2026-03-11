@@ -480,7 +480,7 @@ def _log_rigour_handoff(
         )
         session = RigourSession(project_root)
         # Collect files the outgoing agent touched
-        agent_output = state.get("agent_output")
+        agent_output = state.get("agent_outputs", {}).get(from_agent, {})
         files = []
         if isinstance(agent_output, dict):
             files = agent_output.get("files_changed", [])[:20]
@@ -490,7 +490,7 @@ def _log_rigour_handoff(
             task=str(state.get("current_task_summary", "")),
             files=files,
             context=str(
-                (agent_output or {}).get("summary", "")
+                agent_output.get("summary", "")
                 if isinstance(agent_output, dict)
                 else ""
             ),
