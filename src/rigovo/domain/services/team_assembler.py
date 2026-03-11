@@ -66,6 +66,69 @@ _DEFAULT_PIPELINE_ORDER: dict[str, int] = {
 }
 
 
+def _render_context_package(pkg: dict[str, Any]) -> str:
+    """Render a Master Agent context_package into a prompt section."""
+    if not pkg:
+        return ""
+    parts: list[str] = ["\n## MASTER AGENT CONTEXT PACKAGE"]
+
+    # Scope boundaries
+    scope = pkg.get("scope_boundaries", {})
+    if isinstance(scope, dict):
+        focus = scope.get("focus_paths", [])
+        exclude = scope.get("exclude_paths", [])
+        if focus:
+            parts.append(f"FOCUS PATHS: {', '.join(str(p) for p in focus)}")
+        if exclude:
+            parts.append(f"EXCLUDE PATHS: {', '.join(str(p) for p in exclude)}")
+        reason = scope.get("boundary_reason", "")
+        if reason:
+            parts.append(f"Boundary reason: {reason}")
+
+    # Relevant files
+    files = pkg.get("relevant_files", [])
+    if files and isinstance(files, list):
+        parts.append("\nKEY FILES TO EXAMINE:")
+        for f in files[:10]:
+            if isinstance(f, dict):
+                parts.append(f"  - {f.get('path', '?')}: {f.get('reason', '')}")
+            elif isinstance(f, str):
+                parts.append(f"  - {f}")
+
+    # Acceptance criteria
+    criteria = pkg.get("acceptance_criteria", [])
+    if criteria and isinstance(criteria, list):
+        parts.append("\nACCEPTANCE CRITERIA FOR YOUR WORK:")
+        for c in criteria:
+            parts.append(f"  - {c}")
+
+    # Architectural guidance
+    guidance = pkg.get("architectural_guidance", "")
+    if guidance:
+        parts.append(f"\nARCHITECTURAL GUIDANCE: {guidance}")
+
+    # Domain context
+    domain = pkg.get("domain_context", "")
+    if domain:
+        parts.append(f"DOMAIN CONTEXT: {domain}")
+
+    # Dependencies context
+    deps = pkg.get("dependencies_context", {})
+    if deps and isinstance(deps, dict):
+        parts.append("\nDEPENDENCY CONTEXT:")
+        for dep_id, desc in deps.items():
+            parts.append(f"  - {dep_id}: {desc}")
+
+    # Anti-patterns
+    anti = pkg.get("anti_patterns", [])
+    if anti and isinstance(anti, list):
+        parts.append("\nANTI-PATTERNS (avoid these):")
+        for a in anti:
+            parts.append(f"  - {a}")
+
+    return "\n".join(parts) + "\n" if len(parts) > 1 else ""
+
+
 @dataclass
 class PipelineConfig:
     """The assembled pipeline: which agents run, in what order."""
@@ -194,6 +257,9 @@ class TeamAssemblerService:
                 agent_by_role[role] = template
 
             # Clone the template for this specific instance
+            context_package = slot.get("context_package", {})
+            if not isinstance(context_package, dict):
+                context_package = {}
             agent = self._clone_agent_for_instance(
                 template,
                 instance_id,
@@ -201,6 +267,7 @@ class TeamAssemblerService:
                 assignment,
                 verification,
                 slot.get("tools_required", []),
+                context_package=context_package,
             )
             pipeline_agents.append(agent)
             instance_assignments[instance_id] = assignment
@@ -325,6 +392,7 @@ class TeamAssemblerService:
         assignment: str,
         verification: str,
         extra_tools: list[str],
+        context_package: dict[str, Any] | None = None,
     ) -> Agent:
         """Create a new Agent instance from a template with custom identity.
 
@@ -334,6 +402,7 @@ class TeamAssemblerService:
         - A customised name (e.g. "Backend Engineer (API)")
         - An augmented system prompt with its specific assignment
         - Verification requirements injected into the prompt
+        - Context package from Master Agent (scope, guidance, criteria)
         """
         agent = deepcopy(template)
         agent.id = uuid5(NAMESPACE_DNS, instance_id)
@@ -364,12 +433,22 @@ you tried and what the outcome was. "Assuming it works" is NOT acceptable.
 """
         agent.system_prompt = agent.system_prompt + assignment_section
 
+        # Inject context package from Master Agent
+        if context_package:
+            ctx_section = _render_context_package(context_package)
+            if ctx_section:
+                agent.system_prompt = agent.system_prompt + ctx_section
+
         # Add extra tools if specified in the staffing plan
         if extra_tools:
             existing = set(agent.tools)
             for tool in extra_tools:
                 if tool not in existing:
                     agent.tools.append(tool)
+
+        # Store context_package on agent for downstream use
+        if context_package:
+            agent.context_package = context_package  # type: ignore[attr-defined]
 
         return agent
 

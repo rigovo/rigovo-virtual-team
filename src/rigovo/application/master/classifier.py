@@ -50,6 +50,7 @@ class AgentAssignment:
     depends_on: list[str] = field(default_factory=list)  # instance_ids this agent waits for
     tools_required: list[str] = field(default_factory=list)  # extra tools beyond role default
     verification: str = ""  # how this agent's work will be verified (must run tests, etc.)
+    context_package: dict[str, Any] = field(default_factory=dict)  # rich context from Master
 
 
 @dataclass
@@ -151,9 +152,29 @@ RULES:
 - new_project or new_subfolder_project: add lead, devops
 - API work: add security
 - high/critical: add lead + reviewer + qa
-- Pipeline: planner → coder(s) → reviewer → security → qa → devops → sre → lead (last)
+- Pipeline: planner -> coder(s) -> reviewer -> security -> qa -> devops -> sre -> lead (last)
 - Each agent needs specific assignment + verification step
 - Dependencies must be explicit
+- When task spans 2+ domains (backend + frontend): create SEPARATE coder instances
+- Each coder gets scope_boundaries restricting file access to their domain
+- Coders at same DAG tier run in parallel
+
+CONTEXT PACKAGES:
+For EACH agent, provide a context_package with targeted guidance. This replaces
+lossy 2000-char summaries with rich, structured context per specialist:
+
+- scope_boundaries: {focus_paths: ["src/auth/"], exclude_paths: ["src/frontend/"]}
+  Restricts what files the agent should focus on / avoid writing to.
+- relevant_files: [{path: "src/auth/models.py", reason: "User model to extend"}]
+  Key files the agent should examine first.
+- acceptance_criteria: ["JWT generation works", "Rate limiting on login"]
+  Specific criteria for THIS agent's work to be considered done.
+- architectural_guidance: "Hexagonal architecture. Auth in domain layer."
+  Patterns and constraints this agent must follow.
+- dependencies_context: {planner-1: "Follow the plan", frontend-1: "Consumes your API"}
+  What each dependency agent contributes or expects.
+- anti_patterns: ["No secrets in code", "No symmetric encryption for passwords"]
+  Specific things to avoid.
 
 Respond with ONLY valid JSON:
 {"task_type":"feature|bug|refactor|test|docs|infra|security|performance|investigation|new_project",
@@ -162,7 +183,11 @@ Respond with ONLY valid JSON:
 "execution_mode":"linear|parallel|supervised_parallel",
 "domain_analysis":"2-3 sentences",
 "architecture_notes":"key patterns",
-"agents":[{"instance_id":"planner-1","role":"planner","specialisation":"requirements","assignment":"...","depends_on":[],"tools_required":[],"verification":"..."}],
+"agents":[{"instance_id":"planner-1","role":"planner","specialisation":"requirements",
+"assignment":"...","depends_on":[],"tools_required":[],"verification":"...",
+"context_package":{"scope_boundaries":{"focus_paths":[],"exclude_paths":[]},
+"relevant_files":[],"acceptance_criteria":[],"architectural_guidance":"",
+"dependencies_context":{},"anti_patterns":[]}}],
 "consultation_requirements":[{"from_role":"coder","to_role":"security","reason":"auth surface"}],
 "spawn_candidates":[{"role":"coder","specialisation":"backend-api",
 "reason":"separable API branch","bounded_assignment":"auth endpoints",
@@ -417,6 +442,9 @@ class TaskClassifier:
         for agent_data in data.get("agents", []):
             if not isinstance(agent_data, dict):
                 continue
+            # Parse context_package — rich structured context from Master
+            raw_ctx = agent_data.get("context_package", {})
+            ctx_pkg = raw_ctx if isinstance(raw_ctx, dict) else {}
             agents.append(
                 AgentAssignment(
                     instance_id=str(agent_data.get("instance_id", f"agent-{len(agents)}")),
@@ -426,6 +454,7 @@ class TaskClassifier:
                     depends_on=list(agent_data.get("depends_on", [])),
                     tools_required=list(agent_data.get("tools_required", [])),
                     verification=str(agent_data.get("verification", "")),
+                    context_package=ctx_pkg,
                 )
             )
 

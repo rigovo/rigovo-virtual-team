@@ -170,6 +170,7 @@ class ContextBuilder:
         task_type: str = "",
         knowledge_graph: CodeKnowledgeGraph | None = None,
         resume_context: dict[str, Any] | None = None,
+        context_package: dict[str, Any] | None = None,
     ) -> AgentContext:
         """Build complete context for an agent.
 
@@ -248,10 +249,14 @@ class ContextBuilder:
             ctx.enrichment_section = enrichment_text
 
         # 5. Pipeline context — what previous agents produced
+        # When context_package has dependencies_context, use it to provide
+        # richer, Master-curated context instead of lossy 2000-char summaries.
+        deps_ctx = (context_package or {}).get("dependencies_context", {})
         if previous_outputs:
             ctx.pipeline_section = self._build_pipeline_section(
                 previous_outputs,
                 role,
+                dependencies_context=deps_ctx if isinstance(deps_ctx, dict) else {},
             )
 
         # 6. Message context — direct consults and responses between agents
@@ -292,16 +297,26 @@ class ContextBuilder:
         self,
         outputs: dict[str, dict[str, Any]],
         current_role: str,
+        dependencies_context: dict[str, str] | None = None,
     ) -> str:
         """Build pipeline section from previous agent outputs.
 
-        Agents see SUMMARIES of previous agents, not their reasoning.
-        This maintains context isolation while preserving information flow.
+        When dependencies_context is provided (from Master Agent's context_package),
+        it prepends Master-curated guidance about what each dependency contributes.
+        This replaces lossy 2000-char summaries with rich, targeted context.
         """
         if not outputs:
             return ""
 
         parts = ["--- PREVIOUS AGENT OUTPUTS ---"]
+
+        # Inject Master Agent's curated dependency context first
+        if dependencies_context:
+            for dep_id, dep_desc in dependencies_context.items():
+                if dep_desc:
+                    parts.append(
+                        f"\n[MASTER GUIDANCE for {dep_id}]: {dep_desc}"
+                    )
 
         for role, output in outputs.items():
             summary = output.get("summary", "")

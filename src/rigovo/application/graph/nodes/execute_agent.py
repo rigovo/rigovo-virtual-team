@@ -1084,6 +1084,7 @@ def _build_agent_messages(
         task_type=state.get("classification", {}).get("task_type", ""),
         knowledge_graph=state.get("code_knowledge_graph"),
         resume_context=state.get("resume_context"),
+        context_package=agent_config.get("context_package"),
     )
     if memory_section_text:
         agent_context.memory_section = memory_section_text
