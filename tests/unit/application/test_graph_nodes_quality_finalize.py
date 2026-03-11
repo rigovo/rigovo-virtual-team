@@ -537,10 +537,12 @@ class TestQualityCheckPersonaEnforcement(unittest.IsolatedAsyncioTestCase):
     """Test persona boundary enforcement in quality_check_node."""
 
     async def test_non_gated_role_writing_files_passes_with_warning(self):
-        """Reviewer (non-gated) writing files should pass with warnings.
+        """Reviewer (non-gated, non-code role) writing files passes with warning.
 
-        Server-side tool enforcement prevents non-code roles from writing files,
-        so persona violations for non-code roles are warnings, not failures.
+        Non-code roles (planner, reviewer, security, lead) have server-side
+        tool enforcement preventing file writes.  Persona violations for these
+        roles are downgraded to warnings — retrying is pointless because the
+        violation is structural, not a code bug.
         """
         state: TaskState = {
             "task_id": "task-1",
@@ -552,7 +554,7 @@ class TestQualityCheckPersonaEnforcement(unittest.IsolatedAsyncioTestCase):
             "agent_outputs": {
                 "reviewer": {
                     "summary": "## Verdict\nAPPROVED",
-                    "files_changed": ["src/fix.py"],  # Server-side enforcement blocks this
+                    "files_changed": ["src/fix.py"],  # Reviewer shouldn't write files
                 },
             },
             "events": [],
@@ -560,7 +562,7 @@ class TestQualityCheckPersonaEnforcement(unittest.IsolatedAsyncioTestCase):
 
         result = await quality_check_node(state, [])
 
-        # Non-code roles: persona violations are warnings, not failures
+        # Non-code roles' persona violations are downgraded to warnings, not failures
         assert result["gate_results"]["passed"] is True
 
     async def test_non_gated_role_no_files_passes(self):
@@ -587,10 +589,10 @@ class TestQualityCheckPersonaEnforcement(unittest.IsolatedAsyncioTestCase):
         assert "gates_skipped_reviewer" in result["status"]
 
     async def test_planner_writing_files_passes_with_warning(self):
-        """Planner writing files should pass with warnings.
+        """Planner (non-code role) writing files passes with warning.
 
-        Server-side tool enforcement prevents planners from writing files,
-        so persona violations for planners are warnings, not failures.
+        Planner is a non-code role — persona violations are downgraded to
+        warnings because server-side tool enforcement prevents file writes.
         """
         state: TaskState = {
             "task_id": "task-3",

@@ -1412,8 +1412,7 @@ export default function TaskDetail({
 
   useEffect(() => {
     if (uiMode === "focus") {
-      setViewMode("map");
-      setShowInsights(false);
+      // Focus mode: hide developer-level details but keep user controls
       setShowAdvancedMeta(false);
     }
   }, [uiMode]);
@@ -1575,8 +1574,8 @@ export default function TaskDetail({
               Full
             </button>
           </div>
-          {/* View toggle: Map ↔ Timeline ↔ Logs */}
-          {hasSteps && uiMode === "full" && (
+          {/* View toggle: Map ↔ Timeline ↔ Logs — always visible when steps exist */}
+          {hasSteps && (
             <div className="td-view-toggle">
               <button
                 type="button"
@@ -1610,15 +1609,13 @@ export default function TaskDetail({
               onOpen={onOpenInEditor}
             />
           )}
-          {uiMode === "full" && (
-            <button
-              type="button"
-              className="ghost-btn text-xs py-1.5 px-3"
-              onClick={() => setShowInsights((v) => !v)}
-            >
-              {showInsights ? "Hide insights" : "Show insights"}
-            </button>
-          )}
+          <button
+            type="button"
+            className="ghost-btn text-xs py-1.5 px-3"
+            onClick={() => setShowInsights((v) => !v)}
+          >
+            {showInsights ? "Hide insights" : "Show insights"}
+          </button>
           {isActive && (
             <button
               type="button"
@@ -1650,7 +1647,8 @@ export default function TaskDetail({
           )}
         </div>
       </div>
-      {hasSteps && (
+      {/* ── Value strip (Full mode only — developer metrics) ── */}
+      {uiMode === "full" && hasSteps && (
         <ValueStrip
           totalTokens={missionTokens}
           totalCostUsd={missionCost}
@@ -1677,8 +1675,8 @@ export default function TaskDetail({
         />
       )}
 
-      {/* ── First-glance control summary ── */}
-      {hasSteps && (
+      {/* ── Control summary (Full mode only — redundant with NowStrip in Focus) ── */}
+      {uiMode === "full" && hasSteps && (
         <ControlSummaryBar
           nowLabel={nowLabel}
           healthLabel={healthLabel}

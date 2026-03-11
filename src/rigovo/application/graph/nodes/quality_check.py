@@ -684,21 +684,29 @@ async def quality_check_node(
             task_description=state.get("description", ""),
         )
 
-        # Separate hard violations from soft (info/warning severity)
-        # With server-side tool enforcement, non-code roles can't write files.
-        # Persona violations for non-code roles are structural warnings, not failures.
+        # Non-code roles (planner, reviewer, lead, security) have server-side
+        # tool enforcement that PREVENTS file writes.  Any "forbidden_file"
+        # persona violation for these roles is structural (wrong tool access
+        # config), not a fixable code bug.  Downgrade all their persona
+        # violations to warnings so the pipeline doesn't retry endlessly.
         _non_code_roles = {"planner", "reviewer", "security", "lead"}
         if base_role in _non_code_roles:
-            hard_violations = []
+            hard_violations: list[PersonaViolation] = []
             soft_violations = persona_violations
         else:
-            hard_violations = [pv for pv in persona_violations if pv.violation_type == "forbidden_file"]
-            soft_violations = [pv for pv in persona_violations if pv.violation_type != "forbidden_file"]
+            hard_violations = [
+                pv for pv in persona_violations
+                if pv.violation_type == "forbidden_file"
+            ]
+            soft_violations = [
+                pv for pv in persona_violations
+                if pv.violation_type != "forbidden_file"
+            ]
 
         events = list(state.get("events", []))
 
         if hard_violations:
-            # Code roles writing forbidden files is a gate failure
+            # Non-code roles writing files is a gate failure
             gate_violations = _persona_violations_to_gate_violations(hard_violations)
             structured_violations = [_serialize_violation(v) for v in gate_violations]
             gate_summary = {
@@ -930,12 +938,19 @@ async def quality_check_node(
     # ── Fast-path: skip full Rigour CLI re-run when inline gates already passed ──
     # Inline quality gates run inside the agentic loop (execute_agent.py).
     # If they passed, the code is already clean — only run persona checks.
+    # Match on current_role (instance_id like "software-engineer-1"), base_role
+    # (like "coder"), OR current_instance — because the agentic loop may emit
+    # the event with any of these identifiers depending on how role was resolved.
+    _inline_role_matches = {current_role, current_instance, base_role}
     _inline_gate_events = [
         e for e in state.get("events", [])
         if isinstance(e, dict)
         and e.get("type") == "inline_quality_gate"
         and e.get("passed") is True
-        and e.get("role") == current_role
+        and (
+            e.get("role") in _inline_role_matches
+            or e.get("instance_id") in _inline_role_matches
+        )
     ]
     if _inline_gate_events:
         logger.info(
