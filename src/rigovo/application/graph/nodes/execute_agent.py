@@ -2236,10 +2236,14 @@ async def _run_agentic_loop(
                             or (state or {}).get("project_root")
                             or "."
                         )
+                        _classification = (state or {}).get("classification", {})
+                        _is_critical = _classification.get("complexity") == "critical"
                         _gate_result = await run_inline_quality_gates(
                             project_root=_project_root_str,
                             files_changed=_inline_files,
-                            agent_role=role,
+                            agent_role=_base_role,
+                            attempt=inline_gate_attempts + 1,
+                            is_critical=_is_critical,
                         )
                         inline_gate_attempts += 1
                         if not _gate_result.passed:
@@ -2264,6 +2268,7 @@ async def _run_agentic_loop(
                                     "attempt": inline_gate_attempts,
                                     "violations": len(_gate_result.violations),
                                     "gate_ran": _gate_result.gate_ran,
+                                    "deep_mode": _gate_result.deep_mode,
                                 }
                             )
                             continue  # Agent self-corrects in same context
@@ -2278,6 +2283,7 @@ async def _run_agentic_loop(
                                 "attempt": inline_gate_attempts,
                                 "violations": 0,
                                 "gate_ran": _gate_result.gate_ran,
+                                "deep_mode": _gate_result.deep_mode,
                             }
                         )
                     except Exception:

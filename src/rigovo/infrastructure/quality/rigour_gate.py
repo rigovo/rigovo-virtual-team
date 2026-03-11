@@ -305,6 +305,135 @@ class RigourQualityGate(QualityGate):
         except Exception:
             return None
 
+    async def run_review(
+        self,
+        project_root: str | Path,
+        diff: str,
+        *,
+        files: list[str] | None = None,
+        deep: bool = False,
+        pro: bool = False,
+    ) -> dict | None:
+        """Run ``rigour review --json`` on a diff.
+
+        Returns parsed JSON with status, score, and filtered failures,
+        or None if CLI unavailable.
+        """
+        if not self._binary:
+            return None
+        try:
+            import tempfile
+
+            # Write diff to temp file (avoids stdin piping complexity)
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as f:
+                f.write(diff)
+                diff_path = f.name
+
+            cmd = self._build_cmd(self._binary, "review", "--json", "--diff", diff_path)
+            if deep:
+                cmd.append("--deep")
+            if pro:
+                cmd.append("--pro")
+            if files:
+                cmd.extend(["--files", ",".join(files)])
+
+            loop = asyncio.get_running_loop()
+            timeout = 90 if deep else 30
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=str(project_root),
+                ),
+            )
+
+            # Clean up temp file
+            Path(diff_path).unlink(missing_ok=True)
+
+            stdout = result.stdout.strip()
+            if not stdout:
+                return None
+            return json.loads(stdout)
+        except Exception as e:
+            logger.debug("rigour review failed: %s", e)
+            return None
+
+    async def run_check_pattern(
+        self,
+        project_root: str | Path,
+        name: str,
+        *,
+        pattern_type: str | None = None,
+        intent: str | None = None,
+    ) -> dict | None:
+        """Run ``rigour check-pattern --json`` for duplication/staleness/CVE check.
+
+        Returns parsed JSON with status, findings, and recommendation,
+        or None if CLI unavailable.
+        """
+        if not self._binary:
+            return None
+        try:
+            cmd = self._build_cmd(self._binary, "check-pattern", "--json", "--name", name)
+            if pattern_type:
+                cmd.extend(["--type", pattern_type])
+            if intent:
+                cmd.extend(["--intent", intent])
+
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    cwd=str(project_root),
+                ),
+            )
+            stdout = result.stdout.strip()
+            if not stdout:
+                return None
+            return json.loads(stdout)
+        except Exception as e:
+            logger.debug("rigour check-pattern failed: %s", e)
+            return None
+
+    async def run_security_audit(
+        self,
+        project_root: str | Path,
+    ) -> dict | None:
+        """Run ``rigour security-audit --json`` for CVE scanning.
+
+        Returns parsed JSON with status and vulnerabilities list,
+        or None if CLI unavailable.
+        """
+        if not self._binary:
+            return None
+        try:
+            cmd = self._build_cmd(self._binary, "security-audit", "--json")
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=str(project_root),
+                ),
+            )
+            stdout = result.stdout.strip()
+            if not stdout:
+                return None
+            return json.loads(stdout)
+        except Exception as e:
+            logger.debug("rigour security-audit failed: %s", e)
+            return None
+
     async def run(self, gate_input: GateInput) -> GateResult:
         """Run quality gates and return structured results."""
         if self._binary:
