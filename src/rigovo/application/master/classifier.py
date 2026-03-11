@@ -158,6 +158,30 @@ RULES:
 - When task spans 2+ domains (backend + frontend): create SEPARATE coder instances
 - Each coder gets scope_boundaries restricting file access to their domain
 - Coders at same DAG tier run in parallel
+- scope_boundaries are ENFORCED: writes to exclude_paths will be blocked at runtime
+
+SPECIALIST STAFFING DECISIONS:
+When a task touches multiple domains, create focused specialist coders instead of
+one generalist. Each specialist is faster and more accurate because it only sees
+its own domain.
+
+Decision matrix:
+- Backend + Frontend -> backend-engineer-1 (backend-api) + frontend-engineer-1 (frontend-react)
+- Backend API + Database schema -> backend-api-1 (backend-api) + backend-db-1 (backend-db)
+- 3+ domains -> one specialist per domain, all at same DAG tier
+- Single domain -> one coder is fine, no need for specialists
+
+DAG pattern for specialists:
+  planner-1 -> [backend-engineer-1, frontend-engineer-1] -> reviewer-1 -> qa-1
+  - Both coders depend_on planner-1 (parallel execution)
+  - reviewer-1 depends_on ALL coder instances
+  - Each coder's scope_boundaries.exclude_paths lists the OTHER coder's focus_paths
+  - Each coder's dependencies_context explains what the OTHER coder produces
+
+When NOT to specialize:
+- Simple tasks (low complexity) — one coder is fine
+- Tightly coupled changes where splitting would cause integration issues
+- Investigation/docs/refactor tasks — specialization adds overhead with no benefit
 
 CONTEXT PACKAGES:
 For EACH agent, provide a context_package with targeted guidance. This replaces

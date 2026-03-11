@@ -644,6 +644,64 @@ def _find_target_coder(
     return ""
 
 
+def _find_target_coders_for_feedback(
+    state: TaskState,
+    feedback_summary: str,
+) -> list[str]:
+    """Find ALL coder instances whose scope covers files mentioned in feedback.
+
+    For multi-coder setups, reviewer feedback about specific files should
+    route to the coder whose scope covers those files instead of re-running
+    all coders.
+
+    Returns list of affected coder instance_ids. Falls back to all coders
+    if no file-to-scope mapping can be determined.
+    """
+    agents_cfg = state.get("team_config", {}).get("agents", {})
+    pipeline_order = state.get("team_config", {}).get("pipeline_order", [])
+
+    # Collect all coder instances
+    all_coders = [
+        iid for iid in pipeline_order
+        if agents_cfg.get(iid, {}).get("role") == "coder"
+    ]
+
+    if len(all_coders) <= 1:
+        return all_coders  # Single coder — no routing needed
+
+    # Extract file paths from feedback (common patterns in review feedback)
+    import re
+    file_patterns = re.findall(
+        r'(?:^|\s|`)([\w./\\-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|rb|css|html|yaml|yml|json|toml))\b',
+        feedback_summary,
+    )
+
+    if not file_patterns:
+        return all_coders  # Can't determine files — re-run all
+
+    # Map files to coders via scope_boundaries
+    affected_coders: set[str] = set()
+    for coder_id in all_coders:
+        ctx_pkg = agents_cfg.get(coder_id, {}).get("context_package", {})
+        scope = ctx_pkg.get("scope_boundaries", {})
+        focus_paths = scope.get("focus_paths", [])
+
+        if not focus_paths:
+            # No scope defined — this coder is a generalist, always affected
+            affected_coders.add(coder_id)
+            continue
+
+        for fpath in file_patterns:
+            normalised = fpath.lstrip("/").lstrip("./")
+            for fp in focus_paths:
+                fp_norm = fp.lstrip("/").lstrip("./").rstrip("/")
+                if normalised.startswith(fp_norm):
+                    affected_coders.add(coder_id)
+                    break
+
+    return list(affected_coders) if affected_coders else all_coders
+
+
 def check_debate_needed(state: TaskState) -> str:
     """
     After agents complete, check if any reviewer/QA/security requested changes.
@@ -739,26 +797,38 @@ def prepare_debate_round(state: TaskState) -> dict:
         }
 
     primary_instance, primary_role, primary_summary = active_sources[0]
-    target_coder = _find_target_coder(state, primary_instance)
 
     pipeline_order = state.get("team_config", {}).get("pipeline_order", [])
     agents_cfg = state.get("team_config", {}).get("agents", {})
 
-    # Find coder's index
+    # Multi-coder routing: find ALL affected coders based on feedback content
+    combined_feedback = " ".join(s for _, _, s in active_sources)
+    affected_coders = _find_target_coders_for_feedback(state, combined_feedback)
+
+    # Fall back to DAG-based single coder if file routing found nothing
+    if not affected_coders:
+        fallback = _find_target_coder(state, primary_instance)
+        affected_coders = [fallback] if fallback else []
+
+    target_coder = affected_coders[0] if affected_coders else ""
+
+    # Find first affected coder's index
     coder_index = 0
     if target_coder in pipeline_order:
         coder_index = pipeline_order.index(target_coder)
 
-    # Remove ALL feedback sources from completed so they re-run after coder
+    # Remove feedback sources + affected coders from completed
+    # Unaffected coders stay completed (no need to re-run them)
     source_instances = {src[0] for src in active_sources}
+    affected_set = set(affected_coders)
     completed_roles = [
         r
         for r in state.get("completed_roles", [])
-        if r not in source_instances and r != target_coder
+        if r not in source_instances and r not in affected_set
     ]
 
     agent_outputs = dict(state.get("agent_outputs", {}))
-    # Remove all feedback source outputs so they regenerate
+    # Remove feedback source outputs so they regenerate
     for src_inst, _, _ in active_sources:
         agent_outputs.pop(src_inst, None)
 
@@ -805,6 +875,7 @@ def prepare_debate_round(state: TaskState) -> dict:
         "fix_packet_count": len(fix_packet_parts),
         "feedback_source_count": len(active_sources),
         "requeue_after_coder": [src[0] for src in active_sources],
+        "affected_coders": affected_coders,
     }
     events.append(
         {
@@ -819,20 +890,22 @@ def prepare_debate_round(state: TaskState) -> dict:
             ],
             "action_delta": action_delta,
             "target_coder": target_coder,
+            "affected_coders": affected_coders,
         }
     )
 
     # The debate_target_role is the primary source (first to re-run after coder)
     # Additional sources will be picked up via the DAG ready-roles mechanism
+    # ready_roles includes ALL affected coders for parallel re-execution
     return {
         "current_agent_index": coder_index,
         "current_agent_role": target_coder,
         "current_instance_id": target_coder,
         "debate_round": debate_round,
-        "debate_target_role": primary_instance,  # After coder, re-run this instance
+        "debate_target_role": primary_instance,
         "reviewer_feedback": primary_summary,
         "completed_roles": completed_roles,
-        "ready_roles": [target_coder],
+        "ready_roles": affected_coders if affected_coders else [target_coder],
         "agent_outputs": agent_outputs,
         "feedback_loops": feedback_loops,
         "active_feedback": {
@@ -843,7 +916,10 @@ def prepare_debate_round(state: TaskState) -> dict:
             "selected_next_owner": target_coder,
             "primary_source_instance": primary_instance,
             "action_delta": action_delta,
-            "all_sources": [{"instance": s[0], "role": s[1]} for s in active_sources],
+            "affected_coders": affected_coders,
+            "all_sources": [
+                {"instance": s[0], "role": s[1]} for s in active_sources
+            ],
         },
         # Inject ALL feedback as fix packets so coder sees everything
         "fix_packets": fix_packet_parts,

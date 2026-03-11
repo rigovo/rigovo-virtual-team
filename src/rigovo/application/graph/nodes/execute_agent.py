@@ -3220,6 +3220,10 @@ async def execute_agent_node(
     # --- Create ToolExecutor ---
     project_root = Path(str(state.get("target_root") or state.get("project_root") or "."))
     project_root.mkdir(parents=True, exist_ok=True)
+    # Extract scope_boundaries from context_package for write enforcement
+    _ctx_pkg = runtime_agent_config.get("context_package", {}) or {}
+    _scope_boundaries = _ctx_pkg.get("scope_boundaries", {}) or {}
+
     tool_executor = ToolExecutor(
         project_root,
         integration_catalog=state.get("integration_catalog", {}),
@@ -3228,6 +3232,7 @@ async def execute_agent_node(
         worktree_root=str(state.get("worktree_root", "")),
         filesystem_sandbox_mode=str(state.get("filesystem_sandbox_mode", "project_root")),
         knowledge_graph=state.get("code_knowledge_graph"),
+        scope_boundaries=_scope_boundaries,
     )
 
     # --- LLM setup ---

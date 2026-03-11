@@ -147,10 +147,12 @@ class ToolExecutor:
         worktree_root: str = "",
         filesystem_sandbox_mode: str = "project_root",
         knowledge_graph: CodeKnowledgeGraph | None = None,
+        scope_boundaries: dict[str, Any] | None = None,
     ) -> None:
         self._integration_catalog = integration_catalog or {}
         self._integration_policy = integration_policy or {}
         self._project_root = project_root.resolve()
+        self._scope_boundaries = scope_boundaries or {}
         self._worktree_mode = str(worktree_mode or "project").strip().lower()
         self._worktree_root = str(worktree_root or "").strip()
         self._filesystem_sandbox_mode = (
@@ -211,6 +213,69 @@ class ToolExecutor:
         if not candidate.exists() or not candidate.is_dir():
             raise ValueError(f"Configured worktree_root does not exist: {candidate}")
         return candidate
+
+    def _check_scope_violation(self, write_path: str) -> dict[str, Any] | None:
+        """Check if a write path violates scope boundaries set by Master Agent.
+
+        Returns an error dict if the path is blocked, or None if allowed.
+        Scope boundaries are soft enforcement — they warn and block writes
+        to paths outside the agent's focus area.
+        """
+        if not self._scope_boundaries:
+            return None
+
+        # Normalise the path for prefix matching
+        normalised = write_path.lstrip("/").lstrip("./")
+
+        # Check exclude_paths first — explicit blocks
+        for excl in self._scope_boundaries.get("exclude_paths", []):
+            excl_norm = excl.lstrip("/").lstrip("./").rstrip("/")
+            if normalised.startswith(excl_norm):
+                logger.warning(
+                    "SCOPE VIOLATION: write to '%s' blocked (exclude: %s)",
+                    write_path,
+                    excl,
+                )
+                return {
+                    "error": (
+                        f"SCOPE VIOLATION: You cannot write to '{write_path}' — "
+                        f"it falls under excluded path '{excl}'. "
+                        "Another specialist agent owns this domain. "
+                        "Focus on your assigned scope."
+                    ),
+                    "status": "scope_blocked",
+                }
+
+        # Check focus_paths — if defined, only allow writes within focus areas
+        focus_paths = self._scope_boundaries.get("focus_paths", [])
+        if focus_paths:
+            in_scope = any(
+                normalised.startswith(fp.lstrip("/").lstrip("./").rstrip("/"))
+                for fp in focus_paths
+            )
+            if not in_scope:
+                # Allow common config files at project root
+                root_exceptions = {
+                    "package.json", "tsconfig.json", "pyproject.toml",
+                    "setup.py", "setup.cfg", "Makefile", "Dockerfile",
+                    ".env.example", "requirements.txt",
+                }
+                if normalised not in root_exceptions:
+                    logger.warning(
+                        "SCOPE VIOLATION: write to '%s' outside focus %s",
+                        write_path,
+                        focus_paths,
+                    )
+                    return {
+                        "error": (
+                            f"SCOPE VIOLATION: '{write_path}' is outside "
+                            f"your focus area {focus_paths}. "
+                            "Write to files within your assigned scope."
+                        ),
+                        "status": "scope_blocked",
+                    }
+
+        return None
 
     async def execute(self, tool_name: str, tool_input: dict[str, Any]) -> str:
         """
@@ -326,6 +391,13 @@ class ToolExecutor:
                 ),
                 "status": "error",
             }
+
+        # Scope boundary enforcement — Master Agent restricts file access
+        write_path = str(inputs.get("path", ""))
+        scope_violation = self._check_scope_violation(write_path)
+        if scope_violation:
+            return scope_violation
+
         result = self._writer.write_file(
             path=inputs["path"],
             content=content,
