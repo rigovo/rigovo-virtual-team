@@ -99,6 +99,7 @@ class AgentContext:
     quality_contract: str = ""
     behavioral_section: str = ""  # HSM behavioral state injection
     resume_section: str = ""  # History state: injected when resuming interrupted task
+    rigour_conventions_section: str = ""  # Project conventions from `rigour recall`
 
     def to_full_context(self) -> str:
         """Assemble all sections into a single context string."""
@@ -112,6 +113,10 @@ class AgentContext:
             sections.append(
                 f"--- QUALITY CONTRACT (what's expected of you) ---\n{self.quality_contract}"
             )
+
+        # Rigour project conventions — established patterns agents must follow
+        if self.rigour_conventions_section:
+            sections.append(self.rigour_conventions_section)
 
         if self.project_section:
             sections.append(self.project_section)
@@ -170,6 +175,8 @@ class ContextBuilder:
         task_type: str = "",
         knowledge_graph: CodeKnowledgeGraph | None = None,
         resume_context: dict[str, Any] | None = None,
+        context_package: dict[str, Any] | None = None,
+        rigour_conventions: str = "",
     ) -> AgentContext:
         """Build complete context for an agent.
 
@@ -215,6 +222,14 @@ class ContextBuilder:
                     "Do not introduce new frameworks or patterns unless explicitly required."
                 )
 
+        # 1c. Rigour project conventions — persistent project-level patterns
+        if rigour_conventions:
+            ctx.rigour_conventions_section = self._budget_text(
+                "--- PROJECT CONVENTIONS (from Rigour memory) ---\n"
+                + rigour_conventions,
+                2000,
+            )
+
         # 2. Project context — what the codebase looks like
         if project_snapshot:
             ctx.project_section = self._build_project_section(
@@ -248,10 +263,14 @@ class ContextBuilder:
             ctx.enrichment_section = enrichment_text
 
         # 5. Pipeline context — what previous agents produced
+        # When context_package has dependencies_context, use it to provide
+        # richer, Master-curated context instead of lossy 2000-char summaries.
+        deps_ctx = (context_package or {}).get("dependencies_context", {})
         if previous_outputs:
             ctx.pipeline_section = self._build_pipeline_section(
                 previous_outputs,
                 role,
+                dependencies_context=deps_ctx if isinstance(deps_ctx, dict) else {},
             )
 
         # 6. Message context — direct consults and responses between agents
@@ -292,16 +311,26 @@ class ContextBuilder:
         self,
         outputs: dict[str, dict[str, Any]],
         current_role: str,
+        dependencies_context: dict[str, str] | None = None,
     ) -> str:
         """Build pipeline section from previous agent outputs.
 
-        Agents see SUMMARIES of previous agents, not their reasoning.
-        This maintains context isolation while preserving information flow.
+        When dependencies_context is provided (from Master Agent's context_package),
+        it prepends Master-curated guidance about what each dependency contributes.
+        This replaces lossy 2000-char summaries with rich, targeted context.
         """
         if not outputs:
             return ""
 
         parts = ["--- PREVIOUS AGENT OUTPUTS ---"]
+
+        # Inject Master Agent's curated dependency context first
+        if dependencies_context:
+            for dep_id, dep_desc in dependencies_context.items():
+                if dep_desc:
+                    parts.append(
+                        f"\n[MASTER GUIDANCE for {dep_id}]: {dep_desc}"
+                    )
 
         for role, output in outputs.items():
             summary = output.get("summary", "")

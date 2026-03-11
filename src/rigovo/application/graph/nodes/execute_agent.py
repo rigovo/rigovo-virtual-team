@@ -48,7 +48,8 @@ DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 8192
 MS_PER_SECOND = 1000
 STREAM_CHUNK_MIN_SIZE = 4  # Minimum chars before emitting stream event
-MAX_TOOL_ROUNDS = 25  # Safety limit to prevent infinite tool loops
+MAX_TOOL_ROUNDS = 25  # Default soft target for tool rounds
+HARD_SAFETY_CAP = 100  # Absolute max — quality gates handle real termination
 TOKEN_EXTENSION_STEP = 50_000
 MAX_FS_SCAN_FILES = 20_000
 ROLES_REQUIRING_FILE_WRITES = {"coder", "qa", "devops", "sre"}
@@ -159,6 +160,7 @@ class RoleExecutionContract:
     completion_artifacts: tuple[str, ...] = ()
     risk_actions: tuple[str, ...] = ()
     learning_extractors: tuple[str, ...] = ()
+    workflow_steps: tuple[str, ...] = ()  # Explicit write-execute-verify loop
 
 
 ROLE_EXECUTION_CONTRACTS: dict[str, RoleExecutionContract] = {
@@ -203,12 +205,19 @@ ROLE_EXECUTION_CONTRACTS: dict[str, RoleExecutionContract] = {
         completion_artifacts=("files_changed", "verification evidence", "implementation summary"),
         risk_actions=("destructive command", "deploy/release", "privileged integration"),
         learning_extractors=("implementation patterns", "failure remediation patterns"),
+        workflow_steps=(
+            "WRITE: Create/modify files using write_file for each logical unit of work",
+            "EXECUTE: Run build/compile via run_command (e.g. npm run build, python -m py_compile)",
+            "VERIFY: Check output — if errors, go back to WRITE and fix immediately",
+            "REPEAT for each logical unit of work until assignment is complete",
+            "DONE: Only stop when build passes and your assignment is fully complete",
+        ),
     ),
     "reviewer": RoleExecutionContract(
         goal_template=(
             "Independently verify implementation quality, correctness, and residual risk."
         ),
-        allowed_tools=("read_file", "search_codebase", "consult_agent"),
+        allowed_tools=("read_file", "search_codebase", "run_command", "consult_agent"),
         required_verifications=("review verdict", "specific findings or explicit pass rationale"),
         self_checklist=(
             "review changed files, not stale assumptions",
@@ -217,6 +226,12 @@ ROLE_EXECUTION_CONTRACTS: dict[str, RoleExecutionContract] = {
         consultation_targets=("coder", "security", "lead"),
         completion_artifacts=("review verdict", "finding list", "handoff recommendation"),
         learning_extractors=("review heuristics", "missed-risk patterns"),
+        workflow_steps=(
+            "READ: Read all files changed by previous agents using read_file",
+            "ANALYZE: Check for bugs, security issues, code quality, and adherence to plan",
+            "VERIFY: Run tests if available using run_command to confirm correctness",
+            "RESPOND: Either APPROVED or CHANGES_REQUESTED with specific file:line feedback",
+        ),
     ),
     "qa": RoleExecutionContract(
         goal_template="Generate and verify tests that prove changed behavior.",
@@ -226,6 +241,13 @@ ROLE_EXECUTION_CONTRACTS: dict[str, RoleExecutionContract] = {
         consultation_targets=("coder", "reviewer", "security"),
         completion_artifacts=("test files", "test results"),
         learning_extractors=("test strategy", "flaky test signals"),
+        workflow_steps=(
+            "WRITE: Create test files using write_file targeting changed behavior",
+            "EXECUTE: Run tests using run_command (e.g. pytest, npm test, cargo test)",
+            "VERIFY: Check results — if failures, fix test OR flag the underlying bug",
+            "REPEAT until all your tests pass",
+            "DONE: Only stop when all tests pass and test coverage is adequate",
+        ),
     ),
     "security": RoleExecutionContract(
         goal_template="Audit changed behavior for auth, data, and privilege risks.",
@@ -580,6 +602,15 @@ def _role_contract_block(role: str) -> str:
     """Render a compact role contract block for prompt injection."""
     contract = _role_execution_contract(role)
     lines = [f"ROLE CONTRACT: {contract.goal_template}"]
+    if contract.workflow_steps:
+        lines.append("")
+        lines.append("YOUR WORKFLOW (follow this exactly):")
+        for i, step in enumerate(contract.workflow_steps, 1):
+            lines.append(f"  {i}. {step}")
+        lines.append("")
+        lines.append(
+            "You are a human engineer. You would NEVER submit work without verifying it first."
+        )
     if contract.required_verifications:
         lines.append("REQUIRED VERIFICATION: " + "; ".join(contract.required_verifications))
     if contract.self_checklist:
@@ -1053,6 +1084,8 @@ def _build_agent_messages(
         task_type=state.get("classification", {}).get("task_type", ""),
         knowledge_graph=state.get("code_knowledge_graph"),
         resume_context=state.get("resume_context"),
+        context_package=agent_config.get("context_package"),
+        rigour_conventions=state.get("rigour_conventions", ""),
     )
     if memory_section_text:
         agent_context.memory_section = memory_section_text
@@ -2025,7 +2058,8 @@ async def _run_agentic_loop(
     events: list[dict[str, Any]] | None = None,
     stream_callback: Any | None = None,
     batch_timeout: int = DEFAULT_BATCH_TIMEOUT,
-    max_rounds: int = MAX_TOOL_ROUNDS,
+    max_rounds: int = HARD_SAFETY_CAP,
+    soft_target_rounds: int = MAX_TOOL_ROUNDS,
     rigour_session: RigourSession | None = None,
 ) -> tuple[str, int, int, list[str], dict[str, Any]]:
     """
@@ -2064,6 +2098,11 @@ async def _run_agentic_loop(
     write_file_calls = 0
     successful_write_file_calls = 0
     no_file_nudges_sent = 0
+    # Stuck detection: consecutive rounds with no file writes for code-producing roles
+    consecutive_idle_rounds = 0
+    budget_warning_sent = False
+    inline_gate_attempts = 0
+    max_inline_gate_attempts = 3
 
     # Intent-aware file read cap — prevents planner from reading entire codebase
     # for brainstorming/research tasks.  0 = unlimited.
@@ -2071,24 +2110,43 @@ async def _run_agentic_loop(
     max_file_reads = int(intent_profile.get("max_file_reads", 0))
     file_read_count = 0
 
-    for round_num in range(max_rounds):
+    round_num = 0
+    while round_num < max_rounds:
+        writes_at_round_start = successful_write_file_calls
         logger.info(
-            "Agent %s: tool loop round %d (messages: %d)",
+            "Agent %s: tool loop round %d/%d (soft target: %d, messages: %d)",
             role,
             round_num + 1,
+            max_rounds,
+            soft_target_rounds,
             len(messages),
         )
 
-        # Call LLM with tools
-        response: LLMResponse = await asyncio.wait_for(
-            llm.invoke(
-                messages=messages,
-                tools=tool_defs,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            ),
-            timeout=batch_timeout,
-        )
+        # Call LLM with tools (retry once on timeout/transient error)
+        _llm_attempts = 0
+        _llm_max_attempts = 2
+        while True:
+            _llm_attempts += 1
+            try:
+                response: LLMResponse = await asyncio.wait_for(
+                    llm.invoke(
+                        messages=messages,
+                        tools=tool_defs,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    ),
+                    timeout=batch_timeout,
+                )
+                break
+            except (asyncio.TimeoutError, OSError, ConnectionError) as _llm_err:
+                if _llm_attempts >= _llm_max_attempts:
+                    raise
+                logger.warning(
+                    "Agent %s LLM call failed (%s), retrying (%d/%d)...",
+                    role, type(_llm_err).__name__,
+                    _llm_attempts, _llm_max_attempts,
+                )
+                await asyncio.sleep(2)
 
         total_input_tokens += response.usage.input_tokens
         total_output_tokens += response.usage.output_tokens
@@ -2137,7 +2195,68 @@ async def _run_agentic_loop(
                     }
                 )
                 continue
-            # No tool calls — agent is done
+            # No tool calls — agent thinks it's done.
+            # Run inline quality gates BEFORE accepting "done" signal.
+            if (
+                role in ROLES_REQUIRING_FILE_WRITES
+                and successful_write_file_calls > 0
+                and inline_gate_attempts < max_inline_gate_attempts
+            ):
+                _inline_files = _extract_written_files(messages)
+                if _inline_files:
+                    try:
+                        from rigovo.application.graph.nodes.inline_gates import (
+                            run_inline_quality_gates,
+                        )
+
+                        _project_root_str = str(
+                            (state or {}).get("target_root")
+                            or (state or {}).get("project_root")
+                            or "."
+                        )
+                        _gate_result = await run_inline_quality_gates(
+                            project_root=_project_root_str,
+                            files_changed=_inline_files,
+                            agent_role=role,
+                        )
+                        inline_gate_attempts += 1
+                        if not _gate_result.passed:
+                            logger.info(
+                                "Agent %s: inline gate failed (attempt %d/%d), "
+                                "injecting %d violations for self-correction",
+                                role,
+                                inline_gate_attempts,
+                                max_inline_gate_attempts,
+                                len(_gate_result.violations),
+                            )
+                            messages.append(
+                                {"role": "user", "content": _gate_result.violation_summary}
+                            )
+                            events.append(
+                                {
+                                    "type": "inline_quality_gate",
+                                    "role": role,
+                                    "round": round_num + 1,
+                                    "passed": False,
+                                    "attempt": inline_gate_attempts,
+                                    "violations": len(_gate_result.violations),
+                                }
+                            )
+                            continue  # Agent self-corrects in same context
+                        # Gates passed
+                        events.append(
+                            {
+                                "type": "inline_quality_gate",
+                                "role": role,
+                                "round": round_num + 1,
+                                "passed": True,
+                                "attempt": inline_gate_attempts,
+                                "violations": 0,
+                            }
+                        )
+                    except Exception:
+                        pass  # Graceful degradation
+
             logger.info(
                 "Agent %s: finished after %d rounds (no more tool calls)", role, round_num + 1
             )
@@ -2182,6 +2301,8 @@ async def _run_agentic_loop(
             nonlocal total_cache_write_tokens
             nonlocal provider_cache_hits
             nonlocal successful_write_file_calls
+            nonlocal soft_target_rounds
+            nonlocal budget_warning_sent
             tool_name = str(tc.get("name", "")).strip()
             if (
                 enforce_file_write_on_retry
@@ -2418,6 +2539,36 @@ async def _run_agentic_loop(
                         agent_messages=agent_messages,
                         events=events,
                     )
+            elif tc["name"] == "request_budget_extension":
+                # Like a developer adjusting story points — log and extend soft target
+                ext_reason = str(tc.get("input", {}).get("reason", "")).strip()
+                old_target = soft_target_rounds
+                soft_target_rounds = int(soft_target_rounds * 1.5)
+                budget_warning_sent = False  # Reset so a new warning fires at new target
+                logger.info(
+                    "Agent %s: budget extension granted (%d -> %d rounds). Reason: %s",
+                    role, old_target, soft_target_rounds, ext_reason[:80],
+                )
+                events.append(
+                    {
+                        "type": "budget_extension_requested",
+                        "role": role,
+                        "round": round_num + 1,  # noqa: B023
+                        "reason": ext_reason[:200],
+                        "soft_target_before": old_target,
+                        "soft_target_after": soft_target_rounds,
+                    }
+                )
+                result_str = json.dumps(
+                    {
+                        "status": "approved",
+                        "new_budget": soft_target_rounds,
+                        "message": (
+                            f"Budget extension granted: {old_target} -> "
+                            f"{soft_target_rounds} rounds. Continue working."
+                        ),
+                    }
+                )
             else:
                 risk_event = _evaluate_risky_action(
                     role=role,
@@ -2735,8 +2886,67 @@ async def _run_agentic_loop(
                 }
             )
 
+        # ── Stuck detection ──────────────────────────────────────────────
+        # If code-producing role goes 5+ rounds without writing files, nudge.
+        if role in ROLES_REQUIRING_FILE_WRITES:
+            if successful_write_file_calls == writes_at_round_start:
+                consecutive_idle_rounds += 1
+            else:
+                consecutive_idle_rounds = 0
+            if consecutive_idle_rounds >= 5:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "WARNING: You have spent 5+ consecutive rounds without writing "
+                            "any files. If you are stuck, explain what is blocking you. "
+                            "If you have enough context, start writing files NOW."
+                        ),
+                    }
+                )
+                events.append(
+                    {
+                        "type": "stuck_detection",
+                        "role": role,
+                        "round": round_num + 1,
+                        "idle_rounds": consecutive_idle_rounds,
+                    }
+                )
+                consecutive_idle_rounds = 0  # Reset to avoid spamming
+
+        # ── Budget approaching — soft warning, NOT hard kill ─────────────
+        if (
+            not budget_warning_sent
+            and soft_target_rounds > 0
+            and round_num + 1 >= soft_target_rounds
+        ):
+            budget_warning_sent = True
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"BUDGET UPDATE: You have used {round_num + 1} of ~{soft_target_rounds} "
+                        "expected rounds. If your work is not complete, CONTINUE — quality "
+                        "matters more than speed. Focus on completing your assignment."
+                    ),
+                }
+            )
+            events.append(
+                {
+                    "type": "budget_warning",
+                    "role": role,
+                    "round": round_num + 1,
+                    "soft_target": soft_target_rounds,
+                }
+            )
+
+        round_num += 1
+
     else:
-        logger.warning("Agent %s: hit max tool rounds (%d)", role, max_rounds)
+        logger.warning(
+            "Agent %s: hit hard safety cap (%d rounds). Soft target was %d.",
+            role, max_rounds, soft_target_rounds,
+        )
 
     # Extract files changed from write_file tool calls in message history
     files_changed = _extract_written_files(messages)
@@ -2830,25 +3040,39 @@ def _git_tracked_changes(root: Path) -> set[str] | None:
 
 
 def _scan_tree_signature(root: Path) -> dict[str, tuple[int, int]]:
-    """Return lightweight signature map of project files for fallback diff."""
+    """Return lightweight signature map of project files for fallback diff.
+
+    Uses os.walk with early directory pruning instead of rglob to avoid
+    traversing into node_modules/vendor/.git (which can have 100K+ files
+    and paths with special characters that cause InterruptedError).
+    """
+    import os
+
     signature: dict[str, tuple[int, int]] = {}
     count = 0
-    for path in root.rglob("*"):
-        if count >= MAX_FS_SCAN_FILES:
-            break
-        if not path.is_file():
-            continue
-        if any(part in _FS_IGNORE_DIRS for part in path.parts):
-            continue
-        try:
-            rel = str(path.relative_to(root))
-            if _is_internal_runtime_path(rel):
-                continue
-            stat = path.stat()
-        except OSError:
-            continue
-        signature[rel] = (int(stat.st_mtime_ns), int(stat.st_size))
-        count += 1
+    try:
+        for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+            # Early prune — os.walk skips pruned dirs entirely
+            dirnames[:] = [
+                d for d in dirnames if d not in _FS_IGNORE_DIRS
+            ]
+            if count >= MAX_FS_SCAN_FILES:
+                break
+            for fname in filenames:
+                if count >= MAX_FS_SCAN_FILES:
+                    break
+                try:
+                    full = os.path.join(dirpath, fname)
+                    rel = os.path.relpath(full, root)
+                    if _is_internal_runtime_path(rel):
+                        continue
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                signature[rel] = (int(st.st_mtime_ns), int(st.st_size))
+                count += 1
+    except (OSError, InterruptedError):
+        pass  # Graceful degradation — partial signature is fine
     return signature
 
 
@@ -2953,9 +3177,18 @@ async def execute_agent_node(
         "memory_retrieval_log": memory_retrieval_log,
     }
 
-    # --- Runtime token pressure controls ---
-    # Near cap: reduce per-agent max_tokens and tool rounds to push completion-first behavior.
+    # --- Validate required agent config fields (prevent KeyError crashes) ---
     runtime_agent_config = dict(agent_config)
+    if "system_prompt" not in runtime_agent_config:
+        runtime_agent_config["system_prompt"] = (
+            f"You are a {current_role} agent. Complete your assigned task."
+        )
+        logger.warning("Agent %s missing system_prompt — using default", current_instance)
+    if "name" not in runtime_agent_config:
+        runtime_agent_config["name"] = current_role.title()
+        logger.warning("Agent %s missing name — using '%s'", current_instance, current_role.title())
+
+    # --- Runtime token pressure controls ---
     intent_profile = state.get("intent_profile") or {}
     intent_max_rounds = int(
         intent_profile.get("max_tool_rounds", MAX_TOOL_ROUNDS) or MAX_TOOL_ROUNDS
@@ -2963,49 +3196,44 @@ async def execute_agent_node(
 
     # Per-role round caps: planner does recon (keep it tight), coder/sre do real work (give room).
     # Decouples "avoid planner reconnaissance loops" from "give coder enough turns to finish".
-    _ROLE_ROUND_CAPS: dict[str, int] = {
+    _role_round_caps: dict[str, int] = {
         "planner":  10,           # survey + plan, then hand off
         "lead":     10,
-        "coder":    MAX_TOOL_ROUNDS,   # read → write → verify across multiple files
+        "coder":    MAX_TOOL_ROUNDS,   # read -> write -> verify across multiple files
         "reviewer": 12,
         "security": 12,
         "qa":       12,
         "devops":   15,
         "sre":      15,
     }
-    role_cap = _ROLE_ROUND_CAPS.get(current_role, MAX_TOOL_ROUNDS)
+    role_cap = _role_round_caps.get(current_role, MAX_TOOL_ROUNDS)
     intent_max_rounds = min(intent_max_rounds, role_cap)
 
-    # ── Surgical retry round cap ────────────────────────────────────────
-    # In SURGICAL FIX MODE the agent should go directly to violated files.
-    # Formula: 3 buffer + 3 rounds per violation (read + write + verify), capped at 20.
-    # Floor of 15 ensures greenfield builds can still make progress on retries.
-    _retry_fix_packet_for_cap = _active_fix_packet(state)
-    _retry_count_for_cap = int((state or {}).get("retry_count", 0) or 0)
-    if _retry_fix_packet_for_cap and _retry_count_for_cap > 0 and current_role in ROLES_REQUIRING_FILE_WRITES:
-        _violation_count = len(_retry_fix_packet_for_cap.get("items", []))
-        _retry_round_cap = max(15, min(20, 3 + 3 * max(1, _violation_count)))
-        intent_max_rounds = min(intent_max_rounds, _retry_round_cap)
-
+    # ── Token budget pressure — soft signal, not hard kill ──────────────
+    # Reduce per-response max_tokens to push completion-first behavior,
+    # but do NOT reduce round count — the agentic loop's budget warning
+    # and inline quality gates handle termination.
+    _token_pressure_warning: str | None = None
     token_limit = int(state.get("budget_max_tokens_per_task", 0) or 0)
     accumulated_tokens = sum(v.get("tokens", 0) for v in state.get("cost_accumulator", {}).values())
     if token_limit > 0:
         remaining_tokens = max(0, token_limit - accumulated_tokens)
         if remaining_tokens <= 60_000:
-            intent_max_rounds = min(intent_max_rounds, 15)
+            # Reduce per-response output tokens (still useful for cost control)
             role_cap = int(ROLE_MAX_TOKENS.get(current_role, DEFAULT_MAX_TOKENS))
             hard_cap = max(1024, min(role_cap, int(remaining_tokens * 0.20)))
             configured = int(runtime_agent_config.get("max_tokens", role_cap) or role_cap)
             runtime_agent_config["max_tokens"] = min(configured, hard_cap)
-            if remaining_tokens <= 30_000:
-                intent_max_rounds = min(intent_max_rounds, 8)
+            _token_pressure_warning = (
+                f"TOKEN BUDGET: ~{remaining_tokens:,} tokens remaining out of {token_limit:,}. "
+                "Be concise in your responses. Focus on completing your assignment efficiently."
+            )
             events_for_pressure = list(state.get("events", []))
             events_for_pressure.append(
                 {
                     "type": "token_pressure_mode",
                     "role": current_role,
                     "remaining_tokens": remaining_tokens,
-                    "tool_round_cap": intent_max_rounds,
                     "max_tokens_cap": int(runtime_agent_config["max_tokens"]),
                 }
             )
@@ -3021,12 +3249,25 @@ async def execute_agent_node(
         memory_section_text=memory_section_text,
     )
 
+    # Inject token pressure warning as first user context (soft signal, not hard cap)
+    if _token_pressure_warning:
+        messages.append({"role": "user", "content": _token_pressure_warning})
+
     # --- Resolve tool definitions ---
     tool_defs = _resolve_tool_definitions(runtime_agent_config, current_role)
 
     # --- Create ToolExecutor ---
     project_root = Path(str(state.get("target_root") or state.get("project_root") or "."))
     project_root.mkdir(parents=True, exist_ok=True)
+    # Extract scope_boundaries from context_package for write enforcement
+    _ctx_pkg = runtime_agent_config.get("context_package", {}) or {}
+    _scope_boundaries = _ctx_pkg.get("scope_boundaries", {}) or {}
+
+    # Server-side tool allow-list: only tools in the LLM tool_defs can execute.
+    # This prevents prompt-injection or LLM drift from invoking tools the role
+    # shouldn't have (e.g., planner calling write_file).
+    _allowed_tool_names = {t.get("name", "") for t in tool_defs if t.get("name")}
+
     tool_executor = ToolExecutor(
         project_root,
         integration_catalog=state.get("integration_catalog", {}),
@@ -3035,6 +3276,8 @@ async def execute_agent_node(
         worktree_root=str(state.get("worktree_root", "")),
         filesystem_sandbox_mode=str(state.get("filesystem_sandbox_mode", "project_root")),
         knowledge_graph=state.get("code_knowledge_graph"),
+        scope_boundaries=_scope_boundaries,
+        allowed_tools=_allowed_tool_names or None,
     )
 
     # --- LLM setup ---
@@ -3179,7 +3422,8 @@ async def execute_agent_node(
                 events=events,
                 stream_callback=stream_callback,
                 batch_timeout=batch_timeout,
-                max_rounds=intent_max_rounds,
+                max_rounds=HARD_SAFETY_CAP,
+                soft_target_rounds=intent_max_rounds,
                 stream_identity=current_instance or current_role,
                 rigour_session=_rigour_session,
             )
@@ -3358,6 +3602,32 @@ async def execute_agent_node(
             "status": f"agent_{current_role}_timeout",
             "error": f"Agent '{current_role}' timed out after {batch_timeout}s",
             "events": events,
+        }
+    except Exception as exc:
+        # Catch-all for LLM API errors, network failures, parsing errors, etc.
+        # Without this, any unhandled exception crashes the entire graph node.
+        duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)
+        err_type = type(exc).__name__
+        err_msg = str(exc) or "(no message)"
+        logger.error(
+            "Agent %s failed with %s: %s", current_role, err_type, err_msg,
+        )
+        events.append(
+            {
+                "type": "agent_error",
+                "role": current_role,
+                "instance_id": current_instance,
+                "error_type": err_type,
+                "error": err_msg[:500],
+                "duration_ms": duration_ms,
+            }
+        )
+        return {
+            "status": f"agent_{current_role}_error",
+            "error": f"Agent '{current_role}' failed: {err_type}: {err_msg[:200]}",
+            "events": events,
+            "agent_outputs": state.get("agent_outputs", {}),
+            "duration_ms": duration_ms,
         }
 
     duration_ms = int((time.monotonic() - start_time) * MS_PER_SECOND)

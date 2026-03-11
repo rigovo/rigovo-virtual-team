@@ -116,6 +116,7 @@ async def scan_project_node(
     workspace_fingerprint = _workspace_fingerprint(project_root)
     snapshot: ProjectSnapshot | None = None
     knowledge_graph: CodeKnowledgeGraph | None = None
+    rigour_conventions: str = ""
 
     if cache_repo is not None and workspace_id:
         cached_snapshot = await cache_repo.get_artifact(
@@ -207,6 +208,28 @@ async def scan_project_node(
         except Exception:
             pass  # Rigour CLI not available or index failed — continue without it
 
+        # Load project conventions from Rigour memory
+        try:
+            if rigour_binary:
+                recall_cmd = RigourQualityGate._build_cmd(
+                    rigour_binary, "recall",
+                )
+                recall_result = subprocess.run(
+                    recall_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    cwd=project_root,
+                )
+                if recall_result.returncode == 0 and recall_result.stdout.strip():
+                    rigour_conventions = recall_result.stdout.strip()
+                    logger.info(
+                        "Rigour conventions loaded: %d chars",
+                        len(rigour_conventions),
+                    )
+        except Exception:
+            pass  # Graceful degradation
+
         if cache_repo is not None and workspace_id:
             await cache_repo.put_artifact(
                 workspace_id=workspace_id,
@@ -241,9 +264,10 @@ async def scan_project_node(
     return {
         "project_snapshot": snapshot,
         "code_knowledge_graph": knowledge_graph,
+        "rigour_conventions": rigour_conventions,
         "status": "project_scanned",
-        "events": events
-        + [
+        "events": [
+            *events,
             {
                 "type": "project_scanned",
                 "source_files": snapshot.source_file_count,
@@ -254,6 +278,6 @@ async def scan_project_node(
                 "knowledge_graph_nodes": knowledge_graph.node_count,
                 "knowledge_graph_edges": knowledge_graph.edge_count,
                 "knowledge_graph_clusters": len(knowledge_graph.clusters),
-            }
+            },
         ],
     }

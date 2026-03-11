@@ -50,6 +50,7 @@ class AgentAssignment:
     depends_on: list[str] = field(default_factory=list)  # instance_ids this agent waits for
     tools_required: list[str] = field(default_factory=list)  # extra tools beyond role default
     verification: str = ""  # how this agent's work will be verified (must run tests, etc.)
+    context_package: dict[str, Any] = field(default_factory=dict)  # rich context from Master
 
 
 @dataclass
@@ -151,9 +152,53 @@ RULES:
 - new_project or new_subfolder_project: add lead, devops
 - API work: add security
 - high/critical: add lead + reviewer + qa
-- Pipeline: planner → coder(s) → reviewer → security → qa → devops → sre → lead (last)
+- Pipeline: planner -> coder(s) -> reviewer -> security -> qa -> devops -> sre -> lead (last)
 - Each agent needs specific assignment + verification step
 - Dependencies must be explicit
+- When task spans 2+ domains (backend + frontend): create SEPARATE coder instances
+- Each coder gets scope_boundaries restricting file access to their domain
+- Coders at same DAG tier run in parallel
+- scope_boundaries are ENFORCED: writes to exclude_paths will be blocked at runtime
+
+SPECIALIST STAFFING DECISIONS:
+When a task touches multiple domains, create focused specialist coders instead of
+one generalist. Each specialist is faster and more accurate because it only sees
+its own domain.
+
+Decision matrix:
+- Backend + Frontend -> backend-engineer-1 (backend-api) + frontend-engineer-1 (frontend-react)
+- Backend API + Database schema -> backend-api-1 (backend-api) + backend-db-1 (backend-db)
+- 3+ domains -> one specialist per domain, all at same DAG tier
+- Single domain -> one coder is fine, no need for specialists
+
+DAG pattern for specialists:
+  planner-1 -> [backend-engineer-1, frontend-engineer-1] -> reviewer-1 -> qa-1
+  - Both coders depend_on planner-1 (parallel execution)
+  - reviewer-1 depends_on ALL coder instances
+  - Each coder's scope_boundaries.exclude_paths lists the OTHER coder's focus_paths
+  - Each coder's dependencies_context explains what the OTHER coder produces
+
+When NOT to specialize:
+- Simple tasks (low complexity) — one coder is fine
+- Tightly coupled changes where splitting would cause integration issues
+- Investigation/docs/refactor tasks — specialization adds overhead with no benefit
+
+CONTEXT PACKAGES:
+For EACH agent, provide a context_package with targeted guidance. This replaces
+lossy 2000-char summaries with rich, structured context per specialist:
+
+- scope_boundaries: {focus_paths: ["src/auth/"], exclude_paths: ["src/frontend/"]}
+  Restricts what files the agent should focus on / avoid writing to.
+- relevant_files: [{path: "src/auth/models.py", reason: "User model to extend"}]
+  Key files the agent should examine first.
+- acceptance_criteria: ["JWT generation works", "Rate limiting on login"]
+  Specific criteria for THIS agent's work to be considered done.
+- architectural_guidance: "Hexagonal architecture. Auth in domain layer."
+  Patterns and constraints this agent must follow.
+- dependencies_context: {planner-1: "Follow the plan", frontend-1: "Consumes your API"}
+  What each dependency agent contributes or expects.
+- anti_patterns: ["No secrets in code", "No symmetric encryption for passwords"]
+  Specific things to avoid.
 
 Respond with ONLY valid JSON:
 {"task_type":"feature|bug|refactor|test|docs|infra|security|performance|investigation|new_project",
@@ -162,7 +207,11 @@ Respond with ONLY valid JSON:
 "execution_mode":"linear|parallel|supervised_parallel",
 "domain_analysis":"2-3 sentences",
 "architecture_notes":"key patterns",
-"agents":[{"instance_id":"planner-1","role":"planner","specialisation":"requirements","assignment":"...","depends_on":[],"tools_required":[],"verification":"..."}],
+"agents":[{"instance_id":"planner-1","role":"planner","specialisation":"requirements",
+"assignment":"...","depends_on":[],"tools_required":[],"verification":"...",
+"context_package":{"scope_boundaries":{"focus_paths":[],"exclude_paths":[]},
+"relevant_files":[],"acceptance_criteria":[],"architectural_guidance":"",
+"dependencies_context":{},"anti_patterns":[]}}],
 "consultation_requirements":[{"from_role":"coder","to_role":"security","reason":"auth surface"}],
 "spawn_candidates":[{"role":"coder","specialisation":"backend-api",
 "reason":"separable API branch","bounded_assignment":"auth endpoints",
@@ -278,18 +327,18 @@ class TaskClassifier:
         # ── Tiered max_tokens: reduce output budget for simple tasks ────────
         # A "test" or "docs" staffing plan is ~200-400 tokens — allocating 4096
         # adds 3-4 seconds of unnecessary LLM generation time.
-        _SIMPLE_TASK_TYPES = {"test", "docs", "investigation"}
-        _COMPLEX_TASK_TYPES = {"new_project", "security", "infra", "performance"}
+        simple_task_types = {"test", "docs", "investigation"}
+        complex_task_types = {"new_project", "security", "infra", "performance"}
         _det_task_type = str((deterministic_hint or {}).get("task_type", "") or "")
         _det_complexity = str((deterministic_hint or {}).get("complexity", "") or "")
-        if _det_task_type in _SIMPLE_TASK_TYPES or _det_complexity == "low":
+        if _det_task_type in simple_task_types or _det_complexity == "low":
             _max_tokens = 1024
-        elif _det_task_type in _COMPLEX_TASK_TYPES or _det_complexity in {"high", "critical"}:
+        elif _det_task_type in complex_task_types or _det_complexity in {"high", "critical"}:
             _max_tokens = 4096
         else:
             _max_tokens = 2048  # medium tasks: feature, bug, refactor
 
-        # Build deterministic hint section (inject as floor constraint)
+        # Build deterministic hint section (guidance, not absolute floor)
         deterministic_section = ""
         if deterministic_hint and deterministic_hint.get("is_deterministic"):
             det_type = deterministic_hint.get("task_type", "feature")
@@ -299,10 +348,12 @@ class TaskClassifier:
                 f"\n\nDETERMINISTIC PRE-CLASSIFICATION (confidence {det_confidence:.0%}):\n"
                 f"  task_type: {det_type}\n"
                 f"  complexity: {det_complexity}\n"
-                f"This is a FLOOR — you can upgrade (e.g., add security concerns, raise "
-                f"complexity) but NEVER downgrade below this classification. If the "
-                f"pre-classification says 'new_project', your staffing plan MUST include "
-                f"agents suitable for a new project (planner, coder, reviewer at minimum)."
+                f"This is a HINT from keyword matching. Use your judgment — if the "
+                f"task description clearly indicates a different type (e.g., 'create' "
+                f"tasks are features/new_project, not bugs), override the hint. "
+                f"Only enforce 'new_project' as a floor: if the hint says "
+                f"'new_project', your staffing plan MUST include agents suitable "
+                f"for a new project (planner, coder, reviewer at minimum)."
             )
 
         # Build user message with all context
@@ -326,14 +377,41 @@ class TaskClassifier:
 
         user_message = "\n".join(message_parts)
 
-        response = await self._llm.invoke(
-            messages=[
-                {"role": "system", "content": MASTER_AGENT_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.1,  # Slight creativity for team composition
-            max_tokens=_max_tokens,  # Tiered: 1024 simple / 2048 medium / 4096 complex
-        )
+        # Retry once on transient errors (timeout, network)
+        _last_err: Exception | None = None
+        for _attempt in range(2):
+            try:
+                response = await self._llm.invoke(
+                    messages=[
+                        {"role": "system", "content": MASTER_AGENT_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    temperature=0.1,
+                    max_tokens=_max_tokens,
+                )
+                _last_err = None
+                break
+            except Exception as llm_err:
+                _last_err = llm_err
+                if _attempt == 0:
+                    logger.warning(
+                        "Master LLM attempt %d failed (%s): %s — retrying...",
+                        _attempt + 1, type(llm_err).__name__, llm_err,
+                    )
+                    await asyncio.sleep(2)
+        if _last_err is not None:
+            logger.error(
+                "Master Agent LLM call failed after retries (%s): %s",
+                type(_last_err).__name__, _last_err,
+            )
+            raise RuntimeError(
+                f"Master Agent LLM failed ({type(_last_err).__name__}): "
+                f"{_last_err}"
+            ) from _last_err
+
+        if not response or not response.content:
+            logger.error("Master Agent returned empty response")
+            raise RuntimeError("Master Agent LLM returned empty response")
 
         return self._parse_staffing_plan(response.content, description)
 
@@ -413,19 +491,35 @@ class TaskClassifier:
             complexity = TaskComplexity.MEDIUM
 
         # Parse agent assignments
+        _canonical_roles = {
+            "planner", "coder", "reviewer", "security", "qa",
+            "devops", "sre", "lead",
+        }
         agents: list[AgentAssignment] = []
         for agent_data in data.get("agents", []):
             if not isinstance(agent_data, dict):
                 continue
+            # Validate role — reject LLM-invented roles
+            raw_role = str(agent_data.get("role", "coder"))
+            if raw_role not in _canonical_roles:
+                logger.warning(
+                    "Master Agent produced invalid role '%s' — mapping to 'coder'",
+                    raw_role,
+                )
+                raw_role = "coder"
+            # Parse context_package — rich structured context from Master
+            raw_ctx = agent_data.get("context_package", {})
+            ctx_pkg = raw_ctx if isinstance(raw_ctx, dict) else {}
             agents.append(
                 AgentAssignment(
                     instance_id=str(agent_data.get("instance_id", f"agent-{len(agents)}")),
-                    role=str(agent_data.get("role", "coder")),
+                    role=raw_role,
                     specialisation=str(agent_data.get("specialisation", "general")),
                     assignment=str(agent_data.get("assignment", "")),
                     depends_on=list(agent_data.get("depends_on", [])),
                     tools_required=list(agent_data.get("tools_required", [])),
                     verification=str(agent_data.get("verification", "")),
+                    context_package=ctx_pkg,
                 )
             )
 

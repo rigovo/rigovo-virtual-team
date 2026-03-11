@@ -69,9 +69,14 @@ _KEYWORD_RULES: list[tuple[str, str, str]] = [
         "infra",
         "medium",
     ),
-    # Bug fix
+    # Bug fix — "error" alone is too broad ("error handling" ≠ bug)
     (
-        r"\b(?:fix\s+(?:\w+\s+)*bug|broken|crash(?:es|ing)?|error|regression|hotfix)\b",
+        r"\b(?:fix\s+(?:\w+\s+)*bug|broken|crash(?:es|ing)?|regression|hotfix)\b",
+        "bug",
+        "medium",
+    ),
+    (
+        r"\berror\b(?!\s+handl)",
         "bug",
         "medium",
     ),

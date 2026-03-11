@@ -1199,7 +1199,9 @@ export default function TaskDetail({
   const isActive = !isApproval && !isCompleted && !isFailed;
   const canResume = isFailed;
   const hasSteps = detail && detail.steps.length > 0;
-  const isProcessing = !detail || !hasSteps;
+  const hasPlan = detail && (detail.planned_roles?.length ?? 0) > 0;
+  // During approval, show the plan (MAP/DAG) even without executed steps
+  const isProcessing = !detail || (!hasSteps && !isApproval && !hasPlan);
 
   /* Fetch mission data */
   useEffect(() => {
@@ -1733,67 +1735,70 @@ export default function TaskDetail({
           </div>
         </div>
       )}
-      {latestDebate && (
-        <div
-          className="mt-3 rounded-2xl border px-4 py-3"
-          style={{
-            borderColor: "rgba(96,165,250,0.22)",
-            background: "rgba(15,23,42,0.34)",
-          }}
-        >
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--ui-text-muted)]">
-                Debate Decision
-              </div>
-              <div className="mt-1 text-sm font-medium text-[var(--ui-text-primary)]">
-                {String(
-                  latestDebateRecord?.selected_next_owner
-                    ? `Next owner: ${canonicalAgentLabel(
-                        String(latestDebateRecord.selected_next_owner),
-                      )}`
-                    : latestDebateRecord?.summary ||
-                      latestDebateRecord?.action_delta ||
-                      "Adjudication recorded.",
-                )}
-              </div>
-            </div>
-            <div className="text-xs text-[var(--ui-text-secondary)]">
-              {Array.isArray(latestDebateRecord?.feedback_sources)
-                ? `${latestDebateRecord.feedback_sources.length} feedback source${latestDebateRecord.feedback_sources.length !== 1 ? "s" : ""}`
-                : "debate resolved"}
-            </div>
-          </div>
-        </div>
-      )}
-      {tunedRoleCount > 0 && (
-        <div
-          className="mt-3 rounded-2xl border px-4 py-3"
-          style={{
-            borderColor: "rgba(74,222,128,0.18)",
-            background: "rgba(3,20,12,0.32)",
-          }}
-        >
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--ui-text-muted)]">
-                Role Learning
-              </div>
-              <div className="mt-1 text-sm font-medium text-[var(--ui-text-primary)]">
-                {tunedRoleCount} role{tunedRoleCount !== 1 ? "s" : ""} tuned in this run
-                {promotedRoleCount > 0 ? ` · ${promotedRoleCount} with promoted memory` : ""}
+      {/* ── Secondary analytics (collapsed by default via "Show insights") ── */}
+      {showInsights && (
+        <>
+          {latestDebate && (
+            <div
+              className="mt-3 rounded-2xl border px-4 py-3"
+              style={{
+                borderColor: "rgba(96,165,250,0.22)",
+                background: "rgba(15,23,42,0.34)",
+              }}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--ui-text-muted)]">
+                    Debate Decision
+                  </div>
+                  <div className="mt-1 text-sm font-medium text-[var(--ui-text-primary)]">
+                    {String(
+                      latestDebateRecord?.selected_next_owner
+                        ? `Next owner: ${canonicalAgentLabel(
+                            String(latestDebateRecord.selected_next_owner),
+                          )}`
+                        : latestDebateRecord?.summary ||
+                          latestDebateRecord?.action_delta ||
+                          "Adjudication recorded.",
+                    )}
+                  </div>
+                </div>
+                <div className="text-xs text-[var(--ui-text-secondary)]">
+                  {Array.isArray(latestDebateRecord?.feedback_sources)
+                    ? `${latestDebateRecord.feedback_sources.length} feedback source${latestDebateRecord.feedback_sources.length !== 1 ? "s" : ""}`
+                    : "debate resolved"}
+                </div>
               </div>
             </div>
-            <div className="text-xs text-[var(--ui-text-secondary)]">
-              policy tuning is active
+          )}
+          {tunedRoleCount > 0 && (
+            <div
+              className="mt-3 rounded-2xl border px-4 py-3"
+              style={{
+                borderColor: "rgba(74,222,128,0.18)",
+                background: "rgba(3,20,12,0.32)",
+              }}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--ui-text-muted)]">
+                    Role Learning
+                  </div>
+                  <div className="mt-1 text-sm font-medium text-[var(--ui-text-primary)]">
+                    {tunedRoleCount} role{tunedRoleCount !== 1 ? "s" : ""} tuned in this run
+                    {promotedRoleCount > 0 ? ` · ${promotedRoleCount} with promoted memory` : ""}
+                  </div>
+                </div>
+                <div className="text-xs text-[var(--ui-text-secondary)]">
+                  policy tuning is active
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Secondary analytics (collapsed by default) ── */}
-      {showInsights && hasSteps && (
-        <QualitySummaryBar steps={detail!.steps} detail={detail} />
+          )}
+          {hasSteps && (
+            <QualitySummaryBar steps={detail!.steps} detail={detail} />
+          )}
+        </>
       )}
       {showInsights && mission && <MissionControl mission={mission} />}
       {uiMode === "full" && (workspaceRoot || targetRoot || targetMode) && (
@@ -1865,12 +1870,12 @@ export default function TaskDetail({
               </div>
             ) : (
               <NeuralCalibrationMap
-                steps={detail.steps}
+                steps={detail?.steps ?? []}
                 taskStatus={task.status}
-                taskType={detail.task_type}
+                taskType={detail?.task_type}
                 collab={collab}
-                plannedRoles={detail.planned_roles ?? []}
-                executionDag={detail.execution_dag}
+                plannedRoles={detail?.planned_roles ?? []}
+                executionDag={detail?.execution_dag}
                 totalFiles={totalFiles}
                 totalCost={mapTotalCost}
                 expectedAgents={expectedAgents}

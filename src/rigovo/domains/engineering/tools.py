@@ -32,6 +32,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
     "coder": [
         "read_file",
         "write_file",
+        "delete_file",
         "list_directory",
         "search_codebase",
         "run_command",
@@ -41,6 +42,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
         "probe_environment",
         "spawn_subtask",
         "consult_agent",
+        "request_budget_extension",
     ],
     "reviewer": [
         "read_file",
@@ -64,6 +66,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
     "qa": [
         "read_file",
         "write_file",
+        "delete_file",
         "list_directory",
         "search_codebase",
         "run_command",
@@ -71,10 +74,12 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
         "get_impact_radius",
         "probe_environment",
         "consult_agent",
+        "request_budget_extension",
     ],
     "devops": [
         "read_file",
         "write_file",
+        "delete_file",
         "list_directory",
         "run_command",
         "get_impact_radius",
@@ -84,6 +89,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
     "sre": [
         "read_file",
         "write_file",
+        "delete_file",
         "list_directory",
         "run_command",
         "get_impact_radius",
@@ -93,6 +99,8 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
     "lead": [
         "read_file",
         "list_directory",
+        "write_file",
+        "delete_file",
         "search_codebase",
         "get_component_map",
         "get_impact_radius",
@@ -127,6 +135,23 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "content": {"type": "string", "description": "Full file content to write."},
             },
             "required": ["path", "content"],
+        },
+    },
+    "delete_file": {
+        "name": "delete_file",
+        "description": (
+            "Delete a file at the given path. Use when cleaning up "
+            "generated or renamed files."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Relative path from project root.",
+                },
+            },
+            "required": ["file_path"],
         },
     },
     "list_directory": {
@@ -384,6 +409,31 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 },
             },
             "required": ["query"],
+        },
+    },
+    # --- Budget Extension Tool ---
+    # Like a developer adjusting story points: "this 8-pointer is actually a 13-pointer".
+    # Handled inline by the agentic loop, not by ToolExecutor.
+    "request_budget_extension": {
+        "name": "request_budget_extension",
+        "description": (
+            "Request more time to complete your assignment. Use this when your "
+            "work is not done and you are approaching or past the expected round budget. "
+            "Provide a clear reason why more time is needed. This is like a developer "
+            "telling their PM that a story needs more points."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Why you need more time (e.g. 'discovered additional "
+                        "files that need updating', 'build errors require deeper fix')."
+                    ),
+                },
+            },
+            "required": ["reason"],
         },
     },
 }

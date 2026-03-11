@@ -275,6 +275,33 @@ class RigourQualityGate(QualityGate):
         except Exception:
             return None
 
+    async def run_recall(self, project_root: str | Path) -> str | None:
+        """Run ``rigour recall`` to load stored project conventions.
+
+        Returns a string of project conventions/memories, or None if
+        unavailable. This is injected into agent context so they follow
+        established project patterns.
+        """
+        if not self._binary:
+            return None
+        cmd = self._build_cmd(self._binary, "recall")
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    cwd=str(project_root),
+                ),
+            )
+            output = result.stdout.strip()
+            return output if output else None
+        except Exception:
+            return None
+
     async def run(self, gate_input: GateInput) -> GateResult:
         """Run quality gates and return structured results."""
         if self._binary:

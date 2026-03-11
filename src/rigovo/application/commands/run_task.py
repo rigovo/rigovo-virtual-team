@@ -667,7 +667,9 @@ class RunTaskCommand:
                 )
 
         # --- 5. Prefetch Rigour CLI (runs in background while graph executes) ---
-        rigour_prefetch_task = asyncio.create_task(self._prefetch_rigour())
+        rigour_prefetch_task = asyncio.create_task(
+            self._prefetch_rigour(project_root=str(self._project_root or "")),
+        )
         self._background_tasks.add(rigour_prefetch_task)
         rigour_prefetch_task.add_done_callback(self._background_tasks.discard)
 
@@ -1538,14 +1540,16 @@ class RunTaskCommand:
         return agents
 
     @staticmethod
-    async def _prefetch_rigour() -> None:
+    async def _prefetch_rigour(project_root: str = "") -> None:
         """Pre-install Rigour CLI in background while agents execute.
 
         This runs alongside the planner/coder so the CLI is ready
         by the time quality gates need it. Eliminates 30-60s first-run lag.
         """
         try:
-            await RigourQualityGate.ensure_binary()
+            await RigourQualityGate.ensure_binary(
+                project_root=project_root or None,
+            )
         except Exception as e:
             logger.debug("Rigour prefetch failed (non-fatal): %s", e)
 

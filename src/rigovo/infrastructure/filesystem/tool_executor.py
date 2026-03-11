@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from rigovo.domain.services.code_knowledge_graph import CodeKnowledgeGraph
 from rigovo.infrastructure.filesystem.code_writer import CodeWriter
@@ -132,7 +132,7 @@ class ToolExecutor:
     This is the bridge between LLM function calling and actual I/O.
     """
 
-    TRUST_LEVEL_ORDER = {
+    TRUST_LEVEL_ORDER: ClassVar[dict[str, int]] = {
         "community": 0,
         "verified": 1,
         "internal": 2,
@@ -147,10 +147,13 @@ class ToolExecutor:
         worktree_root: str = "",
         filesystem_sandbox_mode: str = "project_root",
         knowledge_graph: CodeKnowledgeGraph | None = None,
+        scope_boundaries: dict[str, Any] | None = None,
+        allowed_tools: set[str] | None = None,
     ) -> None:
         self._integration_catalog = integration_catalog or {}
         self._integration_policy = integration_policy or {}
         self._project_root = project_root.resolve()
+        self._scope_boundaries = scope_boundaries or {}
         self._worktree_mode = str(worktree_mode or "project").strip().lower()
         self._worktree_root = str(worktree_root or "").strip()
         self._filesystem_sandbox_mode = (
@@ -166,6 +169,9 @@ class ToolExecutor:
         )
         self._knowledge_graph = knowledge_graph
         self._file_cache = FileReadCache(self._execution_root)
+        # Server-side tool allow-list: if set, only these tools can execute.
+        # This is the ENFORCEMENT layer — prompt-level filtering is advisory.
+        self._allowed_tools: set[str] | None = allowed_tools
 
         # Cache Rigour binary for real-time hooks check on file writes
         self._rigour_binary: str | None = None
@@ -180,6 +186,7 @@ class ToolExecutor:
         self._handlers: dict[str, Any] = {
             "read_file": self._handle_read_file,
             "write_file": self._handle_write_file,
+            "delete_file": self._handle_delete_file,
             "list_directory": self._handle_list_directory,
             "search_codebase": self._handle_search_codebase,
             "run_command": self._handle_run_command,
@@ -212,6 +219,69 @@ class ToolExecutor:
             raise ValueError(f"Configured worktree_root does not exist: {candidate}")
         return candidate
 
+    def _check_scope_violation(self, write_path: str) -> dict[str, Any] | None:
+        """Check if a write path violates scope boundaries set by Master Agent.
+
+        Returns an error dict if the path is blocked, or None if allowed.
+        Scope boundaries are soft enforcement — they warn and block writes
+        to paths outside the agent's focus area.
+        """
+        if not self._scope_boundaries:
+            return None
+
+        # Normalise the path for prefix matching
+        normalised = write_path.lstrip("/").lstrip("./")
+
+        # Check exclude_paths first — explicit blocks
+        for excl in self._scope_boundaries.get("exclude_paths", []):
+            excl_norm = excl.lstrip("/").lstrip("./").rstrip("/")
+            if normalised.startswith(excl_norm):
+                logger.warning(
+                    "SCOPE VIOLATION: write to '%s' blocked (exclude: %s)",
+                    write_path,
+                    excl,
+                )
+                return {
+                    "error": (
+                        f"SCOPE VIOLATION: You cannot write to '{write_path}' — "
+                        f"it falls under excluded path '{excl}'. "
+                        "Another specialist agent owns this domain. "
+                        "Focus on your assigned scope."
+                    ),
+                    "status": "scope_blocked",
+                }
+
+        # Check focus_paths — if defined, only allow writes within focus areas
+        focus_paths = self._scope_boundaries.get("focus_paths", [])
+        if focus_paths:
+            in_scope = any(
+                normalised.startswith(fp.lstrip("/").lstrip("./").rstrip("/"))
+                for fp in focus_paths
+            )
+            if not in_scope:
+                # Allow common config files at project root
+                root_exceptions = {
+                    "package.json", "tsconfig.json", "pyproject.toml",
+                    "setup.py", "setup.cfg", "Makefile", "Dockerfile",
+                    ".env.example", "requirements.txt",
+                }
+                if normalised not in root_exceptions:
+                    logger.warning(
+                        "SCOPE VIOLATION: write to '%s' outside focus %s",
+                        write_path,
+                        focus_paths,
+                    )
+                    return {
+                        "error": (
+                            f"SCOPE VIOLATION: '{write_path}' is outside "
+                            f"your focus area {focus_paths}. "
+                            "Write to files within your assigned scope."
+                        ),
+                        "status": "scope_blocked",
+                    }
+
+        return None
+
     async def execute(self, tool_name: str, tool_input: dict[str, Any]) -> str:
         """
         Execute a tool call and return the result as a string.
@@ -224,6 +294,13 @@ class ToolExecutor:
             JSON string result for feeding back to the LLM.
         """
         await asyncio.sleep(0)
+        # Server-side enforcement: block tools not in the allow-list
+        if self._allowed_tools is not None and tool_name not in self._allowed_tools:
+            return json.dumps({
+                "error": f"Tool '{tool_name}' is not available for your role. "
+                f"Available tools: {sorted(self._allowed_tools)}",
+                "status": "tool_blocked",
+            })
         handler = self._handlers.get(tool_name)
         if not handler:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
@@ -244,6 +321,15 @@ class ToolExecutor:
         for call in tool_calls:
             name = call.get("name", "")
             inputs = call.get("input", {})
+
+            # Server-side enforcement: block tools not in the allow-list
+            if self._allowed_tools is not None and name not in self._allowed_tools:
+                results.append({
+                    "tool": name,
+                    "error": f"Tool '{name}' is not available for your role.",
+                    "status": "tool_blocked",
+                })
+                continue
 
             handler = self._handlers.get(name)
             if not handler:
@@ -326,6 +412,13 @@ class ToolExecutor:
                 ),
                 "status": "error",
             }
+
+        # Scope boundary enforcement — Master Agent restricts file access
+        write_path = str(inputs.get("path", ""))
+        scope_violation = self._check_scope_violation(write_path)
+        if scope_violation:
+            return scope_violation
+
         result = self._writer.write_file(
             path=inputs["path"],
             content=content,
@@ -416,6 +509,34 @@ class ToolExecutor:
             return warnings or None
         except (json.JSONDecodeError, OSError):
             return None
+
+    def _handle_delete_file(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Delete a file within the project sandbox."""
+        file_path = inputs.get("file_path", "")
+        if not file_path:
+            return {"error": "file_path is required"}
+
+        target = (self._execution_root / file_path).resolve()
+        try:
+            target.relative_to(self._execution_root)
+        except ValueError:
+            return {"error": "Path escapes project sandbox"}
+
+        # Scope boundary check (same as write_file)
+        scope_err = self._check_scope_violation(file_path)
+        if scope_err:
+            return scope_err
+
+        if not target.exists():
+            return {"error": f"File not found: {file_path}"}
+        if not target.is_file():
+            return {"error": f"Not a file (directory?): {file_path}"}
+
+        try:
+            target.unlink()
+            return {"status": "deleted", "file_path": file_path}
+        except OSError as e:
+            return {"error": f"Failed to delete: {e}"}
 
     def _handle_list_directory(self, inputs: dict[str, Any]) -> dict[str, Any]:
         return self._reader.list_directory(

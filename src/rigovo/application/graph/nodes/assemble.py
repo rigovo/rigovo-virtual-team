@@ -86,6 +86,8 @@ async def assemble_node(
             "assignment": pipeline.instance_assignments.get(instance_id, ""),
             "verification": pipeline.instance_verifications.get(instance_id, ""),
             "specialisation": pipeline.instance_specialisations.get(instance_id, ""),
+            # Master Agent context package (scope, guidance, criteria)
+            "context_package": getattr(agent, "context_package", {}) or {},
         }
         pipeline_order.append(instance_id)
 
