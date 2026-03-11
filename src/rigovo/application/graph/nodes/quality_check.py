@@ -44,6 +44,8 @@ from rigovo.domain.entities.quality import (
 )
 from rigovo.domain.interfaces.quality_gate import GateInput, QualityGate
 
+logger = logging.getLogger(__name__)
+
 
 def _is_internal_runtime_path(path: str) -> bool:
     """Return True for internal Rigovo runtime artifacts."""
@@ -913,6 +915,130 @@ async def quality_check_node(
                     },
                 ],
             ),
+        }
+
+    # ── Fast-path: skip full Rigour CLI re-run when inline gates already passed ──
+    # Inline quality gates run inside the agentic loop (execute_agent.py).
+    # If they passed, the code is already clean — only run persona checks.
+    _inline_gate_events = [
+        e for e in state.get("events", [])
+        if isinstance(e, dict)
+        and e.get("type") == "inline_quality_gate"
+        and e.get("passed") is True
+        and e.get("role") == current_role
+    ]
+    if _inline_gate_events:
+        logger.info(
+            "Quality check fast-path: inline gates passed for %s, "
+            "skipping full Rigour CLI re-run",
+            current_instance,
+        )
+        # Still run persona boundary checks (lightweight, no CLI)
+        output_summary = agent_output.get("summary", "")
+        persona_violations = _check_persona_boundaries(
+            current_instance, base_role, files_changed, output_summary,
+        )
+        persona_gate_violations = _persona_violations_to_gate_violations(persona_violations)
+        if persona_gate_violations:
+            has_errors = any(v.severity == ViolationSeverity.ERROR for v in persona_gate_violations)
+            if has_errors:
+                structured = [_serialize_violation(v) for v in persona_gate_violations]
+                gate_summary = {
+                    "status": GateStatus.FAILED,
+                    "passed": False,
+                    "reason": "persona_violation",
+                    "gates_run": 1,
+                    "gates_passed": 0,
+                    "violation_count": len(persona_gate_violations),
+                    "violations": structured,
+                    "deep": False,
+                    "pro": False,
+                    "inline_fast_path": True,
+                }
+                gate_history = list(state.get("gate_history", []))
+                gate_history.append({"role": current_instance, **gate_summary})
+                retry_count = state.get("retry_count", 0) + 1
+                max_retries = state.get("max_retries", 5)
+                fix_items = [
+                    FixItem(
+                        gate_id=v.gate_id,
+                        file_path=v.file_path or "",
+                        message=v.message,
+                        suggestion=v.suggestion,
+                        severity=v.severity,
+                        line=v.line,
+                    )
+                    for v in persona_gate_violations
+                ]
+                fix_packet = FixPacket(
+                    items=fix_items, attempt=retry_count, max_attempts=max_retries,
+                )
+                events = list(state.get("events", []))
+                events.append({
+                    "type": "gate_results",
+                    "role": current_instance,
+                    "passed": False,
+                    "gates_run": 1,
+                    "violations": len(persona_gate_violations),
+                    "reason": "persona_violation_after_inline_pass",
+                })
+                return {
+                    "gate_history": gate_history,
+                    **_remediation_update(
+                        state,
+                        current_role=current_instance,
+                        remediation_owner=_resolve_remediation_owner(
+                            state, current_instance=current_instance,
+                            base_role=base_role, gate_source="persona_violation",
+                        ),
+                        gate_summary=gate_summary,
+                        fix_packet=fix_packet,
+                        gate_source="persona_violation",
+                        affected_files=files_changed,
+                        remediation_phase="diagnose",
+                        retry_count=retry_count,
+                        max_retries=max_retries,
+                        extra_events=[{
+                            "type": "gate_results",
+                            "role": current_instance,
+                            "passed": False,
+                            "gates_run": 1,
+                            "violations": len(persona_gate_violations),
+                            "reason": "persona_violation_after_inline_pass",
+                        }],
+                    ),
+                }
+
+        # All clean — pass with fast-path marker
+        gate_summary = {
+            "status": GateStatus.PASSED,
+            "passed": True,
+            "gates_run": 0,
+            "gates_passed": 0,
+            "violation_count": 0,
+            "violations": [],
+            "deep": False,
+            "pro": False,
+            "inline_fast_path": True,
+        }
+        gate_history = list(state.get("gate_history", []))
+        gate_history.append({"role": current_instance, **gate_summary})
+        events = list(state.get("events", []))
+        events.append({
+            "type": "gate_results",
+            "role": current_instance,
+            "passed": True,
+            "gates_run": 0,
+            "violations": 0,
+            "reason": "inline_gates_passed",
+        })
+        return {
+            "gate_results": gate_summary,
+            "gate_history": gate_history,
+            "active_fix_packet": {},
+            "downstream_lock_reason": "",
+            "status": f"gates_passed_{current_instance}",
+            "events": events,
         }
 
     run_deep, run_pro = _resolve_deep_mode(state, current_role)

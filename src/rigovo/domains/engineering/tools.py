@@ -41,6 +41,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
         "probe_environment",
         "spawn_subtask",
         "consult_agent",
+        "request_budget_extension",
     ],
     "reviewer": [
         "read_file",
@@ -71,6 +72,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
         "get_impact_radius",
         "probe_environment",
         "consult_agent",
+        "request_budget_extension",
     ],
     "devops": [
         "read_file",
@@ -384,6 +386,31 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 },
             },
             "required": ["query"],
+        },
+    },
+    # --- Budget Extension Tool ---
+    # Like a developer adjusting story points: "this 8-pointer is actually a 13-pointer".
+    # Handled inline by the agentic loop, not by ToolExecutor.
+    "request_budget_extension": {
+        "name": "request_budget_extension",
+        "description": (
+            "Request more time to complete your assignment. Use this when your "
+            "work is not done and you are approaching or past the expected round budget. "
+            "Provide a clear reason why more time is needed. This is like a developer "
+            "telling their PM that a story needs more points."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Why you need more time (e.g. 'discovered additional "
+                        "files that need updating', 'build errors require deeper fix')."
+                    ),
+                },
+            },
+            "required": ["reason"],
         },
     },
 }
