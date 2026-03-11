@@ -239,6 +239,8 @@ async def classify_node(
                         }
                         for a in fast_agents
                     ],
+                    "risks": plan_dict.get("risks", []),
+                    "acceptance_criteria": plan_dict.get("acceptance_criteria", []),
                     "deterministic_hint_used": True,
                     "minimum_team_enforced": True,
                     "fallback_reason": "classifier_timeout",
@@ -316,6 +318,8 @@ async def classify_node(
                         }
                         for a in fast_agents
                     ],
+                    "risks": plan_dict.get("risks", []),
+                    "acceptance_criteria": plan_dict.get("acceptance_criteria", []),
                     "deterministic_hint_used": True,
                     "minimum_team_enforced": True,
                     "fallback_reason": "classifier_exception",
@@ -482,6 +486,9 @@ async def classify_node(
                         "complexity": cached_cls.get("complexity"),
                         "workspace_type": cached_cls.get("workspace_type"),
                         "reasoning": cached_cls.get("reasoning", "Loaded from exact cache."),
+                        "agent_instances": [],
+                        "risks": [],
+                        "acceptance_criteria": [],
                     }
                 )
                 events.append(
@@ -561,6 +568,9 @@ async def classify_node(
             "complexity": classification.get("complexity"),
             "workspace_type": classification.get("workspace_type"),
             "reasoning": classification.get("reasoning"),
+            "agent_instances": [],
+            "risks": [],
+            "acceptance_criteria": [],
         }
     )
     if cache_repo is not None and workspace_id:

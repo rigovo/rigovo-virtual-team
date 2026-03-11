@@ -213,6 +213,13 @@ export interface GateResult {
   pro?: boolean;
 }
 
+export interface AgentInstance {
+  instance_id: string;
+  role: string;
+  specialisation: string;
+  assignment: string;
+}
+
 export interface TaskDetail {
   id: string;
   description: string;
@@ -238,6 +245,12 @@ export interface TaskDetail {
    * Populated after pipeline_assembled fires; null/empty until assembly completes.
    */
   execution_dag?: Record<string, string[]>;
+  /** Agent instances from master classification — includes specialisation and assignment. */
+  agent_instances?: AgentInstance[];
+  /** Risk factors identified by master classification. */
+  risks?: string[];
+  /** Acceptance criteria from master classification. */
+  acceptance_criteria?: string[];
   cost: { total_tokens: number; total_cost_usd: number } | null;
   approval_data: Record<string, string>;
   /** Confidence score computed from pipeline quality gates (0-100) */

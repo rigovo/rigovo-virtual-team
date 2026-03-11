@@ -473,6 +473,8 @@ def _on_agent_event(event: dict) -> None:
             "reasoning": event.get("reasoning", ""),
             "agent_count": event.get("agent_count", 0),
             "agent_instances": event.get("agent_instances", []),
+            "risks": event.get("risks", []),
+            "acceptance_criteria": event.get("acceptance_criteria", []),
         }
         # Also persist to Task entity in DB so it survives across restarts
         try:
@@ -3951,6 +3953,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
             "steps": steps,
             "planned_roles": planned_roles,
             "execution_dag": execution_dag,
+            "agent_instances": (live_cls or {}).get("agent_instances", []),
+            "risks": (live_cls or {}).get("risks", []),
+            "acceptance_criteria": (live_cls or {}).get("acceptance_criteria", []),
             "cost": cost,
             "approval_data": task.approval_data or {},
             "confidence_score": confidence_score,
