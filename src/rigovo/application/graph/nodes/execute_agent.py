@@ -1072,6 +1072,11 @@ def _build_agent_messages(
     memory_section_text: str = "",
 ) -> list[dict[str, Any]]:
     """Build the message list for an agent execution."""
+    # Resolve base role for contract lookups — instance IDs like "software-engineer-1"
+    # need to map to "coder" for workflow contract injection.
+    from rigovo.application.graph.agent_identity import resolve_base_role as _resolve_br
+    _base_role_for_contract = _resolve_br(state, current_role)
+
     # Context engineering: assemble rich per-agent context
     context_builder = ContextBuilder()
     agent_context = context_builder.build(
@@ -1102,7 +1107,9 @@ def _build_agent_messages(
     if expert_block:
         system_prompt += f"\n\n{expert_block}"
 
-    role_contract_block = _role_contract_block(current_role)
+    # Use base role for contract lookup — ROLE_EXECUTION_CONTRACTS is keyed by
+    # base roles ("coder", "qa") not instance IDs ("software-engineer-1").
+    role_contract_block = _role_contract_block(_base_role_for_contract)
     if role_contract_block:
         system_prompt += f"\n\n{role_contract_block}"
 
@@ -2082,10 +2089,24 @@ async def _run_agentic_loop(
     events = events if events is not None else []
     stream_role = str(stream_identity or role or "agent")
     temperature = agent_config.get("temperature", DEFAULT_TEMPERATURE)
+
+    # ── Resolve base role for eligibility checks ──
+    # `role` is the instance_id (e.g. "software-engineer-1") but eligibility sets
+    # like ROLES_REQUIRING_FILE_WRITES use base roles (e.g. "coder").  Without
+    # this resolution, inline gates, stuck detection, mid-execution checks, and
+    # file-write enforcement silently skip instance-based agents.
+    _base_role = role
+    if state:
+        from rigovo.application.graph.agent_identity import resolve_base_role as _resolve_br
+        _base_role = _resolve_br(state, role)
+
     # Use per-role max_tokens for smarter token allocation
-    max_tokens = agent_config.get("max_tokens") or ROLE_MAX_TOKENS.get(role, DEFAULT_MAX_TOKENS)
+    max_tokens = (
+        agent_config.get("max_tokens")
+        or ROLE_MAX_TOKENS.get(_base_role, DEFAULT_MAX_TOKENS)
+    )
     subagent_enabled, max_subtasks_per_step, max_subtask_rounds = _resolve_subagent_policy(state)
-    require_file_write = role in ROLES_REQUIRING_FILE_WRITES
+    require_file_write = _base_role in ROLES_REQUIRING_FILE_WRITES
     retry_count = int((state or {}).get("retry_count", 0) or 0)
     fix_packets = list((state or {}).get("fix_packets", []) or [])
     latest_fix_packet = str(fix_packets[-1]).lower() if fix_packets else ""
@@ -2198,7 +2219,7 @@ async def _run_agentic_loop(
             # No tool calls — agent thinks it's done.
             # Run inline quality gates BEFORE accepting "done" signal.
             if (
-                role in ROLES_REQUIRING_FILE_WRITES
+                _base_role in ROLES_REQUIRING_FILE_WRITES
                 and successful_write_file_calls > 0
                 and inline_gate_attempts < max_inline_gate_attempts
             ):
@@ -2236,6 +2257,7 @@ async def _run_agentic_loop(
                                 {
                                     "type": "inline_quality_gate",
                                     "role": role,
+                                    "instance_id": stream_role,
                                     "round": round_num + 1,
                                     "passed": False,
                                     "attempt": inline_gate_attempts,
@@ -2248,6 +2270,7 @@ async def _run_agentic_loop(
                             {
                                 "type": "inline_quality_gate",
                                 "role": role,
+                                "instance_id": stream_role,
                                 "round": round_num + 1,
                                 "passed": True,
                                 "attempt": inline_gate_attempts,
@@ -2820,7 +2843,7 @@ async def _run_agentic_loop(
         if (
             round_num > 0
             and round_num % MID_EXECUTION_CHECK_INTERVAL == 0
-            and role in ROLES_REQUIRING_FILE_WRITES
+            and _base_role in ROLES_REQUIRING_FILE_WRITES
             and successful_write_file_calls > 0
         ):
             files_written_so_far = _extract_written_files(messages)
@@ -2888,7 +2911,7 @@ async def _run_agentic_loop(
 
         # ── Stuck detection ──────────────────────────────────────────────
         # If code-producing role goes 5+ rounds without writing files, nudge.
-        if role in ROLES_REQUIRING_FILE_WRITES:
+        if _base_role in ROLES_REQUIRING_FILE_WRITES:
             if successful_write_file_calls == writes_at_round_start:
                 consecutive_idle_rounds += 1
             else:
