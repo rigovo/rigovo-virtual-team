@@ -81,7 +81,7 @@ INTENT_PROFILES: dict[str, IntentProfile] = {
     "fix": IntentProfile(
         intent="fix",
         max_agents=4,  # planner + coder + reviewer + qa
-        max_tool_rounds=20,  # coder needs room to read→patch→verify across multiple files
+        max_tool_rounds=25,  # coder needs room to read→patch→verify across multiple files
         max_file_reads=30,  # Focused reading
         token_budget=200_000,
         planner_mode="survey",
@@ -91,7 +91,7 @@ INTENT_PROFILES: dict[str, IntentProfile] = {
     "build": IntentProfile(
         intent="build",
         max_agents=6,  # Completion-first default, scale up only with approval
-        max_tool_rounds=20,  # coder needs room; planner is capped separately via PLANNER_ROUND_CAP
+        max_tool_rounds=30,  # greenfield SaaS needs 30+ file ops; planner capped via PLANNER_ROUND_CAP
         max_file_reads=25,  # Cap early survey; coder can read deeper where needed
         token_budget=200_000,
         planner_mode="survey",

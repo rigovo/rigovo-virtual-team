@@ -2978,14 +2978,13 @@ async def execute_agent_node(
 
     # ── Surgical retry round cap ────────────────────────────────────────
     # In SURGICAL FIX MODE the agent should go directly to violated files.
-    # 25 tool rounds gives too much room to re-explore the entire codebase.
-    # Formula: 2 buffer + 3 rounds per violation (read + write + verify), capped at 12.
-    # This forces focus: the agent cannot afford to read unrelated files.
+    # Formula: 3 buffer + 3 rounds per violation (read + write + verify), capped at 20.
+    # Floor of 15 ensures greenfield builds can still make progress on retries.
     _retry_fix_packet_for_cap = _active_fix_packet(state)
     _retry_count_for_cap = int((state or {}).get("retry_count", 0) or 0)
     if _retry_fix_packet_for_cap and _retry_count_for_cap > 0 and current_role in ROLES_REQUIRING_FILE_WRITES:
         _violation_count = len(_retry_fix_packet_for_cap.get("items", []))
-        _retry_round_cap = max(8, min(12, 2 + 3 * max(1, _violation_count)))
+        _retry_round_cap = max(15, min(20, 3 + 3 * max(1, _violation_count)))
         intent_max_rounds = min(intent_max_rounds, _retry_round_cap)
 
     token_limit = int(state.get("budget_max_tokens_per_task", 0) or 0)
@@ -2993,13 +2992,13 @@ async def execute_agent_node(
     if token_limit > 0:
         remaining_tokens = max(0, token_limit - accumulated_tokens)
         if remaining_tokens <= 60_000:
-            intent_max_rounds = min(intent_max_rounds, 8)
+            intent_max_rounds = min(intent_max_rounds, 15)
             role_cap = int(ROLE_MAX_TOKENS.get(current_role, DEFAULT_MAX_TOKENS))
             hard_cap = max(1024, min(role_cap, int(remaining_tokens * 0.20)))
             configured = int(runtime_agent_config.get("max_tokens", role_cap) or role_cap)
             runtime_agent_config["max_tokens"] = min(configured, hard_cap)
             if remaining_tokens <= 30_000:
-                intent_max_rounds = min(intent_max_rounds, 4)
+                intent_max_rounds = min(intent_max_rounds, 8)
             events_for_pressure = list(state.get("events", []))
             events_for_pressure.append(
                 {
