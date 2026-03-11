@@ -148,6 +148,7 @@ class ToolExecutor:
         filesystem_sandbox_mode: str = "project_root",
         knowledge_graph: CodeKnowledgeGraph | None = None,
         scope_boundaries: dict[str, Any] | None = None,
+        allowed_tools: set[str] | None = None,
     ) -> None:
         self._integration_catalog = integration_catalog or {}
         self._integration_policy = integration_policy or {}
@@ -168,6 +169,9 @@ class ToolExecutor:
         )
         self._knowledge_graph = knowledge_graph
         self._file_cache = FileReadCache(self._execution_root)
+        # Server-side tool allow-list: if set, only these tools can execute.
+        # This is the ENFORCEMENT layer — prompt-level filtering is advisory.
+        self._allowed_tools: set[str] | None = allowed_tools
 
         # Cache Rigour binary for real-time hooks check on file writes
         self._rigour_binary: str | None = None
@@ -182,6 +186,7 @@ class ToolExecutor:
         self._handlers: dict[str, Any] = {
             "read_file": self._handle_read_file,
             "write_file": self._handle_write_file,
+            "delete_file": self._handle_delete_file,
             "list_directory": self._handle_list_directory,
             "search_codebase": self._handle_search_codebase,
             "run_command": self._handle_run_command,
@@ -289,6 +294,13 @@ class ToolExecutor:
             JSON string result for feeding back to the LLM.
         """
         await asyncio.sleep(0)
+        # Server-side enforcement: block tools not in the allow-list
+        if self._allowed_tools is not None and tool_name not in self._allowed_tools:
+            return json.dumps({
+                "error": f"Tool '{tool_name}' is not available for your role. "
+                f"Available tools: {sorted(self._allowed_tools)}",
+                "status": "tool_blocked",
+            })
         handler = self._handlers.get(tool_name)
         if not handler:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
@@ -309,6 +321,15 @@ class ToolExecutor:
         for call in tool_calls:
             name = call.get("name", "")
             inputs = call.get("input", {})
+
+            # Server-side enforcement: block tools not in the allow-list
+            if self._allowed_tools is not None and name not in self._allowed_tools:
+                results.append({
+                    "tool": name,
+                    "error": f"Tool '{name}' is not available for your role.",
+                    "status": "tool_blocked",
+                })
+                continue
 
             handler = self._handlers.get(name)
             if not handler:
@@ -488,6 +509,34 @@ class ToolExecutor:
             return warnings or None
         except (json.JSONDecodeError, OSError):
             return None
+
+    def _handle_delete_file(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Delete a file within the project sandbox."""
+        file_path = inputs.get("file_path", "")
+        if not file_path:
+            return {"error": "file_path is required"}
+
+        target = (self._execution_root / file_path).resolve()
+        try:
+            target.relative_to(self._execution_root)
+        except ValueError:
+            return {"error": "Path escapes project sandbox"}
+
+        # Scope boundary check (same as write_file)
+        scope_err = self._check_scope_violation(file_path)
+        if scope_err:
+            return scope_err
+
+        if not target.exists():
+            return {"error": f"File not found: {file_path}"}
+        if not target.is_file():
+            return {"error": f"Not a file (directory?): {file_path}"}
+
+        try:
+            target.unlink()
+            return {"status": "deleted", "file_path": file_path}
+        except OSError as e:
+            return {"error": f"Failed to delete: {e}"}
 
     def _handle_list_directory(self, inputs: dict[str, Any]) -> dict[str, Any]:
         return self._reader.list_directory(

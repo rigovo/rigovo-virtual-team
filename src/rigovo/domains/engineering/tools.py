@@ -32,6 +32,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
     "coder": [
         "read_file",
         "write_file",
+        "delete_file",
         "list_directory",
         "search_codebase",
         "run_command",
@@ -65,6 +66,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
     "qa": [
         "read_file",
         "write_file",
+        "delete_file",
         "list_directory",
         "search_codebase",
         "run_command",
@@ -77,6 +79,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
     "devops": [
         "read_file",
         "write_file",
+        "delete_file",
         "list_directory",
         "run_command",
         "get_impact_radius",
@@ -86,6 +89,7 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
     "sre": [
         "read_file",
         "write_file",
+        "delete_file",
         "list_directory",
         "run_command",
         "get_impact_radius",
@@ -95,6 +99,8 @@ TOOLS_BY_ROLE: dict[str, list[str]] = {
     "lead": [
         "read_file",
         "list_directory",
+        "write_file",
+        "delete_file",
         "search_codebase",
         "get_component_map",
         "get_impact_radius",
@@ -129,6 +135,23 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "content": {"type": "string", "description": "Full file content to write."},
             },
             "required": ["path", "content"],
+        },
+    },
+    "delete_file": {
+        "name": "delete_file",
+        "description": (
+            "Delete a file at the given path. Use when cleaning up "
+            "generated or renamed files."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Relative path from project root.",
+                },
+            },
+            "required": ["file_path"],
         },
     },
     "list_directory": {

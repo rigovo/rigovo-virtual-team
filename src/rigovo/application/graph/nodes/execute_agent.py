@@ -2121,16 +2121,31 @@ async def _run_agentic_loop(
             len(messages),
         )
 
-        # Call LLM with tools
-        response: LLMResponse = await asyncio.wait_for(
-            llm.invoke(
-                messages=messages,
-                tools=tool_defs,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            ),
-            timeout=batch_timeout,
-        )
+        # Call LLM with tools (retry once on timeout/transient error)
+        _llm_attempts = 0
+        _llm_max_attempts = 2
+        while True:
+            _llm_attempts += 1
+            try:
+                response: LLMResponse = await asyncio.wait_for(
+                    llm.invoke(
+                        messages=messages,
+                        tools=tool_defs,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    ),
+                    timeout=batch_timeout,
+                )
+                break
+            except (asyncio.TimeoutError, OSError, ConnectionError) as _llm_err:
+                if _llm_attempts >= _llm_max_attempts:
+                    raise
+                logger.warning(
+                    "Agent %s LLM call failed (%s), retrying (%d/%d)...",
+                    role, type(_llm_err).__name__,
+                    _llm_attempts, _llm_max_attempts,
+                )
+                await asyncio.sleep(2)
 
         total_input_tokens += response.usage.input_tokens
         total_output_tokens += response.usage.output_tokens
@@ -3247,6 +3262,11 @@ async def execute_agent_node(
     _ctx_pkg = runtime_agent_config.get("context_package", {}) or {}
     _scope_boundaries = _ctx_pkg.get("scope_boundaries", {}) or {}
 
+    # Server-side tool allow-list: only tools in the LLM tool_defs can execute.
+    # This prevents prompt-injection or LLM drift from invoking tools the role
+    # shouldn't have (e.g., planner calling write_file).
+    _allowed_tool_names = {t.get("name", "") for t in tool_defs if t.get("name")}
+
     tool_executor = ToolExecutor(
         project_root,
         integration_catalog=state.get("integration_catalog", {}),
@@ -3256,6 +3276,7 @@ async def execute_agent_node(
         filesystem_sandbox_mode=str(state.get("filesystem_sandbox_mode", "project_root")),
         knowledge_graph=state.get("code_knowledge_graph"),
         scope_boundaries=_scope_boundaries,
+        allowed_tools=_allowed_tool_names or None,
     )
 
     # --- LLM setup ---

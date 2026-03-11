@@ -165,7 +165,27 @@ def check_gates_and_route(state: TaskState) -> str:
     if gate_results.get("passed", True) or gate_results.get("status") == "skipped":
         return "pass_next_agent"
 
-    # 1b. Global execution cap — prevents unbounded cycles across debate/replan rounds.
+    # 1b. Structural persona violations for non-code roles are UNFIXABLE.
+    # Retrying a planner/reviewer/lead/security that wrote files is pointless —
+    # the violation is structural (wrong tool access), not a code bug.
+    # Skip retry, pass through with a warning.
+    _gate_reason = gate_results.get("reason", "")
+    if _gate_reason == "persona_violation":
+        _role_raw = state.get("current_agent_role", "")
+        # Extract base role from team_config, or strip numeric suffix
+        _team_cfg = state.get("team_config", {}) or {}
+        _agents_cfg = _team_cfg.get("agents", {}) or {}
+        _agent_entry = _agents_cfg.get(_role_raw, {}) or {}
+        _base_role = _agent_entry.get("role", _role_raw.rsplit("-", 1)[0])
+        _non_code_roles = {"planner", "reviewer", "security", "lead"}
+        if _base_role in _non_code_roles:
+            _logger.warning(
+                "Skipping retry for %s persona violation (structural)",
+                _base_role,
+            )
+            return "pass_next_agent"
+
+    # 1c. Global execution cap — prevents unbounded cycles across debate/replan rounds.
     # Even if retry_count was reset by agent transitions, this absolute cap stops runaway loops.
     if total_executions >= GLOBAL_MAX_EXECUTIONS_PER_INSTANCE:
         return "fail_max_retries"

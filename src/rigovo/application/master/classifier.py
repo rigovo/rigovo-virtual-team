@@ -338,7 +338,7 @@ class TaskClassifier:
         else:
             _max_tokens = 2048  # medium tasks: feature, bug, refactor
 
-        # Build deterministic hint section (inject as floor constraint)
+        # Build deterministic hint section (guidance, not absolute floor)
         deterministic_section = ""
         if deterministic_hint and deterministic_hint.get("is_deterministic"):
             det_type = deterministic_hint.get("task_type", "feature")
@@ -348,10 +348,12 @@ class TaskClassifier:
                 f"\n\nDETERMINISTIC PRE-CLASSIFICATION (confidence {det_confidence:.0%}):\n"
                 f"  task_type: {det_type}\n"
                 f"  complexity: {det_complexity}\n"
-                f"This is a FLOOR — you can upgrade (e.g., add security concerns, raise "
-                f"complexity) but NEVER downgrade below this classification. If the "
-                f"pre-classification says 'new_project', your staffing plan MUST include "
-                f"agents suitable for a new project (planner, coder, reviewer at minimum)."
+                f"This is a HINT from keyword matching. Use your judgment — if the "
+                f"task description clearly indicates a different type (e.g., 'create' "
+                f"tasks are features/new_project, not bugs), override the hint. "
+                f"Only enforce 'new_project' as a floor: if the hint says "
+                f"'new_project', your staffing plan MUST include agents suitable "
+                f"for a new project (planner, coder, reviewer at minimum)."
             )
 
         # Build user message with all context
@@ -375,25 +377,37 @@ class TaskClassifier:
 
         user_message = "\n".join(message_parts)
 
-        try:
-            response = await self._llm.invoke(
-                messages=[
-                    {"role": "system", "content": MASTER_AGENT_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-                temperature=0.1,
-                max_tokens=_max_tokens,
-            )
-        except Exception as llm_err:
-            # Surface the real error instead of empty message
+        # Retry once on transient errors (timeout, network)
+        _last_err: Exception | None = None
+        for _attempt in range(2):
+            try:
+                response = await self._llm.invoke(
+                    messages=[
+                        {"role": "system", "content": MASTER_AGENT_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    temperature=0.1,
+                    max_tokens=_max_tokens,
+                )
+                _last_err = None
+                break
+            except Exception as llm_err:
+                _last_err = llm_err
+                if _attempt == 0:
+                    logger.warning(
+                        "Master LLM attempt %d failed (%s): %s — retrying...",
+                        _attempt + 1, type(llm_err).__name__, llm_err,
+                    )
+                    await asyncio.sleep(2)
+        if _last_err is not None:
             logger.error(
-                "Master Agent LLM call failed (%s): %s — check API key config",
-                type(llm_err).__name__,
-                llm_err,
+                "Master Agent LLM call failed after retries (%s): %s",
+                type(_last_err).__name__, _last_err,
             )
             raise RuntimeError(
-                f"Master Agent LLM failed ({type(llm_err).__name__}): {llm_err}"
-            ) from llm_err
+                f"Master Agent LLM failed ({type(_last_err).__name__}): "
+                f"{_last_err}"
+            ) from _last_err
 
         if not response or not response.content:
             logger.error("Master Agent returned empty response")
