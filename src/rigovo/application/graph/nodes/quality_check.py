@@ -947,15 +947,21 @@ async def quality_check_node(
         if isinstance(e, dict)
         and e.get("type") == "inline_quality_gate"
         and e.get("passed") is True
+        and e.get("gate_ran") is True  # Only trust if CLI actually executed
         and (
             e.get("role") in _inline_role_matches
             or e.get("instance_id") in _inline_role_matches
         )
     ]
-    if _inline_gate_events:
+    _has_registered_gates = bool(quality_gates)
+    if _inline_gate_events and not _has_registered_gates:
+        # Fast-path: inline Rigour CLI passed and no additional quality gates
+        # registered.  Skip the full CLI re-run, only do persona checks.
+        # When custom quality gates are registered (e.g. in tests or plugins),
+        # we MUST still run them — inline gates only cover Rigour CLI.
         logger.info(
             "Quality check fast-path: inline gates passed for %s, "
-            "skipping full Rigour CLI re-run",
+            "skipping full Rigour CLI re-run (no additional gates registered)",
             current_instance,
         )
         # Still run persona boundary checks (lightweight, no CLI)

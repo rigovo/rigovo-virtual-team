@@ -29,6 +29,7 @@ class InlineGateResult:
     passed: bool
     violations: list[dict[str, Any]] = field(default_factory=list)
     violation_summary: str = ""
+    gate_ran: bool = False  # True only when Rigour CLI actually executed
 
 
 async def run_inline_quality_gates(
@@ -80,12 +81,12 @@ async def run_inline_quality_gates(
             ),
         )
         if not result.stdout.strip():
-            return InlineGateResult(passed=True)
+            return InlineGateResult(passed=True, gate_ran=True)
 
         data = json.loads(result.stdout)
         failures = data.get("failures", [])
         if not failures:
-            return InlineGateResult(passed=True)
+            return InlineGateResult(passed=True, gate_ran=True)
 
         # Filter to critical/high for the agent's role
         violations = [
@@ -101,7 +102,7 @@ async def run_inline_quality_gates(
         ]
 
         if not violations:
-            return InlineGateResult(passed=True)
+            return InlineGateResult(passed=True, gate_ran=True)
 
         # Build a summary suitable for injection as a USER message
         summary_parts = [
@@ -131,6 +132,7 @@ async def run_inline_quality_gates(
             passed=False,
             violations=violations,
             violation_summary="\n".join(summary_parts),
+            gate_ran=True,
         )
 
     except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as exc:

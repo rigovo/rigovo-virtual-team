@@ -2262,10 +2262,11 @@ async def _run_agentic_loop(
                                     "passed": False,
                                     "attempt": inline_gate_attempts,
                                     "violations": len(_gate_result.violations),
+                                    "gate_ran": _gate_result.gate_ran,
                                 }
                             )
                             continue  # Agent self-corrects in same context
-                        # Gates passed
+                        # Gates passed — only emit event if CLI actually ran
                         events.append(
                             {
                                 "type": "inline_quality_gate",
@@ -2275,6 +2276,7 @@ async def _run_agentic_loop(
                                 "passed": True,
                                 "attempt": inline_gate_attempts,
                                 "violations": 0,
+                                "gate_ran": _gate_result.gate_ran,
                             }
                         )
                     except Exception:
