@@ -4,6 +4,7 @@
 /* ------------------------------------------------------------------ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AgentInstance,
   InboxTask,
   TaskDetail as TaskDetailType,
   TaskStep,
@@ -545,6 +546,276 @@ function MissionControl({ mission }: { mission: MissionData | null }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  MasterBriefingCard — shows master classification result           */
+/* ================================================================== */
+interface BriefingProps {
+  taskType: string;
+  complexity: string;
+  executionMode: string;
+  agentInstances: AgentInstance[];
+  plannedRoles: string[];
+  executionDag: Record<string, string[]>;
+  reasoning: string;
+  risks: string[];
+  acceptanceCriteria: string[];
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+  onDismiss: () => void;
+}
+
+function topoSort(dag: Record<string, string[]>): string[] {
+  const nodes = new Set<string>();
+  const edges = new Map<string, string[]>();
+  for (const [node, deps] of Object.entries(dag)) {
+    nodes.add(node);
+    edges.set(node, deps || []);
+    for (const d of deps || []) nodes.add(d);
+  }
+  const visited = new Set<string>();
+  const result: string[] = [];
+  const visit = (n: string) => {
+    if (visited.has(n)) return;
+    visited.add(n);
+    for (const d of edges.get(n) || []) visit(d);
+    result.push(n);
+  };
+  for (const n of nodes) visit(n);
+  return result;
+}
+
+function MasterBriefingCard({
+  taskType,
+  complexity,
+  executionMode,
+  agentInstances,
+  plannedRoles,
+  executionDag,
+  reasoning,
+  risks,
+  acceptanceCriteria,
+  collapsed,
+  onToggleCollapse,
+  onDismiss,
+}: BriefingProps) {
+  const [reasoningExpanded, setReasoningExpanded] = useState(false);
+
+  const complexityClass =
+    complexity === "critical"
+      ? "td-complexity-critical"
+      : complexity === "high"
+        ? "td-complexity-high"
+        : complexity === "medium"
+          ? "td-complexity-medium"
+          : "td-complexity-low";
+
+  const pipeline = useMemo(() => {
+    if (!executionDag || Object.keys(executionDag).length === 0) return plannedRoles;
+    return topoSort(executionDag);
+  }, [executionDag, plannedRoles]);
+
+  const teamSize = agentInstances.length || plannedRoles.length;
+
+  if (collapsed) {
+    return (
+      <div className="animate-fadeup rounded-2xl border border-[var(--border)] bg-[rgba(0,0,0,0.02)] px-4 py-3 mb-3 flex items-center gap-3 flex-shrink-0">
+        <span className="text-base">🧠</span>
+        <div className="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
+          <span className="mission-stat capitalize">{taskType}</span>
+          <span className={`mission-stat ${complexityClass}`}>{complexity}</span>
+          <span className="mission-stat">{teamSize} agent{teamSize !== 1 ? "s" : ""}</span>
+          <span className="mission-stat">{executionMode}</span>
+          <span className="text-[11px] text-[var(--t4)] truncate">
+            {pipeline.map((r) => canonicalAgentLabel(r)).join(" → ")}
+          </span>
+        </div>
+        <button
+          type="button"
+          className="td-meta-toggle"
+          onClick={onToggleCollapse}
+          title="Expand briefing"
+        >
+          Expand
+        </button>
+        <button
+          type="button"
+          className="td-meta-toggle"
+          onClick={onDismiss}
+          title="Dismiss briefing"
+        >
+          ✕
+        </button>
+      </div>
+    );
+  }
+
+  const reasoningLines = reasoning.split("\n").filter((l) => l.trim());
+  const showReasoningToggle = reasoningLines.length > 3;
+  const visibleReasoning = reasoningExpanded
+    ? reasoning
+    : reasoningLines.slice(0, 3).join("\n");
+
+  return (
+    <div className="animate-fadeup rounded-2xl border border-[var(--border)] bg-[rgba(0,0,0,0.02)] p-5 overflow-y-auto flex-1">
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-4">
+        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[rgba(0,0,0,0.04)] text-lg">
+          🧠
+        </div>
+        <div className="flex-1">
+          <p className="text-sm font-semibold" style={{ color: "var(--t1)" }}>
+            Mission Briefing
+          </p>
+          <p className="text-[11px]" style={{ color: "var(--t3)" }}>
+            Master Agent classification complete
+          </p>
+        </div>
+        <button
+          type="button"
+          className="td-meta-toggle"
+          onClick={onToggleCollapse}
+        >
+          Collapse
+        </button>
+        <button
+          type="button"
+          className="td-meta-toggle"
+          onClick={onDismiss}
+        >
+          ✕
+        </button>
+      </div>
+
+      {/* Classification pills */}
+      <div className="flex flex-wrap gap-1.5 mb-4">
+        <span className="mission-stat capitalize">{taskType}</span>
+        <span className={`mission-stat ${complexityClass}`}>{complexity}</span>
+        <span className="mission-stat">{executionMode}</span>
+        <span className="mission-stat">{teamSize} agent{teamSize !== 1 ? "s" : ""}</span>
+      </div>
+
+      {/* Execution pipeline */}
+      {pipeline.length > 0 && (
+        <div className="mb-4 rounded-xl border border-[var(--border)] bg-[rgba(0,0,0,0.03)] px-3 py-2.5">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--t4)] mb-2">
+            Pipeline
+          </p>
+          <div className="flex flex-wrap items-center gap-1">
+            {pipeline.map((role, i) => (
+              <span key={role} className="flex items-center gap-1">
+                {i > 0 && (
+                  <span className="text-[11px] text-[var(--t4)]">→</span>
+                )}
+                <span className="inline-block rounded bg-[rgba(0,0,0,0.05)] px-2 py-0.5 text-[11px] font-medium text-[var(--t2)]">
+                  {canonicalAgentLabel(role)}
+                </span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Team composition */}
+      {agentInstances.length > 0 && (
+        <div className="mb-4">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--t4)] mb-2">
+            Team
+          </p>
+          <div className="space-y-2">
+            {agentInstances.map((agent) => (
+              <div key={agent.instance_id} className="flex items-start gap-2">
+                <span className="mt-1.5 inline-block h-2 w-2 rounded-full bg-[var(--accent)] flex-shrink-0" />
+                <div className="min-w-0">
+                  <span className="text-[12px] font-semibold text-[var(--t1)]">
+                    {canonicalAgentLabel(agent.role)}
+                  </span>
+                  {agent.specialisation && (
+                    <span className="text-[11px] text-[var(--t4)] ml-1">
+                      ({agent.specialisation})
+                    </span>
+                  )}
+                  {agent.assignment && (
+                    <p className="text-[11px] leading-snug text-[var(--t3)] mt-0.5">
+                      {agent.assignment.length > 120
+                        ? agent.assignment.slice(0, 120) + "…"
+                        : agent.assignment}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Master reasoning */}
+      {reasoning && (
+        <div className="mb-4">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--t4)] mb-2">
+            Reasoning
+          </p>
+          <p
+            className="text-[12px] leading-relaxed whitespace-pre-line"
+            style={{ color: "var(--t2)" }}
+          >
+            {visibleReasoning}
+          </p>
+          {showReasoningToggle && (
+            <button
+              type="button"
+              className="td-meta-toggle mt-1"
+              onClick={() => setReasoningExpanded((v) => !v)}
+            >
+              {reasoningExpanded ? "Show less" : "Show more"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Risks */}
+      {risks.length > 0 && (
+        <div className="mb-4">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--t4)] mb-1.5">
+            Risks
+          </p>
+          <div className="border-l-2 border-rose-300/50 pl-2.5 space-y-1">
+            {risks.slice(0, 5).map((risk, i) => (
+              <p key={i} className="text-[11px] text-[var(--t3)] leading-snug">
+                {typeof risk === "string" ? risk : String(risk)}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Acceptance criteria */}
+      {acceptanceCriteria.length > 0 && (
+        <div className="mb-4">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--t4)] mb-1.5">
+            Acceptance criteria
+          </p>
+          <div className="border-l-2 border-emerald-300/50 pl-2.5 space-y-1">
+            {acceptanceCriteria.slice(0, 5).map((c, i) => (
+              <p key={i} className="text-[11px] text-[var(--t3)] leading-snug">
+                {typeof c === "string" ? c : String(c)}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
+      <button
+        type="button"
+        className="w-full rounded-xl border border-[var(--border)] bg-[rgba(0,0,0,0.03)] py-2 text-[12px] font-medium text-[var(--t2)] hover:bg-[rgba(0,0,0,0.06)] transition-colors"
+        onClick={onDismiss}
+      >
+        View execution →
+      </button>
     </div>
   );
 }
@@ -1185,6 +1456,8 @@ export default function TaskDetail({
   const [leftOpen, setLeftOpen] = useState(true);
   const [showAdvancedMeta, setShowAdvancedMeta] = useState(false);
   const [showInsights, setShowInsights] = useState(false);
+  const [briefingDismissed, setBriefingDismissed] = useState(false);
+  const [briefingCollapsed, setBriefingCollapsed] = useState(false);
 
   const [drawer, setDrawer] = useState<{
     agent: string;
@@ -1408,6 +1681,8 @@ export default function TaskDetail({
     setShowAdvancedMeta(false);
     setShowInsights(false);
     setUiMode("focus");
+    setBriefingDismissed(false);
+    setBriefingCollapsed(false);
   }, [task.id]);
 
   useEffect(() => {
@@ -1416,6 +1691,32 @@ export default function TaskDetail({
       setShowAdvancedMeta(false);
     }
   }, [uiMode]);
+
+  /* ── Master Briefing Card logic ── */
+  const masterDecision = detail?.supervisory_decisions?.[0] as
+    | Record<string, unknown>
+    | undefined;
+  const hasBriefingData =
+    ((detail?.agent_instances?.length ?? 0) > 0 ||
+      (detail?.supervisory_decisions?.length ?? 0) > 0) &&
+    !isProcessing;
+  const showBriefing = hasBriefingData && !briefingDismissed;
+
+  // Auto-collapse when agents start running
+  useEffect(() => {
+    if (!hasBriefingData || briefingDismissed) return;
+    const anyRunning = detail?.steps?.some((s) => s.status === "running");
+    if (anyRunning && !briefingCollapsed) {
+      setBriefingCollapsed(true);
+    }
+  }, [detail?.steps, hasBriefingData, briefingDismissed, briefingCollapsed]);
+
+  const handleBriefingDismiss = useCallback(() => {
+    setBriefingDismissed(true);
+    if (uiMode === "focus" && viewMode === "map") {
+      setViewMode("timeline");
+    }
+  }, [uiMode, viewMode]);
 
   return (
     <div className="animate-fadeup h-full flex flex-col">
@@ -1426,10 +1727,10 @@ export default function TaskDetail({
           <div className="td-badges">
             <span className={tierClass(effectiveTier)}>{effectiveTier}</span>
             <span className={statusClass(task.status)}>{task.status}</span>
-            {uiMode === "full" && detail?.task_type && (
+            {detail?.task_type && (
               <span className="td-type-badge">{detail.task_type}</span>
             )}
-            {uiMode === "full" && detail?.complexity && (
+            {detail?.complexity && (
               <span
                 className={`td-type-badge ${
                   detail.complexity === "critical"
@@ -1850,7 +2151,7 @@ export default function TaskDetail({
           </button>
         )}
 
-        {/* Left: Neural Map | Timeline | Logs */}
+        {/* Left: Neural Map | Timeline | Logs — with optional MasterBriefingCard overlay */}
         {viewMode === "map" ? (
           <div className={`td-map-left ${leftOpen ? "" : "td-panel-hidden"}`}>
             {isProcessing ? (
@@ -1867,23 +2168,43 @@ export default function TaskDetail({
                 />
               </div>
             ) : (
-              <NeuralCalibrationMap
-                steps={detail?.steps ?? []}
-                taskStatus={task.status}
-                taskType={detail?.task_type}
-                collab={collab}
-                plannedRoles={detail?.planned_roles ?? []}
-                executionDag={detail?.execution_dag}
-                totalFiles={totalFiles}
-                totalCost={mapTotalCost}
-                expectedAgents={expectedAgents}
-                nextExpectedRole={nextRole ? canonicalAgentLabel(nextRole) : null}
-                replanCount={replanCount}
-                gatesTotal={gatesTotalSummary}
-                gatesFailed={gatesFailedSummary}
-                selectedAgent={selectedAgent}
-                onSelectAgent={setSelectedAgent}
-              />
+              <>
+                {showBriefing && (
+                  <MasterBriefingCard
+                    taskType={detail?.task_type ?? ""}
+                    complexity={detail?.complexity ?? "medium"}
+                    executionMode={String(masterDecision?.execution_mode || "linear")}
+                    agentInstances={detail?.agent_instances ?? []}
+                    plannedRoles={detail?.planned_roles ?? []}
+                    executionDag={detail?.execution_dag ?? {}}
+                    reasoning={String(masterDecision?.summary || "")}
+                    risks={detail?.risks ?? []}
+                    acceptanceCriteria={detail?.acceptance_criteria ?? []}
+                    collapsed={briefingCollapsed}
+                    onToggleCollapse={() => setBriefingCollapsed((v) => !v)}
+                    onDismiss={handleBriefingDismiss}
+                  />
+                )}
+                {(!showBriefing || briefingCollapsed) && (
+                  <NeuralCalibrationMap
+                    steps={detail?.steps ?? []}
+                    taskStatus={task.status}
+                    taskType={detail?.task_type}
+                    collab={collab}
+                    plannedRoles={detail?.planned_roles ?? []}
+                    executionDag={detail?.execution_dag}
+                    totalFiles={totalFiles}
+                    totalCost={mapTotalCost}
+                    expectedAgents={expectedAgents}
+                    nextExpectedRole={nextRole ? canonicalAgentLabel(nextRole) : null}
+                    replanCount={replanCount}
+                    gatesTotal={gatesTotalSummary}
+                    gatesFailed={gatesFailedSummary}
+                    selectedAgent={selectedAgent}
+                    onSelectAgent={setSelectedAgent}
+                  />
+                )}
+              </>
             )}
           </div>
         ) : viewMode === "timeline" ? (
@@ -1904,15 +2225,35 @@ export default function TaskDetail({
                 />
               </div>
             ) : (
-              <AgentTimeline
-                steps={detail.steps}
-                taskType={detail.task_type ?? "engineering"}
-                plannedCount={expectedAgents}
-                collab={collab}
-                gov={gov}
-                costs={costs}
-                onOpenFiles={openFilesDrawer}
-              />
+              <>
+                {showBriefing && (
+                  <MasterBriefingCard
+                    taskType={detail?.task_type ?? ""}
+                    complexity={detail?.complexity ?? "medium"}
+                    executionMode={String(masterDecision?.execution_mode || "linear")}
+                    agentInstances={detail?.agent_instances ?? []}
+                    plannedRoles={detail?.planned_roles ?? []}
+                    executionDag={detail?.execution_dag ?? {}}
+                    reasoning={String(masterDecision?.summary || "")}
+                    risks={detail?.risks ?? []}
+                    acceptanceCriteria={detail?.acceptance_criteria ?? []}
+                    collapsed={briefingCollapsed}
+                    onToggleCollapse={() => setBriefingCollapsed((v) => !v)}
+                    onDismiss={handleBriefingDismiss}
+                  />
+                )}
+                {(!showBriefing || briefingCollapsed) && (
+                  <AgentTimeline
+                    steps={detail.steps}
+                    taskType={detail.task_type ?? "engineering"}
+                    plannedCount={expectedAgents}
+                    collab={collab}
+                    gov={gov}
+                    costs={costs}
+                    onOpenFiles={openFilesDrawer}
+                  />
+                )}
+              </>
             )}
           </div>
         ) : (
