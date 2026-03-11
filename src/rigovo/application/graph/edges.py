@@ -585,13 +585,17 @@ def _parse_verdict(summary: str) -> str | None:
 
 
 # Fallback markers — ONLY used when there is NO structured ## Verdict.
-# These are intentionally conservative to avoid false positives like
-# "No issues found" matching "issues found".
+# Removed the lowercase "issues found" which caused false positives
+# ("No blocking or critical issues found" matched "issues found").
+# Kept explicit uppercase markers that are unambiguous agent outputs.
 _CHANGES_REQUESTED_MARKERS = [
     "CHANGES_REQUESTED",
     "changes requested",
     "needs revision",
     "BLOCKED",
+    "ISSUES_FOUND",
+    "FAILED",
+    "tests failed",
 ]
 
 # Phase 5: Security can also raise issues that need coder fixes.
