@@ -99,6 +99,7 @@ class AgentContext:
     quality_contract: str = ""
     behavioral_section: str = ""  # HSM behavioral state injection
     resume_section: str = ""  # History state: injected when resuming interrupted task
+    rigour_conventions_section: str = ""  # Project conventions from `rigour recall`
 
     def to_full_context(self) -> str:
         """Assemble all sections into a single context string."""
@@ -112,6 +113,10 @@ class AgentContext:
             sections.append(
                 f"--- QUALITY CONTRACT (what's expected of you) ---\n{self.quality_contract}"
             )
+
+        # Rigour project conventions — established patterns agents must follow
+        if self.rigour_conventions_section:
+            sections.append(self.rigour_conventions_section)
 
         if self.project_section:
             sections.append(self.project_section)
@@ -171,6 +176,7 @@ class ContextBuilder:
         knowledge_graph: CodeKnowledgeGraph | None = None,
         resume_context: dict[str, Any] | None = None,
         context_package: dict[str, Any] | None = None,
+        rigour_conventions: str = "",
     ) -> AgentContext:
         """Build complete context for an agent.
 
@@ -215,6 +221,14 @@ class ContextBuilder:
                     "conventions, directory layout, and tech stack already present. "
                     "Do not introduce new frameworks or patterns unless explicitly required."
                 )
+
+        # 1c. Rigour project conventions — persistent project-level patterns
+        if rigour_conventions:
+            ctx.rigour_conventions_section = self._budget_text(
+                "--- PROJECT CONVENTIONS (from Rigour memory) ---\n"
+                + rigour_conventions,
+                2000,
+            )
 
         # 2. Project context — what the codebase looks like
         if project_snapshot:

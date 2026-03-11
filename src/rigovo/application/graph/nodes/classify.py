@@ -68,12 +68,16 @@ def _master_decision_event(
 
 
 def _classifier_timeout_seconds() -> int:
-    """Runtime-configurable timeout for Master Agent classification."""
-    raw = os.environ.get("RIGOVO_CLASSIFIER_TIMEOUT_SECONDS", "25").strip()
+    """Runtime-configurable timeout for Master Agent classification.
+
+    Default 45s — first cold call to the API can take 15-30s, and the
+    Master Agent system prompt is large.  25s was too aggressive.
+    """
+    raw = os.environ.get("RIGOVO_CLASSIFIER_TIMEOUT_SECONDS", "45").strip()
     try:
         value = int(raw)
     except ValueError:
-        return 25
+        return 45
     return max(5, min(value, 120))
 
 
@@ -117,9 +121,9 @@ async def classify_node(
     Phase 1 (instant): Deterministic two-pass classification (regex + vector).
     Phase 2 (LLM): Full SME analysis with staffing plan, guided by Phase 1 hint.
 
-    The deterministic result is a FLOOR — the LLM can add agents and
-    upgrade complexity but can NEVER produce a team below the minimum
-    team table or downgrade the task type.
+    The deterministic result is a HINT — the LLM uses it as guidance
+    but can override task_type if the description clearly indicates
+    otherwise. Minimum team table is still enforced post-LLM.
     """
     description = state["description"]
     project_snapshot = state.get("project_snapshot")
@@ -165,6 +169,10 @@ async def classify_node(
     # ══════════════════════════════════════════════════════════════════
 
     if classifier is not None:
+        logger.info(
+            "Master Agent LLM: starting classification (timeout=%ss)...",
+            _classifier_timeout_seconds(),
+        )
         try:
             plan: StaffingPlan = await asyncio.wait_for(
                 classifier.analyze(
@@ -173,6 +181,10 @@ async def classify_node(
                     deterministic_hint=deterministic_classification,
                 ),
                 timeout=_classifier_timeout_seconds(),
+            )
+            logger.info(
+                "Master Agent LLM: SUCCESS — task_type=%s complexity=%s agents=%d",
+                plan.task_type, plan.complexity, len(plan.agents),
             )
         except TimeoutError:
             logger.warning(
@@ -247,8 +259,9 @@ async def classify_node(
                 "events": events,
             }
         except Exception as e:
-            logger.warning(
-                "Master classification failed: %s: %s; using deterministic fallback",
+            logger.error(
+                "Master Agent LLM FAILED: %s: %s — falling back to deterministic. "
+                "Check API key (ANTHROPIC_API_KEY or OPENAI_API_KEY) and network.",
                 type(e).__name__,
                 e or "(no message — check API key configuration)",
             )

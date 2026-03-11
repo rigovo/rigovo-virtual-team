@@ -171,6 +171,7 @@ class TaskState(TypedDict, total=False):
     # --- Context engineering ---
     project_snapshot: Any  # ProjectSnapshot from scanner (set at task start)
     code_knowledge_graph: Any  # CodeKnowledgeGraph — imports, exports, dependencies
+    rigour_conventions: str  # Project conventions from `rigour recall` (loaded at scan time)
     enrichment_updates: list[dict[str, Any]]  # Learnings extracted post-pipeline
 
     # --- Agent debate ---

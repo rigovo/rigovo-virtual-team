@@ -352,6 +352,7 @@ class GraphBuilder:
                 state,
                 master_llm,
                 classifier=classifier,
+                embedding_provider=self._embedding_provider,
                 cache_repo=self._cache_repo,
             )
 
