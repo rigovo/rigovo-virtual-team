@@ -492,13 +492,13 @@ def advance_to_next_agent(state: TaskState) -> dict:
 
 
 def _log_rigour_handoff(
-    state: TaskState, from_agent: str, to_agent: str,
+    state: TaskState,
+    from_agent: str,
+    to_agent: str,
 ) -> None:
     """Write handoff entry to .rigour/handoffs.jsonl (best-effort)."""
     try:
-        project_root = str(
-            state.get("target_root") or state.get("project_root") or "."
-        )
+        project_root = str(state.get("target_root") or state.get("project_root") or ".")
         session = RigourSession(project_root)
         # Collect files the outgoing agent touched
         agent_output = state.get("agent_outputs", {}).get(from_agent, {})
@@ -510,17 +510,15 @@ def _log_rigour_handoff(
             to_agent=to_agent,
             task=str(state.get("current_task_summary", "")),
             files=files,
-            context=str(
-                agent_output.get("summary", "")
-                if isinstance(agent_output, dict)
-                else ""
-            ),
+            context=str(agent_output.get("summary", "") if isinstance(agent_output, dict) else ""),
         )
-        session.log_event({
-            "type": "handoff_initiated",
-            "fromAgentId": from_agent,
-            "toAgentId": to_agent,
-        })
+        session.log_event(
+            {
+                "type": "handoff_initiated",
+                "fromAgentId": from_agent,
+                "toAgentId": to_agent,
+            }
+        )
     except Exception:
         pass  # Best-effort — never break routing
 
@@ -550,8 +548,11 @@ def _log_rigour_handoff(
 
 _APPROVED_VERDICTS = {"APPROVED", "LGTM", "PASSED", "NO ISSUES"}
 _REJECTED_VERDICTS = {
-    "CHANGES REQUESTED", "CHANGES_REQUESTED",
-    "BLOCKED", "FAILED", "REJECTED",
+    "CHANGES REQUESTED",
+    "CHANGES_REQUESTED",
+    "BLOCKED",
+    "FAILED",
+    "REJECTED",
 }
 
 _VERDICT_PATTERN = _re.compile(
@@ -686,8 +687,7 @@ def _find_all_feedback_sources(state: TaskState) -> list[tuple[str, str, str]]:
         if role in {"qa", "reviewer"}:
             exec_log = output.get("execution_log", [])
             has_test_failure = any(
-                isinstance(entry, dict) and entry.get("exit_code", 0) != 0
-                for entry in exec_log
+                isinstance(entry, dict) and entry.get("exit_code", 0) != 0 for entry in exec_log
             )
             if has_test_failure:
                 failure_summary = summary or "Tests failed during verification"
@@ -749,18 +749,16 @@ def _find_target_coders_for_feedback(
     pipeline_order = state.get("team_config", {}).get("pipeline_order", [])
 
     # Collect all coder instances
-    all_coders = [
-        iid for iid in pipeline_order
-        if agents_cfg.get(iid, {}).get("role") == "coder"
-    ]
+    all_coders = [iid for iid in pipeline_order if agents_cfg.get(iid, {}).get("role") == "coder"]
 
     if len(all_coders) <= 1:
         return all_coders  # Single coder — no routing needed
 
     # Extract file paths from feedback (common patterns in review feedback)
     import re
+
     file_patterns = re.findall(
-        r'(?:^|\s|`)([\w./\\-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|rb|css|html|yaml|yml|json|toml))\b',
+        r"(?:^|\s|`)([\w./\\-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|rb|css|html|yaml|yml|json|toml))\b",
         feedback_summary,
     )
 
@@ -1005,9 +1003,7 @@ def prepare_debate_round(state: TaskState) -> dict:
             "primary_source_instance": primary_instance,
             "action_delta": action_delta,
             "affected_coders": affected_coders,
-            "all_sources": [
-                {"instance": s[0], "role": s[1]} for s in active_sources
-            ],
+            "all_sources": [{"instance": s[0], "role": s[1]} for s in active_sources],
         },
         # Inject ALL feedback as fix packets so coder sees everything
         "fix_packets": fix_packet_parts,

@@ -510,7 +510,8 @@ class GraphBuilder:
                 except Exception as qe:
                     logger.warning(
                         "Quality gate for parallel instance %s failed: %s",
-                        instance_id, qe,
+                        instance_id,
+                        qe,
                     )
             result["verification_history"] = all_verification_history
 

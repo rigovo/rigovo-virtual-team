@@ -179,13 +179,13 @@ def classify_by_keywords(description: str) -> DeterministicClassification:
 MINIMUM_TEAM: dict[str, list[str]] = {
     # planner is always first — coder must have a plan before touching files
     "new_project": ["planner", "coder", "reviewer", "qa"],
-    "feature":     ["planner", "coder", "reviewer", "qa"],
-    "bug":         ["planner", "coder", "reviewer", "qa"],
-    "refactor":    ["planner", "coder", "reviewer", "qa"],
-    "test":        ["planner", "coder", "reviewer", "qa"],
-    "docs":        ["planner", "coder", "reviewer"],
-    "infra":       ["planner", "coder", "reviewer", "qa", "devops", "sre"],
-    "security":    ["planner", "coder", "reviewer", "qa", "security"],
+    "feature": ["planner", "coder", "reviewer", "qa"],
+    "bug": ["planner", "coder", "reviewer", "qa"],
+    "refactor": ["planner", "coder", "reviewer", "qa"],
+    "test": ["planner", "coder", "reviewer", "qa"],
+    "docs": ["planner", "coder", "reviewer"],
+    "infra": ["planner", "coder", "reviewer", "qa", "devops", "sre"],
+    "security": ["planner", "coder", "reviewer", "qa", "security"],
     "performance": ["planner", "coder", "reviewer", "qa"],
     "investigation": ["planner", "reviewer"],  # investigation is recon, not coding
 }

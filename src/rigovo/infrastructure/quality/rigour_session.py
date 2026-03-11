@@ -50,7 +50,9 @@ class RigourSession:
     # ── Agent registration ──────────────────────────────────────────
 
     def agent_register(
-        self, agent_id: str, task_scope: list[str],
+        self,
+        agent_id: str,
+        task_scope: list[str],
     ) -> list[str]:
         """Register agent + scope. Returns list of conflict warnings.
 
@@ -75,21 +77,19 @@ class RigourSession:
             overlap = scope_set & existing_scope
             if overlap:
                 conflicts.append(
-                    f"Scope conflict with {existing['agentId']}: "
-                    f"{', '.join(sorted(overlap)[:5])}"
+                    f"Scope conflict with {existing['agentId']}: {', '.join(sorted(overlap)[:5])}"
                 )
 
         # Remove existing entry for this agent (re-registration)
-        session["agents"] = [
-            a for a in session.get("agents", [])
-            if a.get("agentId") != agent_id
-        ]
-        session["agents"].append({
-            "agentId": agent_id,
-            "taskScope": task_scope[:50],
-            "registeredAt": _ts(),
-            "lastCheckpoint": None,
-        })
+        session["agents"] = [a for a in session.get("agents", []) if a.get("agentId") != agent_id]
+        session["agents"].append(
+            {
+                "agentId": agent_id,
+                "taskScope": task_scope[:50],
+                "registeredAt": _ts(),
+                "lastCheckpoint": None,
+            }
+        )
 
         session_path.write_text(json.dumps(session, indent=2))
         return conflicts
@@ -102,8 +102,7 @@ class RigourSession:
         try:
             session = json.loads(session_path.read_text())
             session["agents"] = [
-                a for a in session.get("agents", [])
-                if a.get("agentId") != agent_id
+                a for a in session.get("agents", []) if a.get("agentId") != agent_id
             ]
             session_path.write_text(json.dumps(session, indent=2))
         except (json.JSONDecodeError, OSError):
@@ -140,9 +139,7 @@ class RigourSession:
         warnings: list[str] = []
         recent = session.get("checkpoints", [])[-3:]
         if recent:
-            avg_quality = sum(
-                cp.get("qualityScore", 100) for cp in recent
-            ) / len(recent)
+            avg_quality = sum(cp.get("qualityScore", 100) for cp in recent) / len(recent)
             if quality_score < avg_quality - 10:
                 warnings.append(
                     f"Quality drift: {quality_score}% vs "

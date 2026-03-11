@@ -396,17 +396,19 @@ class TaskClassifier:
                 if _attempt == 0:
                     logger.warning(
                         "Master LLM attempt %d failed (%s): %s — retrying...",
-                        _attempt + 1, type(llm_err).__name__, llm_err,
+                        _attempt + 1,
+                        type(llm_err).__name__,
+                        llm_err,
                     )
                     await asyncio.sleep(2)
         if _last_err is not None:
             logger.error(
                 "Master Agent LLM call failed after retries (%s): %s",
-                type(_last_err).__name__, _last_err,
+                type(_last_err).__name__,
+                _last_err,
             )
             raise RuntimeError(
-                f"Master Agent LLM failed ({type(_last_err).__name__}): "
-                f"{_last_err}"
+                f"Master Agent LLM failed ({type(_last_err).__name__}): {_last_err}"
             ) from _last_err
 
         if not response or not response.content:
@@ -492,8 +494,14 @@ class TaskClassifier:
 
         # Parse agent assignments
         _canonical_roles = {
-            "planner", "coder", "reviewer", "security", "qa",
-            "devops", "sre", "lead",
+            "planner",
+            "coder",
+            "reviewer",
+            "security",
+            "qa",
+            "devops",
+            "sre",
+            "lead",
         }
         agents: list[AgentAssignment] = []
         for agent_data in data.get("agents", []):

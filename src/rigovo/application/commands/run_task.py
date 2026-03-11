@@ -190,15 +190,11 @@ def _write_failure_log(
                     violation_count = entry.get("violation_count", 0)
                     # Build a readable summary — show count, then list each violation
                     if not entry.get("passed") and violation_count:
-                        lines.append(
-                            f"  [{status}] {role_label}: {violation_count} violation(s)"
-                        )
+                        lines.append(f"  [{status}] {role_label}: {violation_count} violation(s)")
                         for v in entry.get("violations", [])[:10]:
                             if isinstance(v, dict):
                                 file_label = (
-                                    f" [{v.get('file_path', '')}]"
-                                    if v.get("file_path")
-                                    else ""
+                                    f" [{v.get('file_path', '')}]" if v.get("file_path") else ""
                                 )
                                 lines.append(
                                     f"    • {v.get('gate_id', '?')}{file_label}: "

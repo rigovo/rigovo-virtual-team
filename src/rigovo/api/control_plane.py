@@ -3498,7 +3498,9 @@ h1{{color:#991b1b;font-size:1.5rem}}p{{color:#64748b;margin-top:.5rem}}</style><
                             planned_roles.append(canonical_role)
             raw_dag = live_cls.get("execution_dag", {})
             if isinstance(raw_dag, dict):
-                execution_dag = {str(k): [str(d) for d in v] for k, v in raw_dag.items() if isinstance(v, list)}
+                execution_dag = {
+                    str(k): [str(d) for d in v] for k, v in raw_dag.items() if isinstance(v, list)
+                }
 
         # Surface pipeline failure reason (Fix #5)
         error_reason = (

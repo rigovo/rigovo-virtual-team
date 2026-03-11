@@ -318,7 +318,7 @@ def _resolve_deep_mode(state: TaskState, current_role: str) -> tuple[bool, bool]
 
         # Progressive: escalate analysis depth with retries
         if retry_count >= 2:
-            return True, True   # deep + pro (full deep model)
+            return True, True  # deep + pro (full deep model)
         if retry_count >= 1:
             return True, False  # deep only (lite model)
 
@@ -695,12 +695,10 @@ async def quality_check_node(
             soft_violations = persona_violations
         else:
             hard_violations = [
-                pv for pv in persona_violations
-                if pv.violation_type == "forbidden_file"
+                pv for pv in persona_violations if pv.violation_type == "forbidden_file"
             ]
             soft_violations = [
-                pv for pv in persona_violations
-                if pv.violation_type != "forbidden_file"
+                pv for pv in persona_violations if pv.violation_type != "forbidden_file"
             ]
 
         events = list(state.get("events", []))
@@ -943,15 +941,13 @@ async def quality_check_node(
     # the event with any of these identifiers depending on how role was resolved.
     _inline_role_matches = {current_role, current_instance, base_role}
     _inline_gate_events = [
-        e for e in state.get("events", [])
+        e
+        for e in state.get("events", [])
         if isinstance(e, dict)
         and e.get("type") == "inline_quality_gate"
         and e.get("passed") is True
         and e.get("gate_ran") is True  # Only trust if CLI actually executed
-        and (
-            e.get("role") in _inline_role_matches
-            or e.get("instance_id") in _inline_role_matches
-        )
+        and (e.get("role") in _inline_role_matches or e.get("instance_id") in _inline_role_matches)
     ]
     _has_registered_gates = bool(quality_gates)
     if _inline_gate_events and not _has_registered_gates:
@@ -967,7 +963,10 @@ async def quality_check_node(
         # Still run persona boundary checks (lightweight, no CLI)
         output_summary = agent_output.get("summary", "")
         persona_violations = _check_persona_boundaries(
-            current_instance, base_role, files_changed, output_summary,
+            current_instance,
+            base_role,
+            files_changed,
+            output_summary,
             task_description=state.get("description", ""),
         )
         persona_gate_violations = _persona_violations_to_gate_violations(persona_violations)
@@ -1003,25 +1002,31 @@ async def quality_check_node(
                     for v in persona_gate_violations
                 ]
                 fix_packet = FixPacket(
-                    items=fix_items, attempt=retry_count, max_attempts=max_retries,
+                    items=fix_items,
+                    attempt=retry_count,
+                    max_attempts=max_retries,
                 )
                 events = list(state.get("events", []))
-                events.append({
-                    "type": "gate_results",
-                    "role": current_instance,
-                    "passed": False,
-                    "gates_run": 1,
-                    "violations": len(persona_gate_violations),
-                    "reason": "persona_violation_after_inline_pass",
-                })
+                events.append(
+                    {
+                        "type": "gate_results",
+                        "role": current_instance,
+                        "passed": False,
+                        "gates_run": 1,
+                        "violations": len(persona_gate_violations),
+                        "reason": "persona_violation_after_inline_pass",
+                    }
+                )
                 return {
                     "gate_history": gate_history,
                     **_remediation_update(
                         state,
                         current_role=current_instance,
                         remediation_owner=_resolve_remediation_owner(
-                            state, current_instance=current_instance,
-                            base_role=base_role, gate_source="persona_violation",
+                            state,
+                            current_instance=current_instance,
+                            base_role=base_role,
+                            gate_source="persona_violation",
                         ),
                         gate_summary=gate_summary,
                         fix_packet=fix_packet,
@@ -1030,14 +1035,16 @@ async def quality_check_node(
                         remediation_phase="diagnose",
                         retry_count=retry_count,
                         max_retries=max_retries,
-                        extra_events=[{
-                            "type": "gate_results",
-                            "role": current_instance,
-                            "passed": False,
-                            "gates_run": 1,
-                            "violations": len(persona_gate_violations),
-                            "reason": "persona_violation_after_inline_pass",
-                        }],
+                        extra_events=[
+                            {
+                                "type": "gate_results",
+                                "role": current_instance,
+                                "passed": False,
+                                "gates_run": 1,
+                                "violations": len(persona_gate_violations),
+                                "reason": "persona_violation_after_inline_pass",
+                            }
+                        ],
                     ),
                 }
 
@@ -1056,14 +1063,16 @@ async def quality_check_node(
         gate_history = list(state.get("gate_history", []))
         gate_history.append({"role": current_instance, **gate_summary})
         events = list(state.get("events", []))
-        events.append({
-            "type": "gate_results",
-            "role": current_instance,
-            "passed": True,
-            "gates_run": 0,
-            "violations": 0,
-            "reason": "inline_gates_passed",
-        })
+        events.append(
+            {
+                "type": "gate_results",
+                "role": current_instance,
+                "passed": True,
+                "gates_run": 0,
+                "violations": 0,
+                "reason": "inline_gates_passed",
+            }
+        )
         return {
             "gate_results": gate_summary,
             "gate_history": gate_history,
@@ -1141,13 +1150,15 @@ async def quality_check_node(
             state.get("target_root") or state.get("project_root") or ".",
         )
         _session = RigourSession(_project_root)
-        _session.log_event({
-            "type": "gate_passed" if all_passed else "gate_failed",
-            "agentId": current_instance,
-            "gatesRun": total_gates_run,
-            "gatesPassed": total_gates_passed,
-            "violationCount": len(filtered_violations),
-        })
+        _session.log_event(
+            {
+                "type": "gate_passed" if all_passed else "gate_failed",
+                "agentId": current_instance,
+                "gatesRun": total_gates_run,
+                "gatesPassed": total_gates_passed,
+                "violationCount": len(filtered_violations),
+            }
+        )
     except Exception:
         pass
 
@@ -1214,13 +1225,9 @@ async def quality_check_node(
 
         persistent_ratio = 0.0
         if prev_violations and structured_violations:
-            prev_fps = {
-                (v.get("gate_id", ""), v.get("file_path", ""))
-                for v in prev_violations
-            }
+            prev_fps = {(v.get("gate_id", ""), v.get("file_path", "")) for v in prev_violations}
             curr_fps = {
-                (v.get("gate_id", ""), v.get("file_path", ""))
-                for v in structured_violations
+                (v.get("gate_id", ""), v.get("file_path", "")) for v in structured_violations
             }
             overlap = len(prev_fps & curr_fps)
             persistent_ratio = overlap / max(len(curr_fps), 1)
@@ -1247,7 +1254,8 @@ async def quality_check_node(
 
         # Enrich with Rigour Fix Packet v3 (locations, instructions, constraints)
         fix_items = _enrich_from_rigour_fix_packet(
-            gate_input.project_root, fix_items,
+            gate_input.project_root,
+            fix_items,
         )
 
         fix_packet = FixPacket(
@@ -1259,7 +1267,8 @@ async def quality_check_node(
         # Fetch Rigour's human-readable explanation for the surgical fix block
         try:
             gate_with_explain = next(
-                (g for g in quality_gates if hasattr(g, "run_explain")), None,
+                (g for g in quality_gates if hasattr(g, "run_explain")),
+                None,
             )
             if gate_with_explain is not None:
                 explain_text = await gate_with_explain.run_explain(
