@@ -478,11 +478,15 @@ function ConsultationList({ role, collab }: { role: string; collab: Collaboratio
                   {isDebateDecision ? "adjudicated" : isDebate ? "debate" : isRequest ? "asked" : "replied"}
                 </span>
               </div>
-              {snippet && (
+              {snippet && (isDebate ? (
+                <div className="adp-debate-feedback">
+                  <ResponseRenderer output={snippet} maxHeightClass="max-h-48" />
+                </div>
+              ) : (
                 <p className="adp-consult-snippet">
                   {snippet.slice(0, 140)}{snippet.length > 140 ? "…" : ""}
                 </p>
-              )}
+              ))}
             </div>
           );
         })}
@@ -552,11 +556,15 @@ function TeamCommsPanel({ collab }: { collab: CollaborationData | null }) {
                         : "feedback"}
                 </span>
               </div>
-              {text && (
+              {text && (isDebate ? (
+                <div className="adp-debate-feedback">
+                  <ResponseRenderer output={text} maxHeightClass="max-h-48" />
+                </div>
+              ) : (
                 <p className="adp-comms-snippet">
                   {text.slice(0, 150)}{text.length > 150 ? "…" : ""}
                 </p>
-              )}
+              ))}
             </div>
           );
         })}
