@@ -685,13 +685,20 @@ async def quality_check_node(
         )
 
         # Separate hard violations from soft (info/warning severity)
-        hard_violations = [pv for pv in persona_violations if pv.violation_type == "forbidden_file"]
-        soft_violations = [pv for pv in persona_violations if pv.violation_type != "forbidden_file"]
+        # With server-side tool enforcement, non-code roles can't write files.
+        # Persona violations for non-code roles are structural warnings, not failures.
+        _non_code_roles = {"planner", "reviewer", "security", "lead"}
+        if base_role in _non_code_roles:
+            hard_violations = []
+            soft_violations = persona_violations
+        else:
+            hard_violations = [pv for pv in persona_violations if pv.violation_type == "forbidden_file"]
+            soft_violations = [pv for pv in persona_violations if pv.violation_type != "forbidden_file"]
 
         events = list(state.get("events", []))
 
         if hard_violations:
-            # Non-code roles writing files is a gate failure
+            # Code roles writing forbidden files is a gate failure
             gate_violations = _persona_violations_to_gate_violations(hard_violations)
             structured_violations = [_serialize_violation(v) for v in gate_violations]
             gate_summary = {

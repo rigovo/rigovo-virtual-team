@@ -536,8 +536,12 @@ class TestFinalizeNode(unittest.IsolatedAsyncioTestCase):
 class TestQualityCheckPersonaEnforcement(unittest.IsolatedAsyncioTestCase):
     """Test persona boundary enforcement in quality_check_node."""
 
-    async def test_non_gated_role_writing_files_triggers_failure(self):
-        """Reviewer (non-gated) writing files should be a gate failure."""
+    async def test_non_gated_role_writing_files_passes_with_warning(self):
+        """Reviewer (non-gated) writing files should pass with warnings.
+
+        Server-side tool enforcement prevents non-code roles from writing files,
+        so persona violations for non-code roles are warnings, not failures.
+        """
         state: TaskState = {
             "task_id": "task-1",
             "current_agent_role": "reviewer",
@@ -548,7 +552,7 @@ class TestQualityCheckPersonaEnforcement(unittest.IsolatedAsyncioTestCase):
             "agent_outputs": {
                 "reviewer": {
                     "summary": "## Verdict\nAPPROVED",
-                    "files_changed": ["src/fix.py"],  # Reviewer shouldn't write files!
+                    "files_changed": ["src/fix.py"],  # Server-side enforcement blocks this
                 },
             },
             "events": [],
@@ -556,9 +560,8 @@ class TestQualityCheckPersonaEnforcement(unittest.IsolatedAsyncioTestCase):
 
         result = await quality_check_node(state, [])
 
-        assert result["gate_results"]["passed"] is False
-        assert result["status"] == "gate_failed_reviewer"
-        assert "persona" in result["gate_results"].get("reason", "")
+        # Non-code roles: persona violations are warnings, not failures
+        assert result["gate_results"]["passed"] is True
 
     async def test_non_gated_role_no_files_passes(self):
         """Reviewer (non-gated) not writing files should pass."""
@@ -583,8 +586,12 @@ class TestQualityCheckPersonaEnforcement(unittest.IsolatedAsyncioTestCase):
         assert result["gate_results"]["passed"] is True
         assert "gates_skipped_reviewer" in result["status"]
 
-    async def test_planner_writing_files_triggers_failure(self):
-        """Planner writing files should be caught by persona boundaries."""
+    async def test_planner_writing_files_passes_with_warning(self):
+        """Planner writing files should pass with warnings.
+
+        Server-side tool enforcement prevents planners from writing files,
+        so persona violations for planners are warnings, not failures.
+        """
         state: TaskState = {
             "task_id": "task-3",
             "current_agent_role": "planner",
@@ -602,7 +609,7 @@ class TestQualityCheckPersonaEnforcement(unittest.IsolatedAsyncioTestCase):
         }
 
         result = await quality_check_node(state, [])
-        assert result["gate_results"]["passed"] is False
+        assert result["gate_results"]["passed"] is True
 
     async def test_instance_agent_resolves_base_role_for_persona(self):
         """Instance agent 'backend-engineer-1' should use 'coder' boundaries."""
