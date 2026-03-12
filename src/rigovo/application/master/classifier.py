@@ -205,8 +205,8 @@ Respond with ONLY valid JSON:
 "complexity":"low|medium|high|critical",
 "workspace_type":"new_project|existing_project|new_subfolder_project",
 "execution_mode":"linear|parallel|supervised_parallel",
-"domain_analysis":"2-3 sentences",
-"architecture_notes":"key patterns",
+"domain_analysis":"ONE concise sentence — max 30 words",
+"architecture_notes":"key patterns, max 20 words",
 "agents":[{"instance_id":"planner-1","role":"planner","specialisation":"requirements",
 "assignment":"...","depends_on":[],"tools_required":[],"verification":"...",
 "context_package":{"scope_boundaries":{"focus_paths":[],"exclude_paths":[]},
@@ -460,6 +460,64 @@ class TaskClassifier:
 
         return "\n".join(parts) if parts else "Empty project — no files detected."
 
+    @staticmethod
+    def _repair_truncated_json(text: str) -> str:
+        """Best-effort repair for JSON truncated mid-generation by max_tokens.
+
+        Common failure: an unterminated string value, e.g.
+            {"domain_analysis":"This is a self-contained Python utility project...
+        Strategy: close any open string, then balance brackets/braces.
+        """
+        # Fast path — valid JSON already
+        try:
+            json.loads(text)
+            return text
+        except json.JSONDecodeError:
+            pass
+
+        # Strip trailing comma or colon (common at truncation point)
+        repaired = text.rstrip().rstrip(",").rstrip(":")
+
+        # Close unterminated string: count unescaped quotes
+        in_string = False
+        i = 0
+        while i < len(repaired):
+            ch = repaired[i]
+            if ch == "\\" and in_string:
+                i += 2  # skip escaped char
+                continue
+            if ch == '"':
+                in_string = not in_string
+            i += 1
+        if in_string:
+            repaired += '"'
+
+        # Balance brackets/braces
+        stack: list[str] = []
+        in_str = False
+        j = 0
+        while j < len(repaired):
+            ch = repaired[j]
+            if ch == "\\" and in_str:
+                j += 2
+                continue
+            if ch == '"':
+                in_str = not in_str
+            elif not in_str:
+                if ch in ("{", "["):
+                    stack.append(ch)
+                elif ch == "}" and stack and stack[-1] == "{":
+                    stack.pop()
+                elif ch == "]" and stack and stack[-1] == "[":
+                    stack.pop()
+            j += 1
+
+        # Close remaining open structures
+        for opener in reversed(stack):
+            repaired += "}" if opener == "{" else "]"
+
+        return repaired
+
     def _parse_staffing_plan(self, content: str, description: str) -> StaffingPlan:
         """Parse the Master Agent's JSON response into a StaffingPlan."""
         try:
@@ -470,6 +528,9 @@ class TaskClassifier:
                 if text.endswith("```"):
                     text = text[:-3]
                 text = text.strip()
+
+            # Attempt repair if JSON was truncated by max_tokens
+            text = self._repair_truncated_json(text)
 
             data = json.loads(text)
             return self._data_to_plan(data)
