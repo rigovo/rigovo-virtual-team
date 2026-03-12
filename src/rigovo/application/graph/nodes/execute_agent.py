@@ -2123,6 +2123,7 @@ async def _run_agentic_loop(
     budget_warning_sent = False
     inline_gate_attempts = 0
     max_inline_gate_attempts = 3
+    _prev_inline_violations: list[dict[str, Any]] | None = None  # track for persistence detection
 
     # Intent-aware file read cap — prevents planner from reading entire codebase
     # for brainstorming/research tasks.  0 = unlimited.
@@ -2244,9 +2245,12 @@ async def _run_agentic_loop(
                             agent_role=_base_role,
                             attempt=inline_gate_attempts + 1,
                             is_critical=_is_critical,
+                            prev_violations=_prev_inline_violations,
                         )
                         inline_gate_attempts += 1
                         if not _gate_result.passed:
+                            # Track violations for next attempt's persistence detection
+                            _prev_inline_violations = _gate_result.violations
                             logger.info(
                                 "Agent %s: inline gate failed (attempt %d/%d), "
                                 "injecting %d violations for self-correction",

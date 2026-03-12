@@ -80,6 +80,7 @@ async def run_inline_quality_gates(
     *,
     attempt: int = 1,
     is_critical: bool = False,
+    prev_violations: list[dict[str, Any]] | None = None,
 ) -> InlineGateResult:
     """Run quality gates inline and return result for conversation injection.
 
@@ -94,6 +95,9 @@ async def run_inline_quality_gates(
         agent_role: The agent's role (coder, qa, etc.) for filtering.
         attempt: Current inline gate attempt number (1-based) for escalation.
         is_critical: Whether the task is classified as critical complexity.
+        prev_violations: Violations from the previous inline attempt (if any).
+            Used to detect persistent violations and inject targeted guidance
+            so the agent doesn't repeat the same failed approach.
 
     Returns:
         InlineGateResult with pass/fail, violations, and a summary string
@@ -175,11 +179,42 @@ async def run_inline_quality_gates(
         if not violations:
             return InlineGateResult(passed=True, gate_ran=True, deep_mode=deep_label)
 
+        # ── Detect persistent violations ──────────────────────────────────
+        # Compare current violations against previous attempt to identify
+        # which issues the agent's last fix attempt did NOT resolve.
+        persistent_ids: set[str] = set()
+        if prev_violations:
+            prev_fps = {
+                (v.get("gate_id", ""), tuple(sorted(str(f) for f in v.get("files", []))))
+                for v in prev_violations
+            }
+            for v in violations:
+                fp = (v.get("gate_id", ""), tuple(sorted(str(f) for f in v.get("files", []))))
+                if fp in prev_fps:
+                    persistent_ids.add(v.get("gate_id", ""))
+
         # Build a summary suitable for injection as a USER message
         mode_note = ""
         if use_deep:
             mode_note = f" [deep{'+ pro' if use_pro else ''} analysis]"
-        summary_parts = [
+
+        summary_parts: list[str] = []
+
+        # Lead with persistence warning — agent MUST change approach
+        if persistent_ids:
+            summary_parts += [
+                f"⚠️  SAME VIOLATIONS FOUND AGAIN (attempt {attempt}) — "
+                "your previous fix did NOT work.",
+                "You MUST use a COMPLETELY DIFFERENT approach for the persisting issues below.",
+                "Do NOT repeat what you already tried. Consider:",
+                "  • Simplify the code instead of restructuring it",
+                "  • Delete or inline the offending code rather than refactoring",
+                "  • Reduce function/file size by extracting helpers",
+                "  • Remove unnecessary abstractions that trigger complexity gates",
+                "",
+            ]
+
+        summary_parts += [
             f"INLINE QUALITY CHECK FAILED ({len(violations)} issue(s)){mode_note}:",
             "",
         ]
@@ -190,7 +225,10 @@ async def run_inline_quality_gates(
             prov = v.get("provenance", "")
             file_str = ", ".join(str(f) for f in files[:3]) if files else "unknown"
             prov_tag = f" [{prov}]" if prov and prov != "traditional" else ""
-            summary_parts.append(f"  {i}. [{v.get('severity', '?').upper()}]{prov_tag} {msg}")
+            persisting_tag = " ⚠️ PERSISTING" if v.get("gate_id", "") in persistent_ids else ""
+            summary_parts.append(
+                f"  {i}. [{v.get('severity', '?').upper()}]{prov_tag} {msg}{persisting_tag}"
+            )
             if hint:
                 summary_parts.append(f"     Hint: {hint}")
             summary_parts.append(f"     Files: {file_str}")
